@@ -32,6 +32,8 @@ Jolli is a documentation automation platform built as a TypeScript monorepo. The
 ## Tools and Extensions
 
 - **`tools/code2docusaurus/`** - Generate Docusaurus documentation from code
+- **`tools/code2openapi/`** - Generate OpenAPI documentation from code
+- **`tools/docs2docusaurus/`** - Convert documentation to Docusaurus format
 - **`tools/docusaurus2vercel/`** - Deploy Docusaurus sites to Vercel
 - **`tools/jolliagent/`** - AI agent for creating articles in E2B sandboxes
 - **`tools/nextra-generator/`** - Generate Nextra documentation sites
@@ -42,7 +44,7 @@ Jolli is a documentation automation platform built as a TypeScript monorepo. The
 - **Build tool**: Vite (for building, testing, and dev server)
 - **Linting/Formatting**: Biome (see `biome.json` for rules)
 - **Type checking**: TypeScript with strict settings
-- **Testing**: Vitest with 100% coverage requirement (backend), 97%+ branches (frontend)
+- **Testing**: Vitest with 97%+ coverage requirement (lines, statements, branches, functions)
 - **Node version**: 24.10.0 (use `nvm use` in project root)
 
 For complete setup and development instructions, see `DEVELOPERS.md` and `LOCALIZATION.md`.
@@ -194,7 +196,7 @@ npx vitest run path/to/file.test.tsx
 - Use nvm (`nvm use` in project root) to ensure correct Node.js version (24.10.0)
 - Run `npm run lint` and fix issues before committing
 - Run `npm run type-check` to catch TypeScript errors
-- Maintain 100% test coverage (backend) and 97%+ branches (frontend)
+- Maintain 97%+ test coverage (lines, statements, branches, functions)
 - At the end of complex tasks, run `npm run all` to ensure everything passes
 - Never modify `vite.config.ts` or `biome.json` without asking first
 
@@ -219,7 +221,7 @@ npx vitest run path/to/file.test.tsx
 
 - **Backend**: Use functions in test setup utilities where applicable
 - **Frontend**: Use `TestUtils.tsx` utilities and `data-testid` instead of `getByText`
-- **Coverage**: Maintain 100% (backend) and 97%+ branches (frontend)
+- **Coverage**: Maintain 97%+ (lines, statements, branches, functions) for both backend and frontend
 - **Test files**: Co-locate tests with source files (e.g., `Foo.ts` and `Foo.test.ts`)
 
 ## Localization (i18n)
