@@ -1,0 +1,67 @@
+name: Jolli CI
+
+on:
+    push:
+        branches: [ "**" ]
+        paths: [ "**" ]
+    workflow_dispatch:
+
+jobs:
+    build:
+        permissions:
+            contents: write
+            id-token: write
+            actions: write  # Required to trigger schema migrations
+        runs-on: ubuntu-24.04
+        steps:
+            -   uses: actions/checkout@v5
+                with:
+                    lfs: true
+            -   uses: jolliai/verify-linear-issue-link@main
+                if: github.event_name != 'workflow_dispatch'
+                with:
+                    github-token: ${{ secrets.GITHUB_TOKEN }}
+            -   uses: dguo/check-author-and-committer-action@v1
+                if: github.event_name != 'workflow_dispatch'
+                with:
+                    github-token: ${{ secrets.GITHUB_TOKEN }}
+                    author-email-regex: '@jolli\.ai$'
+            -   uses: actions/setup-node@v5
+                with:
+                    node-version-file: .nvmrc
+            -   uses: aws-actions/configure-aws-credentials@v4
+                with:
+                    aws-region: us-west-2
+                    role-session-name: jolli-github-deploy
+                    role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+            -   run: npm ci
+            -   run: npm run build
+            -   run: npm run lint
+            -   run: npm run test
+            -   run: npm run package
+            -   run: ./scripts/package.sh
+            -   run: ./scripts/publish.sh
+            -   name: Trigger schema migrations
+                if: success() && startsWith(github.ref, 'refs/heads/deploy/')
+                env:
+                    GH_TOKEN: ${{ github.token }}
+                run: |
+                    BRANCH="${{ github.ref_name }}"
+                    SHA="${{ github.sha }}"
+                    ENV="${BRANCH#deploy/}"
+                    echo "Triggering schema migrations for branch=$BRANCH, sha=$SHA, environment=$ENV"
+                    gh workflow run migrate-schemas.yaml --ref "$BRANCH" -f environment="$ENV" -f branch="$BRANCH" -f sha="$SHA"
+            -   name: Rebase deploy/dev to trigger dev deployment
+                if: success() && github.ref == 'refs/heads/main'
+                env:
+                    GH_TOKEN: ${{ github.token }}
+                run: |
+                    git config user.name "github-actions[bot]"
+                    git config user.email "github-actions[bot]@users.noreply.github.com"
+                    git fetch --unshallow origin || true
+                    git fetch origin main deploy/dev
+                    git checkout deploy/dev
+                    git rebase origin/main
+                    git push origin deploy/dev --force-with-lease
+                    # GITHUB_TOKEN pushes don't trigger workflows, so manually trigger the build
+                    gh workflow run jolli.yaml --ref deploy/dev

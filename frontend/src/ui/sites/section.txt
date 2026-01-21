@@ -1,0 +1,271 @@
+			{/* Articles Section - FIRST */}
+			<div className="border rounded-lg p-4 bg-card mb-6">
+				<div className="flex items-center justify-between mb-4">
+					<h2 className="text-lg font-semibold">{content.articlesTitle}</h2>
+					<div className="flex items-center gap-2">
+						<FileText className="h-5 w-5 text-muted-foreground" />
+						<span className="text-lg font-bold">{loadingArticles ? "..." : articles.length}</span>
+						<span className="text-sm text-muted-foreground">{content.articlesCount}</span>
+					</div>
+				</div>
+
+				{loadingArticles && (
+					<div className="text-center py-4 text-muted-foreground">{content.loadingArticles}</div>
+				)}
+
+				{!loadingArticles && articles.length > 0 && (
+					<div className="space-y-2">
+						<div className="text-sm font-medium text-muted-foreground mb-2">
+							{content.mdxCompilationTitle}
+						</div>
+						<div className="max-h-60 overflow-y-auto space-y-1">
+							{articles.map(article => {
+								const isMdxCompliant = validateMDX(article.content);
+								const title =
+									article.contentMetadata?.title ||
+									article.jrn.split("/").pop() ||
+									`Article ${article.id}`;
+
+								return (
+									<div
+										key={article.id}
+										className="flex items-center justify-between p-2 rounded hover:bg-accent/50"
+									>
+										<div className="flex items-center gap-2 flex-1 min-w-0">
+											<FileText className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+											<span className="text-sm truncate">{title}</span>
+										</div>
+										<div className="flex items-center gap-2">
+											{isMdxCompliant ? (
+												<Badge className="bg-green-500/10 text-green-700 dark:text-green-400 hover:bg-green-500/20 text-xs">
+													<CheckCircle className="h-3 w-3 mr-1" />
+													{content.mdxCompliant}
+												</Badge>
+											) : (
+												<>
+													<Badge className="bg-amber-500/10 text-amber-700 dark:text-amber-400 hover:bg-amber-500/20 text-xs">
+														<AlertCircle className="h-3 w-3 mr-1" />
+														{content.mdxNonCompliant}
+													</Badge>
+													<Button variant="outline" size="sm" className="h-7 text-xs">
+														{content.fixMdxButton}
+													</Button>
+												</>
+											)}
+										</div>
+									</div>
+								);
+							})}
+						</div>
+					</div>
+				)}
+
+				{!loadingArticles && articles.length === 0 && (
+					<div className="text-center py-4 text-muted-foreground">No articles found</div>
+				)}
+			</div>
+
+			{/* Main Content Grid */}
+			<div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+				{/* Status Section */}
+				<div className="border rounded-lg p-4 bg-card">
+					<h2 className="text-lg font-semibold mb-4">{content.statusTitle}</h2>
+					<div className="space-y-3">
+						<div>
+							<div className="text-sm text-muted-foreground mb-1">{content.statusTitle}</div>
+							{getStatusBadge(docsite.status, {
+								active: content.statusActive,
+								building: content.statusBuilding,
+								pending: content.statusPending,
+								error: content.statusError,
+							})}
+						</div>
+						<div>
+							<div className="text-sm text-muted-foreground mb-1">{content.visibilityTitle}</div>
+							{getVisibilityBadge(docsite.visibility, {
+								internal: content.visibilityInternal,
+								external: content.visibilityExternal,
+							})}
+						</div>
+					</div>
+				</div>
+
+				{/* Article Count (Summary) */}
+				<div className="border rounded-lg p-4 bg-card">
+					<h2 className="text-lg font-semibold mb-4">MDX Status</h2>
+					<div className="space-y-2">
+						<div className="flex justify-between text-sm">
+							<span className="text-muted-foreground">Total Articles:</span>
+							<span className="font-medium">{articles.length}</span>
+						</div>
+						<div className="flex justify-between text-sm">
+							<span className="text-muted-foreground">MDX Compliant:</span>
+							<span className="font-medium text-green-600 dark:text-green-400">
+								{articles.filter(a => validateMDX(a.content)).length}
+							</span>
+						</div>
+						<div className="flex justify-between text-sm">
+							<span className="text-muted-foreground">Needs Fix:</span>
+							<span className="font-medium text-amber-600 dark:text-amber-400">
+								{articles.filter(a => !validateMDX(a.content)).length}
+							</span>
+						</div>
+					</div>
+				</div>
+
+				{/* Protection Section */}
+				<div className="border rounded-lg p-4 bg-card lg:col-span-2">
+					<div className="flex items-center justify-between mb-4">
+						<h2 className="text-lg font-semibold">{content.protectionTitle}</h2>
+						<div className="flex items-center gap-2">
+							{renderProtectionActionButtons(
+								docsite,
+								{
+									protectionRefresh: content.protectionRefresh,
+									unpublishingButton: content.unpublishingButton,
+									unpublishButton: content.unpublishButton,
+									publishingButton: content.publishingButton,
+									publishButton: content.publishButton,
+								},
+								refreshingProtection,
+								publishing,
+								handleRefreshProtection,
+								handleUnpublish,
+								handlePublish,
+							)}
+						</div>
+					</div>
+					<div className="space-y-3">
+						{docsite.visibility === "internal" && (
+							<>
+								{docsite.metadata?.allowedDomain && (
+									<div>
+										<div className="text-sm text-muted-foreground mb-1">
+											{content.allowedDomainTitle}
+										</div>
+										<div className="text-sm font-medium">@{docsite.metadata.allowedDomain}</div>
+									</div>
+								)}
+								<div>
+									<div className="text-sm text-muted-foreground mb-1">{content.protectionType}</div>
+									<div className="text-sm">{docsite.metadata?.protectionType || "app-level"}</div>
+								</div>
+							</>
+						)}
+						{docsite.visibility === "external" && (
+							<>
+								<div>
+									<div className="text-sm text-muted-foreground mb-1">
+										{content.publishStatusTitle}
+									</div>
+									<div className="flex items-center gap-2">
+										{docsite.metadata?.isPublished ? (
+											<Badge className="bg-green-500/10 text-green-700 dark:text-green-400 hover:bg-green-500/20">
+												<Globe className="h-3 w-3 mr-1" />
+												{content.publishedStatus}
+											</Badge>
+										) : (
+											<Badge className="bg-orange-500/10 text-orange-700 dark:text-orange-400 hover:bg-orange-500/20">
+												<Lock className="h-3 w-3 mr-1" />
+												{content.unpublishedStatus}
+											</Badge>
+										)}
+									</div>
+								</div>
+								{docsite.metadata?.protectionType && (
+									<div>
+										<div className="text-sm text-muted-foreground mb-1">
+											{content.protectionType}
+										</div>
+										<div className="text-sm">{docsite.metadata.protectionType}</div>
+									</div>
+								)}
+								{docsite.metadata?.lastProtectionCheck && (
+									<div>
+										<div className="text-sm text-muted-foreground mb-1">
+											{content.protectionLastChecked}
+										</div>
+										<div className="text-sm">
+											{formatTimestamp(dateTimeContent, docsite.metadata.lastProtectionCheck)}
+										</div>
+									</div>
+								)}
+							</>
+						)}
+					</div>
+					<div className="mt-4 p-3 bg-muted/50 rounded-md">
+						<p className="text-sm text-muted-foreground">
+							{docsite.visibility === "internal"
+								? content.internalSiteDescription
+								: content.externalSiteDescription}
+						</p>
+					</div>
+				</div>
+
+				{/* Deployment Status Card - NEW */}
+				<div className="border rounded-lg p-4 bg-card lg:col-span-2">
+					<h2 className="text-lg font-semibold mb-4">{content.deploymentStatusTitle}</h2>
+					<div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+						<div>
+							<div className="text-sm font-medium text-muted-foreground mb-1">Build Status</div>
+							{getStatusBadge(docsite.status, {
+								active: content.statusActive,
+								building: content.statusBuilding,
+								pending: content.statusPending,
+								error: content.statusError,
+							})}
+						</div>
+
+						<div>
+							<div className="text-sm font-medium text-muted-foreground mb-1">{content.framework}</div>
+							<div className="text-sm font-medium">{docsite.metadata?.framework || "—"}</div>
+						</div>
+
+						{docsite.metadata?.vercelUrl && (
+							<div>
+								<div className="text-sm font-medium text-muted-foreground mb-1">
+									{content.vercelDeployment}
+								</div>
+								<a
+									href={docsite.metadata.vercelUrl}
+									target="_blank"
+									rel="noopener noreferrer"
+									className="flex items-center gap-2 text-primary hover:underline text-sm"
+									data-testid="vercel-link"
+								>
+									<ExternalLink className="h-3 w-3 flex-shrink-0" />
+									<span className="truncate">{content.viewSite}</span>
+								</a>
+							</div>
+						)}
+
+						{docsite.lastGeneratedAt && (
+							<div>
+								<div className="text-sm font-medium text-muted-foreground mb-1">
+									{content.lastBuilt}
+								</div>
+								<div className="text-sm">
+									{formatTimestamp(dateTimeContent, docsite.lastGeneratedAt)}
+								</div>
+							</div>
+						)}
+
+						{docsite.metadata?.lastDeployedAt && (
+							<div>
+								<div className="text-sm font-medium text-muted-foreground mb-1">
+									{content.lastDeployed}
+								</div>
+								<div className="text-sm">
+									{formatTimestamp(dateTimeContent, docsite.metadata.lastDeployedAt)}
+								</div>
+							</div>
+						)}
+					</div>
+				</div>
+			</div>
+
+			{/* Repository & Content Card - COMBINED */}
+			{docsite.status === "active" && docsite.metadata?.githubRepo && docsite.metadata?.githubUrl && (
+				<div className="border rounded-lg p-4 bg-card mt-6">
+					<div className="flex items-center justify-between mb-4">
+						<h2 className="text-lg font-semibold">{content.repositoryInfoTitle}</h2>

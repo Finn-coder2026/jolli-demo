@@ -1,0 +1,63 @@
+{
+	"name": "shared-pipeline-utils",
+	"version": "1.0.0",
+	"description": "Shared utilities for documentation pipeline tools",
+	"main": "./src/index.ts",
+	"types": "./src/index.ts",
+	"type": "module",
+	"exports": {
+		".": "./src/index.ts",
+		"./mdx": "./src/mdx/index.ts",
+		"./contracts": "./src/contracts/index.ts",
+		"./hashing": "./src/hashing/index.ts",
+		"./git": "./src/git/index.ts",
+		"./fs": "./src/fs/index.ts",
+		"./code-scanner": "./src/code-scanner/index.ts",
+		"./detection": "./src/detection/index.ts",
+		"./llm-extractor": "./src/llm-extractor/index.ts"
+	},
+	"scripts": {
+		"all": "npm run clean && npm run build && npm run lint && npm run test",
+		"build": "vite build",
+		"clean": "rimraf dist/",
+		"lint": "biome check --error-on-warnings",
+		"lint:fix": "biome check --write",
+		"test": "vitest run --coverage",
+		"test:watch": "vitest"
+	},
+	"keywords": [
+		"documentation",
+		"pipeline",
+		"utilities",
+		"mdx",
+		"hashing"
+	],
+	"author": "Jolli",
+	"license": "MIT",
+	"dependencies": {
+		"@babel/parser": "^7.26.3",
+		"@babel/traverse": "^7.26.4",
+		"@babel/types": "^7.26.3",
+		"glob": "^11.0.0",
+		"gray-matter": "^4.0.3",
+		"typescript": "^5.7.2"
+	},
+	"devDependencies": {
+		"@babel/types": "^7.26.3",
+		"@biomejs/biome": "1.9.4",
+		"@types/babel__traverse": "^7.20.6",
+		"@types/node": "^20.0.0",
+		"@vitest/coverage-v8": "^2.1.8",
+		"rimraf": "^6.0.1",
+		"vite": "^6.0.0",
+		"vitest": "^2.1.8"
+	},
+	"files": [
+		"src",
+		"dist",
+		"README.md"
+	],
+	"engines": {
+		"node": ">=18.0.0"
+	}
+}

@@ -1,0 +1,216 @@
+/* Markdown content styling */
+.markdownContent {
+	color: inherit;
+	font-size: 14px;
+	line-height: 1.6;
+}
+
+/* Headings */
+.markdownContent h1,
+.markdownContent h2,
+.markdownContent h3,
+.markdownContent h4,
+.markdownContent h5,
+.markdownContent h6 {
+	font-weight: 600;
+	line-height: 1.25;
+	margin-bottom: 16px;
+	margin-top: 24px;
+}
+
+.markdownContent h1 {
+	border-bottom: 1px solid var(--color-border);
+	font-size: 2em;
+	padding-bottom: 0.3em;
+}
+
+.markdownContent h2 {
+	border-bottom: 1px solid var(--color-border);
+	font-size: 1.5em;
+	padding-bottom: 0.3em;
+}
+
+.markdownContent h3 {
+	font-size: 1.25em;
+}
+
+.markdownContent h4 {
+	font-size: 1em;
+}
+
+.markdownContent h5 {
+	font-size: 0.875em;
+}
+
+.markdownContent h6 {
+	color: var(--color-muted-foreground);
+	font-size: 0.85em;
+}
+
+/* Paragraphs */
+.markdownContent p {
+	margin-bottom: 16px;
+	margin-top: 0;
+}
+
+.markdownContent li > p {
+	margin-bottom: 8px;
+}
+
+.markdownContent p:last-child {
+	margin-bottom: 0;
+}
+
+/* Lists */
+.markdownContent ul,
+.markdownContent ol {
+	margin-bottom: 16px;
+	margin-top: 0;
+	padding-left: 2em;
+}
+
+.markdownContent li {
+	margin-bottom: 4px;
+}
+
+.markdownContent ul {
+	list-style-type: disc;
+}
+
+.markdownContent ol {
+	list-style-type: decimal;
+}
+
+.markdownContent ul ul {
+	list-style-type: circle;
+}
+
+.markdownContent ul ul ul {
+	list-style-type: square;
+}
+
+/* Code (inline first, then code blocks) */
+.markdownContent code {
+	background-color: rgba(110, 118, 129, 0.2);
+	border: 1px solid rgba(110, 118, 129, 0.3);
+	border-radius: 3px;
+	font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+	font-size: 0.9em;
+	padding: 2px 6px;
+}
+
+.markdownContent pre {
+	background-color: #1e1e1e;
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	border-radius: 6px;
+	margin: 16px 0;
+	overflow-x: auto;
+	padding: 16px;
+}
+
+.markdownContent pre code {
+	background-color: transparent;
+	border: none;
+	border-radius: 0;
+	color: #d4d4d4;
+	display: block;
+	font-size: 13px;
+	padding: 0;
+}
+
+/* Blockquotes */
+.markdownContent blockquote {
+	border-left: 4px solid var(--color-border);
+	color: var(--color-muted-foreground);
+	margin: 16px 0;
+	padding: 0 1em;
+}
+
+.markdownContent blockquote > :first-child {
+	margin-top: 0;
+}
+
+.markdownContent blockquote > :last-child {
+	margin-bottom: 0;
+}
+
+/* Links */
+.markdownContent a {
+	color: #5b7ee5;
+	text-decoration: none;
+}
+
+.markdownContent a:hover {
+	text-decoration: underline;
+}
+
+/* Tables */
+.markdownContent table {
+	border-collapse: collapse;
+	display: block;
+	margin: 16px 0;
+	overflow-x: auto;
+	width: 100%;
+}
+
+.markdownContent th,
+.markdownContent td {
+	border: 1px solid var(--color-border);
+	padding: 8px 12px;
+	text-align: left;
+}
+
+.markdownContent th {
+	background-color: var(--color-muted);
+	font-weight: 600;
+}
+
+.markdownContent tr:nth-child(even) {
+	background-color: rgba(0, 0, 0, 0.02);
+}
+
+/* Horizontal rule */
+.markdownContent hr {
+	background-color: var(--color-border);
+	border: 0;
+	height: 1px;
+	margin: 24px 0;
+}
+
+/* Images - display as block to ensure they appear on their own line */
+.markdownContent img {
+	border-radius: 4px;
+	display: block;
+	height: auto;
+	margin: 16px 0;
+	max-width: 100%;
+}
+
+/* Task lists */
+.markdownContent input[type="checkbox"] {
+	margin-right: 6px;
+}
+
+/* Emphasis */
+.markdownContent strong {
+	font-weight: 600;
+}
+
+.markdownContent em {
+	font-style: italic;
+}
+
+/* Strikethrough */
+.markdownContent del {
+	text-decoration: line-through;
+}
+
+/* First element margin */
+.markdownContent > :first-child {
+	margin-top: 0;
+}
+
+/* Last element margin */
+.markdownContent > :last-child {
+	margin-bottom: 0;
+}

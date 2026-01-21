@@ -1,0 +1,5 @@
+{
+	"version": 2,
+	"buildCommand": "node deploy/vercel/build.js",
+	"installCommand": "mkdir -p cli/dist && echo '#!/usr/bin/env node' > cli/dist/Main.js && npm install --include=dev"
+}

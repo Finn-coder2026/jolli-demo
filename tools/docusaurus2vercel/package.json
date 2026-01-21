@@ -1,0 +1,52 @@
+{
+	"name": "docusaurus2vercel",
+	"version": "1.0.0",
+	"description": "CLI tool to deploy Docusaurus documentation to Vercel",
+	"main": "dist/index.js",
+	"type": "module",
+	"bin": {
+		"docusaurus2vercel": "./dist/index.js"
+	},
+	"scripts": {
+		"all": "npm run clean && npm run build && npm run lint && npm run test && npm run package",
+		"clean": "rimraf dist/",
+		"dev": "tsx src/index.tsx",
+		"build": "npx tsgo",
+		"package": "vite build",
+		"start": "node dist/index.js",
+		"lint": "biome check --error-on-warnings",
+		"lint:fix": "biome check --write",
+		"test": "vitest run --coverage",
+		"test:watch": "vitest",
+		"test:coverage": "vitest run --coverage"
+	},
+	"keywords": [
+		"docusaurus",
+		"vercel",
+		"deployment",
+		"documentation",
+		"cli"
+	],
+	"author": "",
+	"license": "MIT",
+	"dependencies": {
+		"axios": "^1.6.0",
+		"commander": "^11.1.0",
+		"execa": "^8.0.1",
+		"ink": "^6.3.1",
+		"ink-spinner": "^5.0.0",
+		"react": "19.2.0"
+	},
+	"devDependencies": {
+		"@types/node": "^20.10.0",
+		"@types/react": "19.2.2",
+		"@vitest/coverage-v8": "^2.0.0",
+		"ink-testing-library": "^3.0.0",
+		"tsx": "^4.7.0",
+		"typescript": "^5.3.0",
+		"vitest": "^2.0.0"
+	},
+	"engines": {
+		"node": ">=18.0.0"
+	}
+}

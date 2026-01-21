@@ -1,0 +1,19 @@
+{
+	"extends": "../../common/tsconfig.json",
+	"compilerOptions": {
+		"declaration": false,
+		"noEmit": false,
+		"noEmitOnError": true,
+		"outDir": "dist",
+		"types": ["vite/client", "vitest/globals"],
+		"paths": {
+			"*": ["./*"],
+			"src": ["./src/index.ts"],
+			"src/*": ["./src/*"],
+			"llm": ["./src/Types.ts"],
+			"providers/*": ["./src/providers/*"]
+		}
+	},
+	"exclude": ["dist"],
+	"include": ["."]
+}

@@ -1,0 +1,27 @@
+{
+	"name": "jolli-docs-compiler",
+	"version": "1.0.0",
+	"type": "module",
+	"description": "Compile MDX documentation into versioned content graph",
+	"bin": {
+		"jolli-docs-compiler": "./dist/Cli.js"
+	},
+	"exports": {
+		".": "./dist/index.js"
+	},
+	"scripts": {
+		"build": "vite build",
+		"test": "vitest run --coverage",
+		"test:watch": "vitest"
+	},
+	"dependencies": {
+		"gray-matter": "^4.0.3"
+	},
+	"devDependencies": {
+		"@types/node": "^22.10.2",
+		"@vitest/coverage-v8": "^3.0.6",
+		"typescript": "^5.7.2",
+		"vite": "^7.1.9",
+		"vitest": "^3.0.6"
+	}
+}

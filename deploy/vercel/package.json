@@ -1,0 +1,13 @@
+{
+	"name": "jolli-deploy-vercel",
+	"version": "0.0.1",
+	"type": "module",
+	"private": true,
+	"description": "Vercel deployment configuration for Jolli",
+	"scripts": {
+		"all": "npm run build",
+		"build": "npm run vercel:build",
+		"vercel:build": "node build.js",
+		"vercel:init": "node init-project.js"
+	}
+}

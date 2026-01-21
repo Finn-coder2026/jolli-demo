@@ -1,0 +1,11 @@
+{
+	"metrics": {
+		"metrics_collected": {
+			"disk": {
+				"measurement": ["used_percent"],
+				"resources": ["*"],
+				"ignore_file_system_types": ["sysfs", "devtmpfs"]
+			}
+		}
+	}
+}

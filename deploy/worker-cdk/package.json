@@ -1,0 +1,30 @@
+{
+	"name": "jolli-worker-cdk",
+	"version": "1.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"build": "tsc",
+		"watch": "tsc -w",
+		"cdk": "cdk",
+		"synth": "cdk synth",
+		"diff": "cdk diff",
+		"deploy:ecr": "cdk deploy JolliWorkerEcrStack --require-approval never",
+		"deploy:dev": "cdk deploy JolliWorkerStack-dev --require-approval never",
+		"deploy:preview": "cdk deploy JolliWorkerStack-preview --require-approval never",
+		"deploy:prod": "cdk deploy JolliWorkerStack-prod",
+		"destroy:dev": "cdk destroy JolliWorkerStack-dev",
+		"destroy:preview": "cdk destroy JolliWorkerStack-preview"
+	},
+	"dependencies": {
+		"aws-cdk-lib": "^2.170.0",
+		"constructs": "^10.0.0",
+		"source-map-support": "^0.5.21"
+	},
+	"devDependencies": {
+		"@types/node": "^22.0.0",
+		"aws-cdk": "^2.170.0",
+		"tsx": "^4.19.0",
+		"typescript": "^5.7.0"
+	}
+}

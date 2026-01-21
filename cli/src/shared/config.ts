@@ -1,0 +1,146 @@
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { z } from "zod";
+
+/**
+ * Boolean schema that transforms string "true"/"false" to boolean
+ */
+const BooleanSchema = z
+	.string()
+	.refine(s => s === "true" || s === "false")
+	.transform(s => s === "true")
+	.default(false);
+
+/**
+ * Configuration schema definition
+ */
+const configSchema = {
+	// Jolli server URL for API calls and auth
+	JOLLI_URL: z.string().url().default("http://localhost:8034"),
+
+	// Sync server URL (local sync daemon)
+	SYNC_SERVER_URL: z.string().url().default("http://localhost:3001"),
+
+	// Enable debug logging
+	DEBUG: BooleanSchema,
+
+	// Log level for pino logger
+	LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error", "fatal"]).default("info"),
+};
+
+/**
+ * Infer the config type from the schema
+ */
+type ConfigSchema = typeof configSchema;
+type Config = {
+	[K in keyof ConfigSchema]: z.infer<ConfigSchema[K]>;
+};
+
+/**
+ * Parse a .env file content into key-value pairs.
+ * Supports basic .env format: KEY=value, with optional quotes.
+ */
+function parseEnvFile(content: string): Record<string, string> {
+	const result: Record<string, string> = {};
+
+	for (const line of content.split("\n")) {
+		const trimmed = line.trim();
+		// Skip empty lines and comments
+		if (!trimmed || trimmed.startsWith("#")) {
+			continue;
+		}
+
+		const eqIndex = trimmed.indexOf("=");
+		if (eqIndex === -1) {
+			continue;
+		}
+
+		const key = trimmed.slice(0, eqIndex).trim();
+		let value = trimmed.slice(eqIndex + 1).trim();
+
+		// Remove surrounding quotes if present
+		if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+			value = value.slice(1, -1);
+		}
+
+		result[key] = value;
+	}
+
+	return result;
+}
+
+/**
+ * Load .env file from a path, returning empty object if file doesn't exist.
+ */
+function loadEnvFile(path: string): Record<string, string> {
+	try {
+		const content = readFileSync(path, "utf-8");
+		return parseEnvFile(content);
+	} catch {
+		return {};
+	}
+}
+
+/**
+ * Load environment variables from .env files.
+ * Priority (highest to lowest):
+ * 1. Process environment variables (e.g., from shell)
+ * 2. .env in current working directory (project-level)
+ * 3. ~/.jolli/.env (user-level)
+ */
+function loadEnvFiles(): Record<string, string> {
+	const userEnvPath = join(homedir(), ".jolli", ".env");
+	const localEnvPath = join(process.cwd(), ".env");
+
+	// Load in order of lowest to highest priority
+	const userEnv = loadEnvFile(userEnvPath);
+	const localEnv = loadEnvFile(localEnvPath);
+
+	// Merge with priority: user < local < process.env
+	return { ...userEnv, ...localEnv };
+}
+
+/**
+ * Parse environment variables and return validated config
+ */
+function createConfig(): Config {
+	const envFromFiles = loadEnvFiles();
+
+	// Process env takes priority over .env files
+	function getEnvValue(key: string): string | undefined {
+		const envValue = process.env[key] ?? envFromFiles[key];
+		// Treat empty string as undefined so defaults apply
+		return envValue === "" ? undefined : envValue;
+	}
+
+	return {
+		JOLLI_URL: configSchema.JOLLI_URL.parse(getEnvValue("JOLLI_URL")),
+		SYNC_SERVER_URL: configSchema.SYNC_SERVER_URL.parse(getEnvValue("SYNC_SERVER_URL")),
+		DEBUG: configSchema.DEBUG.parse(getEnvValue("DEBUG")),
+		LOG_LEVEL: configSchema.LOG_LEVEL.parse(getEnvValue("LOG_LEVEL")),
+	};
+}
+
+/**
+ * Cached config instance
+ */
+let currentConfig: Config | undefined;
+
+/**
+ * Gets the current configuration object.
+ * Config is created on first access and cached.
+ */
+export function getConfig(): Config {
+	if (!currentConfig) {
+		currentConfig = createConfig();
+	}
+	return currentConfig;
+}
+
+/**
+ * Resets the config cache (useful for testing)
+ */
+export function resetConfig(): void {
+	currentConfig = undefined;
+}

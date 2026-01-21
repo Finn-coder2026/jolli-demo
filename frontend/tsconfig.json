@@ -1,0 +1,15 @@
+{
+	"extends": "../common/tsconfig.json",
+	"compilerOptions": {
+		"allowSyntheticDefaultImports": true,
+		"declaration": false,
+		"jsx": "react-jsx",
+		"outDir": "dist",
+		"types": ["vite/client", "vitest/globals"],
+		"paths": {
+			"@/*": ["./src/*"]
+		}
+	},
+	"exclude": ["dist"],
+	"include": [".", ".intlayer/**/*{.ts,.tsx}", ".intlayer/types"]
+}

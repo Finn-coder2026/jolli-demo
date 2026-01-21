@@ -1,0 +1,37 @@
+.userInfo {
+	align-items: center;
+	display: flex;
+	gap: 10px;
+}
+
+.name {
+	font-size: 18px;
+	font-weight: 500;
+}
+
+.email {
+	color: #5f6368;
+	font-size: 14px;
+}
+
+.profileImage {
+	border-radius: 50%;
+	height: 32px;
+	width: 32px;
+}
+
+.logoutButton {
+	background: #fff;
+	border: 1px solid #dadce0;
+	border-radius: 4px;
+	color: #3c4043;
+	cursor: pointer;
+	font-size: 14px;
+	font-weight: 500;
+	padding: 8px 16px;
+	transition: background-color 0.2s;
+}
+
+.logoutButton:hover {
+	background-color: #f8f9fa;
+}

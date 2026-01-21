@@ -1,0 +1,191 @@
+openapi: 3.0.0
+info:
+  title: example-express-js
+  version: 1.0.0
+  description: Automatically generated from code analysis
+paths:
+  /:
+    get:
+      summary: Get resource
+      description: Extracted from server.js
+      tags:
+        - API
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  endpoints:
+                    type: string
+  /api/books:
+    get:
+      summary: Get books
+      description: Extracted from server.js
+      tags:
+        - Books
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: string
+                  count:
+                    type: string
+                  data:
+                    type: string
+    post:
+      summary: Create books
+      description: Extracted from server.js
+      tags:
+        - Books
+      responses:
+        "201":
+          description: Resource created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: string
+                  message:
+                    type: string
+                  data:
+                    type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                author:
+                  type: string
+                year:
+                  type: string
+                isbn:
+                  type: boolean
+              required: []
+  /api/books/search:
+    get:
+      summary: Get search
+      description: Extracted from server.js
+      tags:
+        - Books
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: string
+                  query:
+                    type: string
+                  count:
+                    type: string
+                  data:
+                    type: string
+  /api/books/:id:
+    get:
+      summary: Get books
+      description: Extracted from server.js
+      tags:
+        - Books
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: string
+                  data:
+                    type: string
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+    put:
+      summary: Update books
+      description: Extracted from server.js
+      tags:
+        - Books
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: string
+                  message:
+                    type: string
+                  data:
+                    type: string
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                author:
+                  type: string
+                year:
+                  type: string
+                isbn:
+                  type: boolean
+              required: []
+    delete:
+      summary: Delete books
+      description: Extracted from server.js
+      tags:
+        - Books
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: string
+                  message:
+                    type: string
+                  data:
+                    type: string
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string

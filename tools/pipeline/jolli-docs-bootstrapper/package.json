@@ -1,0 +1,57 @@
+{
+	"name": "jolli-docs-bootstrapper",
+	"version": "1.0.0",
+	"description": "Bootstraps initial MDX documentation from API contracts",
+	"main": "./src/index.ts",
+	"types": "./src/index.ts",
+	"type": "module",
+	"exports": {
+		".": "./src/index.ts",
+		"./cli": "./src/Cli.ts"
+	},
+	"bin": {
+		"jolli-docs-bootstrapper": "./dist/Cli.js"
+	},
+	"scripts": {
+		"all": "npm run clean && npm run build && npm run lint && npm run test",
+		"build": "vite build",
+		"clean": "rimraf dist/",
+		"lint": "biome check --error-on-warnings",
+		"cli": "tsx src/Cli.ts",
+		"cli:build": "npm run build && node dist/Cli.js",
+		"test": "vitest run --coverage",
+		"test:watch": "vitest"
+	},
+	"keywords": [
+		"documentation",
+		"mdx",
+		"bootstrap",
+		"openapi",
+		"generator"
+	],
+	"author": "Jolli",
+	"license": "MIT",
+	"dependencies": {
+		"@anthropic-ai/sdk": "^0.32.1",
+		"dotenv": "^16.4.7",
+		"gray-matter": "^4.0.3",
+		"typescript": "^5.7.2"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "1.9.4",
+		"@types/node": "^20.0.0",
+		"@vitest/coverage-v8": "^2.1.8",
+		"rimraf": "^6.0.1",
+		"tsx": "^4.7.0",
+		"vite": "^6.0.0",
+		"vitest": "^2.1.8"
+	},
+	"files": [
+		"src",
+		"dist",
+		"README.md"
+	],
+	"engines": {
+		"node": ">=18.0.0"
+	}
+}

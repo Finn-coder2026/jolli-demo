@@ -1,0 +1,36 @@
+{
+	"name": "jolli-cli",
+	"version": "0.0.1",
+	"private": true,
+	"type": "module",
+	"main": "src/Main.ts",
+	"bin": {
+		"jolli": "./dist/Main.js"
+	},
+	"scripts": {
+		"all": "npm run clean && npm run build && npm run lint && npm run test && npm run package",
+		"build": "npx tsgo",
+		"clean": "rimraf dist/",
+		"lint": "biome check --error-on-warnings",
+		"lint:fix": "biome check --fix",
+		"package": "vite build && npm link && node -e \"process.platform !== 'win32' && require('fs').chmodSync('dist/Main.js', 0o755)\"",
+		"test": "vitest run --coverage"
+	},
+	"dependencies": {
+		"commander": "14.0.1",
+		"dotenv": "17.2.3",
+		"ink": "6.3.1",
+		"ink-select-input": "6.2.0",
+		"ink-spinner": "5.0.0",
+		"ink-text-input": "6.0.0",
+		"jolli-common": "*",
+		"open": "10.2.0",
+		"react": "19.2.0"
+	},
+	"devDependencies": {
+		"@testing-library/react": "16.3.0",
+		"@types/react": "19.2.2",
+		"react-dom": "19.2.0",
+		"scheduler": "0.27.0"
+	}
+}

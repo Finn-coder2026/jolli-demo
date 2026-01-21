@@ -1,0 +1,262 @@
+{
+  "description": "Test repository configuration for OpenAPI generator testing",
+  "defaultTargetDir": {
+    "win32": "d:/opensource",
+    "default": "~/opensource"
+  },
+  "structure": {
+    "typescript": {
+      "express": {
+        "category": "minimal",
+        "repos": [
+          {
+            "name": "Ghost",
+            "url": "https://github.com/TryGhost/Ghost.git",
+            "hasOpenApiSpec": false,
+            "description": "Blogging/publishing platform"
+          },
+          {
+            "name": "NodeBB",
+            "url": "https://github.com/NodeBB/NodeBB.git",
+            "hasOpenApiSpec": false,
+            "description": "Forum software"
+          },
+          {
+            "name": "parse-server",
+            "url": "https://github.com/parse-community/parse-server.git",
+            "hasOpenApiSpec": false,
+            "description": "Backend server"
+          }
+        ]
+      },
+      "fastify": {
+        "category": "schema-enforced",
+        "repos": [
+          {
+            "name": "guide-fastify-example",
+            "url": "https://github.com/fastify/fastify-example.git",
+            "hasOpenApiSpec": true,
+            "specPath": "openapi.json",
+            "description": "Official Fastify example with OpenAPI"
+          },
+          {
+            "name": "platformatic",
+            "url": "https://github.com/platformatic/platformatic.git",
+            "hasOpenApiSpec": false,
+            "description": "HTTP services toolkit"
+          }
+        ]
+      },
+      "hono": {
+        "category": "semi-structured",
+        "repos": [
+          {
+            "name": "examples",
+            "url": "https://github.com/honojs/examples.git",
+            "hasOpenApiSpec": false,
+            "description": "Official Hono examples"
+          },
+          {
+            "name": "honox",
+            "url": "https://github.com/honojs/honox.git",
+            "hasOpenApiSpec": false,
+            "description": "Meta-framework built on Hono"
+          },
+          {
+            "name": "flarekit",
+            "url": "https://github.com/mockkey/flarekit.git",
+            "hasOpenApiSpec": false,
+            "description": "SaaS starter kit using Hono"
+          }
+        ]
+      },
+      "koa": {
+        "category": "minimal",
+        "repos": [
+          {
+            "name": "strapi",
+            "url": "https://github.com/strapi/strapi.git",
+            "hasOpenApiSpec": false,
+            "description": "Headless CMS"
+          },
+          {
+            "name": "nocobase",
+            "url": "https://github.com/nocobase/nocobase.git",
+            "hasOpenApiSpec": false,
+            "description": "No-code/low-code platform"
+          }
+        ]
+      },
+      "nestjs": {
+        "category": "schema-enforced",
+        "repos": [
+          {
+            "name": "nestjs-openapi-example",
+            "url": "https://github.com/nestjs/nest.git",
+            "hasOpenApiSpec": true,
+            "specPath": "openapi.yaml",
+            "description": "NestJS with OpenAPI example"
+          },
+          {
+            "name": "vendure",
+            "url": "https://github.com/vendure-ecommerce/vendure.git",
+            "hasOpenApiSpec": false,
+            "description": "Headless commerce platform"
+          },
+          {
+            "name": "novu",
+            "url": "https://github.com/novuhq/novu.git",
+            "hasOpenApiSpec": true,
+            "specPath": "swagger-spec.json",
+            "description": "Notification infrastructure"
+          }
+        ]
+      },
+      "nextjs": {
+        "category": "minimal",
+        "repos": [
+          {
+            "name": "cal.com",
+            "url": "https://github.com/calcom/cal.com.git",
+            "hasOpenApiSpec": false,
+            "description": "Scheduling platform"
+          },
+          {
+            "name": "commerce",
+            "url": "https://github.com/vercel/commerce.git",
+            "hasOpenApiSpec": false,
+            "description": "E-commerce reference"
+          }
+        ]
+      }
+    },
+    "go": {
+      "gin-swag": {
+        "category": "semi-structured",
+        "repos": [
+          {
+            "name": "swag",
+            "url": "https://github.com/swaggo/swag.git",
+            "hasOpenApiSpec": true,
+            "specPath": "example/go-module-support/docs/swagger.json",
+            "description": "Swagger generator for Go"
+          }
+        ]
+      },
+      "net-http": {
+        "category": "minimal",
+        "repos": [
+          {
+            "name": "kubernetes",
+            "url": "https://github.com/kubernetes/kubernetes.git",
+            "hasOpenApiSpec": true,
+            "specPath": "api/openapi-spec/swagger.json",
+            "description": "Container orchestration"
+          }
+        ]
+      }
+    },
+    "java": {
+      "spring-springdoc": {
+        "category": "schema-enforced",
+        "repos": [
+          {
+            "name": "springdoc-openapi-demos",
+            "url": "https://github.com/springdoc/springdoc-openapi-demos.git",
+            "hasOpenApiSpec": false,
+            "description": "Spring Boot with springdoc demos (runtime generation)"
+          }
+        ]
+      }
+    },
+    "python": {
+      "fastapi": {
+        "category": "schema-enforced",
+        "repos": [
+          {
+            "name": "full-stack-fastapi-template",
+            "url": "https://github.com/tiangolo/full-stack-fastapi-template.git",
+            "hasOpenApiSpec": false,
+            "description": "FastAPI full-stack template (runtime generation)"
+          }
+        ]
+      }
+    },
+    "csharp": {
+      "aspnet-swashbuckle": {
+        "category": "schema-enforced",
+        "repos": [
+          {
+            "name": "AspNetCore.Docs.Samples",
+            "url": "https://github.com/dotnet/AspNetCore.Docs.Samples.git",
+            "hasOpenApiSpec": false,
+            "description": "ASP.NET Core samples with Swashbuckle"
+          }
+        ]
+      }
+    },
+    "ruby": {
+      "rails-rswag": {
+        "category": "semi-structured",
+        "repos": [
+          {
+            "name": "rswag",
+            "url": "https://github.com/rswag/rswag.git",
+            "hasOpenApiSpec": true,
+            "specPath": "test-app/openapi/v1/openapi.json",
+            "description": "Rails Swagger integration"
+          }
+        ]
+      }
+    },
+    "php": {
+      "laravel-l5swagger": {
+        "category": "semi-structured",
+        "repos": [
+          {
+            "name": "L5-Swagger",
+            "url": "https://github.com/DarkaOnLine/L5-Swagger.git",
+            "hasOpenApiSpec": false,
+            "description": "Laravel Swagger integration"
+          }
+        ]
+      }
+    },
+    "rust": {
+      "actix-utoipa": {
+        "category": "schema-enforced",
+        "repos": [
+          {
+            "name": "utoipa",
+            "url": "https://github.com/juhaku/utoipa.git",
+            "hasOpenApiSpec": false,
+            "description": "Actix OpenAPI generator"
+          }
+        ]
+      }
+    }
+  },
+  "testMatrix": {
+    "existingSpecDetection": [
+      "typescript/fastify/guide-fastify-example",
+      "typescript/nestjs/nestjs-openapi-example",
+      "go/net-http/kubernetes",
+      "go/gin-swag/swag",
+      "ruby/rails-rswag/rswag"
+    ],
+    "astExtraction": [
+      "typescript/fastify/guide-fastify-example",
+      "typescript/fastify/platformatic",
+      "typescript/nestjs/nestjs-openapi-example",
+      "typescript/hono/honox",
+      "typescript/express/NodeBB"
+    ],
+    "llmFallback": [
+      "java/spring-springdoc/springdoc-openapi-demos",
+      "python/fastapi/full-stack-fastapi-template",
+      "csharp/aspnet-swashbuckle/AspNetCore.Docs.Samples",
+      "php/laravel-l5swagger/L5-Swagger",
+      "rust/actix-utoipa/utoipa"
+    ]
+  }
+}

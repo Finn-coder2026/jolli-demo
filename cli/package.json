@@ -1,0 +1,33 @@
+{
+	"name": "jolli-cli",
+	"version": "0.0.1",
+	"type": "module",
+	"private": true,
+	"bin": {
+		"jolli": "./dist/bin/jolli"
+	},
+	"scripts": {
+		"build": "bun run build:cli && bun run build:reference-server",
+		"build:cli": "bun build --compile src/client/cli.ts --outfile dist/bin/jolli",
+		"build:reference-server": "bun build --compile src/reference-server/server.ts --outfile dist/bin/reference-server",
+		"lint": "cd .. && bunx @biomejs/biome check --error-on-warnings cli/",
+		"lint:fix": "cd .. && bunx @biomejs/biome check --fix cli/",
+		"test": "bunx --bun vitest run"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.3.11",
+		"@types/bun": "latest",
+		"vitest": "^4.0.16"
+	},
+	"peerDependencies": {
+		"typescript": "^5"
+	},
+	"dependencies": {
+		"commander": "^14.0.2",
+		"open": "^11.0.0",
+		"pino": "^10.1.1",
+		"pino-pretty": "^13.1.3",
+		"wyhash": "^1.0.0",
+		"zod": "^4.3.5"
+	}
+}

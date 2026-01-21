@@ -1,0 +1,59 @@
+{
+	"name": "jolli-openapi-generator",
+	"version": "1.0.0",
+	"description": "Generate OpenAPI specifications from source code using AST-based route extraction",
+	"main": "./src/index.ts",
+	"types": "./src/index.ts",
+	"type": "module",
+	"exports": {
+		".": "./src/index.ts",
+		"./cli": "./src/Cli.ts"
+	},
+	"bin": {
+		"generate-openapi": "./dist/Cli.js"
+	},
+	"scripts": {
+		"all": "npm run clean && npm run build && npm run lint && npm run test",
+		"build": "vite build",
+		"clean": "rimraf dist/",
+		"lint": "biome check --error-on-warnings",
+		"cli": "tsx src/Cli.ts",
+		"cli:build": "npm run build && node dist/Cli.js",
+		"test": "vitest run --coverage",
+		"test:watch": "vitest"
+	},
+	"keywords": [
+		"openapi",
+		"swagger",
+		"api",
+		"specification",
+		"generator",
+		"express",
+		"fastify",
+		"nestjs",
+		"documentation"
+	],
+	"author": "Jolli",
+	"license": "MIT",
+	"dependencies": {
+		"shared-pipeline-utils": "file:../shared-pipeline-utils",
+		"typescript": "^5.7.2"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "1.9.4",
+		"@types/node": "^20.0.0",
+		"@vitest/coverage-v8": "^2.1.8",
+		"rimraf": "^6.0.1",
+		"tsx": "^4.7.0",
+		"vite": "^6.0.0",
+		"vitest": "^2.1.8"
+	},
+	"files": [
+		"src",
+		"dist",
+		"README.md"
+	],
+	"engines": {
+		"node": ">=18.0.0"
+	}
+}

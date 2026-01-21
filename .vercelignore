@@ -1,0 +1,31 @@
+node_modules
+.git
+.github
+*.test.ts
+*.test.tsx
+**/*.test.ts
+**/*.test.tsx
+*.mock.ts
+**/*.mock.ts
+coverage
+.vscode
+.idea
+*.log
+.env.local
+.env.*.local
+backend/src/test
+frontend/src/test
+frontend/src/util/Vitest.tsx
+# Exclude test config files (vitest) but keep vite.config.ts for build
+**/vitest.config.ts
+cli
+# Include tools needed by backend (jolliagent, nextra-generator), exclude others
+tools/code2docusaurus
+tools/docs2docusaurus
+tools/docusaurus2vercel
+tools/vercel-sync
+manager
+provisioner
+README.md
+DEVELOPERS.md
+LOCALIZATION.md

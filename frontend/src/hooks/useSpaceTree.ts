@@ -1,0 +1,336 @@
+import { useClient } from "../contexts/ClientContext";
+import { getLog } from "../util/Logger";
+import type { Doc, DocDraftContentType, Space } from "jolli-common";
+import { useCallback, useEffect, useRef, useState } from "react";
+
+const log = getLog(import.meta);
+
+export interface TreeNode {
+	doc: Doc;
+	children: Array<TreeNode>;
+	expanded: boolean;
+}
+
+export interface SpaceTreeState {
+	space: Space | undefined;
+	treeData: Array<TreeNode>;
+	trashData: Array<Doc>;
+	loading: boolean;
+	hasTrash: boolean;
+	selectedDocId: number | undefined;
+	showTrash: boolean;
+}
+
+export interface SpaceTreeActions {
+	loadSpace: () => Promise<Space | undefined>;
+	loadTree: () => Promise<void>;
+	loadTrash: () => Promise<void>;
+	toggleExpanded: (docId: number) => void;
+	selectDoc: (docId: number | undefined) => void;
+	setShowTrash: (show: boolean) => void;
+	createFolder: (parentId: number | undefined, name: string) => Promise<Doc | undefined>;
+	createDoc: (
+		parentId: number | undefined,
+		name: string,
+		contentType?: DocDraftContentType,
+	) => Promise<Doc | undefined>;
+	softDelete: (docId: number) => Promise<void>;
+	restore: (docId: number) => Promise<void>;
+	refreshTree: () => Promise<void>;
+	rename: (docId: number, newName: string) => Promise<Doc | undefined>;
+}
+
+function extractFolderIds(docs: Array<Doc>): Set<number> {
+	const folderIds = new Set<number>();
+	for (const doc of docs) {
+		if (doc.docType === "folder") {
+			folderIds.add(doc.id);
+		}
+	}
+	return folderIds;
+}
+
+function buildTree(docs: Array<Doc>, expandedIds: Set<number>): Array<TreeNode> {
+	// Group docs by parentId
+	const childrenMap = new Map<number | undefined, Array<Doc>>();
+
+	for (const doc of docs) {
+		const parentKey = doc.parentId ?? undefined;
+		const children = childrenMap.get(parentKey) ?? [];
+		children.push(doc);
+		childrenMap.set(parentKey, children);
+	}
+
+	// Sort children by sortOrder
+	for (const children of childrenMap.values()) {
+		children.sort((a, b) => a.sortOrder - b.sortOrder);
+	}
+
+	// Recursively build tree nodes
+	function buildNodes(parentId: number | undefined): Array<TreeNode> {
+		const children = childrenMap.get(parentId) ?? [];
+		return children.map(doc => ({
+			doc,
+			children: buildNodes(doc.id),
+			expanded: expandedIds.has(doc.id),
+		}));
+	}
+
+	return buildNodes(undefined);
+}
+
+export function useSpaceTree(): [SpaceTreeState, SpaceTreeActions] {
+	const client = useClient();
+	const [space, setSpace] = useState<Space | undefined>(undefined);
+	const [treeData, setTreeData] = useState<Array<TreeNode>>([]);
+	const [trashData, setTrashData] = useState<Array<Doc>>([]);
+	const [loading, setLoading] = useState(true);
+	const [hasTrash, setHasTrash] = useState(false);
+	const [selectedDocId, setSelectedDocId] = useState<number | undefined>(undefined);
+	const [showTrash, setShowTrash] = useState(false);
+	const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
+	const isFirstLoad = useRef(true);
+
+	const loadSpace = useCallback(async () => {
+		try {
+			const defaultSpace = await client.spaces().getDefaultSpace();
+			setSpace(defaultSpace);
+			return defaultSpace;
+		} catch (error) {
+			log.error(error, "Failed to load default space.");
+			return;
+		}
+	}, [client]);
+
+	const loadTree = useCallback(async () => {
+		if (!space) {
+			return;
+		}
+		try {
+			setLoading(true);
+			const docs = await client.spaces().getTreeContent(space.id);
+
+			// On first load, expand all folders by default
+			if (isFirstLoad.current) {
+				const folderIds = extractFolderIds(docs);
+				setExpandedIds(folderIds);
+				setTreeData(buildTree(docs, folderIds));
+				isFirstLoad.current = false;
+			} else {
+				setTreeData(buildTree(docs, expandedIds));
+			}
+		} catch (error) {
+			log.error(error, "Failed to load tree content.");
+		} finally {
+			setLoading(false);
+		}
+	}, [client, space, expandedIds]);
+
+	const loadTrash = useCallback(async () => {
+		if (!space) {
+			return;
+		}
+		try {
+			const docs = await client.spaces().getTrashContent(space.id);
+			setTrashData(docs);
+		} catch (error) {
+			log.error(error, "Failed to load trash content.");
+		}
+	}, [client, space]);
+
+	const checkHasTrash = useCallback(async () => {
+		if (!space) {
+			return;
+		}
+		try {
+			const result = await client.spaces().hasTrash(space.id);
+			setHasTrash(result);
+		} catch (error) {
+			log.error(error, "Failed to check trash status.");
+		}
+	}, [client, space]);
+
+	const toggleExpanded = useCallback((docId: number) => {
+		setExpandedIds(prev => {
+			const newSet = new Set(prev);
+			if (newSet.has(docId)) {
+				newSet.delete(docId);
+			} else {
+				newSet.add(docId);
+			}
+			return newSet;
+		});
+	}, []);
+
+	const selectDoc = useCallback((docId: number | undefined) => {
+		setSelectedDocId(docId);
+	}, []);
+
+	const createFolder = useCallback(
+		async (parentId: number | undefined, name: string): Promise<Doc | undefined> => {
+			if (!space) {
+				return;
+			}
+			try {
+				// slug, jrn, path are auto-generated by backend
+				const doc = await client.docs().createDoc({
+					updatedBy: "user",
+					source: undefined,
+					sourceMetadata: undefined,
+					content: "",
+					contentType: "folder",
+					contentMetadata: { title: name },
+					spaceId: space.id,
+					parentId,
+					docType: "folder",
+					sortOrder: 0,
+					createdBy: undefined,
+				});
+				await loadTree();
+				return doc;
+			} catch (error) {
+				log.error(error, "Failed to create folder.");
+				return;
+			}
+		},
+		[client, space, loadTree],
+	);
+
+	const createDoc = useCallback(
+		async (
+			parentId: number | undefined,
+			name: string,
+			contentType: DocDraftContentType = "text/markdown",
+		): Promise<Doc | undefined> => {
+			if (!space) {
+				return;
+			}
+			try {
+				const isOpenApi = contentType.startsWith("application/");
+				// slug, jrn, path are auto-generated by backend
+				const doc = await client.docs().createDoc({
+					updatedBy: "user",
+					source: undefined,
+					sourceMetadata: undefined,
+					content: isOpenApi ? "" : `# ${name}\n\n`,
+					contentType,
+					contentMetadata: { title: name },
+					spaceId: space.id,
+					parentId,
+					docType: "document",
+					sortOrder: 0,
+					createdBy: undefined,
+				});
+				await loadTree();
+				return doc;
+			} catch (error) {
+				log.error(error, "Failed to create document.");
+				return;
+			}
+		},
+		[client, space, loadTree],
+	);
+
+	const softDelete = useCallback(
+		async (docId: number) => {
+			try {
+				await client.docs().softDelete(docId);
+				await loadTree();
+				await checkHasTrash();
+			} catch (error) {
+				log.error(error, "Failed to soft delete document.");
+			}
+		},
+		[client, loadTree, checkHasTrash],
+	);
+
+	const restore = useCallback(
+		async (docId: number) => {
+			try {
+				await client.docs().restore(docId);
+				await loadTree();
+				await loadTrash();
+				await checkHasTrash();
+			} catch (error) {
+				log.error(error, "Failed to restore document.");
+			}
+		},
+		[client, loadTree, loadTrash, checkHasTrash],
+	);
+
+	const rename = useCallback(
+		async (docId: number, newName: string): Promise<Doc | undefined> => {
+			try {
+				// Use dedicated rename API endpoint (only sends title, not the whole document)
+				const updatedDoc = await client.docs().renameDoc(docId, newName);
+				await loadTree();
+				return updatedDoc;
+			} catch (error) {
+				log.error(error, "Failed to rename document.");
+				return;
+			}
+		},
+		[client, loadTree],
+	);
+
+	const refreshTree = useCallback(async () => {
+		await loadTree();
+		await checkHasTrash();
+	}, [loadTree, checkHasTrash]);
+
+	// Load space on mount
+	useEffect(() => {
+		loadSpace().then();
+	}, [loadSpace]);
+
+	// Load tree when space is available
+	useEffect(() => {
+		if (space) {
+			loadTree().then();
+			checkHasTrash().then();
+		}
+	}, [space]);
+
+	// Update tree when expandedIds changes (but not on first load)
+	useEffect(() => {
+		if (space && !isFirstLoad.current) {
+			// Re-build tree with new expanded state
+			client
+				.spaces()
+				.getTreeContent(space.id)
+				.then(docs => {
+					setTreeData(buildTree(docs, expandedIds));
+				})
+				.catch(error => {
+					log.error(error, "Failed to rebuild tree.");
+				});
+		}
+	}, [expandedIds, space, client]);
+
+	const state: SpaceTreeState = {
+		space,
+		treeData,
+		trashData,
+		loading,
+		hasTrash,
+		selectedDocId,
+		showTrash,
+	};
+
+	const actions: SpaceTreeActions = {
+		loadSpace,
+		loadTree,
+		loadTrash,
+		toggleExpanded,
+		selectDoc,
+		setShowTrash,
+		createFolder,
+		createDoc,
+		softDelete,
+		restore,
+		refreshTree,
+		rename,
+	};
+
+	return [state, actions];
+}

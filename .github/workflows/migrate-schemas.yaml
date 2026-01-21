@@ -1,0 +1,108 @@
+name: Schema Migrations
+
+on:
+    workflow_dispatch:
+        inputs:
+            environment:
+                description: 'Environment to migrate'
+                required: true
+                type: choice
+                options:
+                    - dev
+                    - preview
+                    - prod
+            branch:
+                description: 'Branch being migrated (for display)'
+                required: false
+                type: string
+            sha:
+                description: 'Commit SHA to migrate'
+                required: false
+                type: string
+            skip_migrations:
+                description: 'Skip migrations (mark as success without running)'
+                required: false
+                type: boolean
+                default: false
+
+jobs:
+    migrate:
+        runs-on: ubuntu-24.04
+        permissions:
+            contents: read
+            id-token: write  # Required for OIDC authentication with AWS
+            actions: write  # Required to trigger deploy workflows
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+              with:
+                  lfs: true
+                  ref: ${{ inputs.sha || github.sha }}
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v5
+              with:
+                  node-version-file: .nvmrc
+
+            - name: Display migration info
+              id: env
+              run: |
+                  echo "environment=${{ inputs.environment }}" >> $GITHUB_OUTPUT
+                  echo "::notice::Migrating branch: ${{ inputs.branch || 'manual' }}"
+                  echo "::notice::Environment: ${{ inputs.environment }}"
+                  echo "::notice::Commit: ${{ inputs.sha || github.sha }}"
+
+            - name: Configure AWS credentials
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  aws-region: us-west-2
+                  role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Check for schema changes (dry-run)
+              id: schema-check
+              env:
+                  LOG_TRANSPORTS: console
+                  PSTORE_ENV: ${{ steps.env.outputs.environment }}
+                  SKIP_SCHEMA_MIGRATIONS: ${{ inputs.skip_migrations == true && 'true' || 'false' }}
+              run: |
+                  # Run dry-run to check for schema changes
+                  # Exit codes: 0 = no changes, 1 = error, 10 = changes detected
+                  set +e  # Don't exit on non-zero
+                  npm --prefix backend run migrate:all-tenants:dry-run
+                  EXIT_CODE=$?
+                  set -e
+
+                  if [ $EXIT_CODE -eq 0 ]; then
+                    echo "No schema changes detected"
+                    echo "has_changes=false" >> $GITHUB_OUTPUT
+                  elif [ $EXIT_CODE -eq 10 ]; then
+                    echo "Schema changes detected - migration required"
+                    echo "has_changes=true" >> $GITHUB_OUTPUT
+                  else
+                    echo "Dry-run failed with exit code $EXIT_CODE"
+                    exit 1
+                  fi
+
+            - name: Run schema migrations
+              if: steps.schema-check.outputs.has_changes == 'true'
+              env:
+                  LOG_TRANSPORTS: console
+                  PSTORE_ENV: ${{ steps.env.outputs.environment }}
+              run: npm --prefix backend run migrate:all-tenants
+
+            - name: Trigger deploy workflows
+              if: success()
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  BRANCH="${{ inputs.branch || github.ref_name }}"
+                  SHA="${{ inputs.sha || github.sha }}"
+                  ENV="${{ inputs.environment }}"
+
+                  echo "Triggering deploy workflows for branch=$BRANCH, sha=$SHA, environment=$ENV"
+
+                  gh workflow run deploy-worker.yaml --ref "$BRANCH" -f environment="$ENV" -f branch="$BRANCH" -f sha="$SHA"
+                  gh workflow run deploy-vercel.yaml --ref "$BRANCH" -f environment="$ENV" -f branch="$BRANCH" -f sha="$SHA"

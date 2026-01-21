@@ -1,0 +1,55 @@
+# Getting Started
+
+Welcome to the documentation! This guide will help you get up and running quickly.
+
+## Prerequisites
+
+Before you begin, make sure you have the following installed:
+
+- **Node.js** 18 or higher
+- **npm** or **yarn** package manager
+
+## Installation
+
+Install the package using npm:
+
+```bash
+npm install my-package
+```
+
+Or using yarn:
+
+```bash
+yarn add my-package
+```
+
+## Quick Start
+
+Here's a minimal example to get you started:
+
+```typescript
+import { MyPackage } from 'my-package';
+
+const instance = new MyPackage({
+  apiKey: 'your-api-key',
+});
+
+const result = await instance.doSomething();
+console.log(result);
+```
+
+## Configuration
+
+You can configure the package with the following options:
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `apiKey` | `string` | - | Your API key (required) |
+| `timeout` | `number` | `30000` | Request timeout in milliseconds |
+| `retries` | `number` | `3` | Number of retry attempts |
+
+## Next Steps
+
+- Read the [API Reference](/api-reference) for detailed documentation
+- Check out the [Examples](/examples) for more use cases
+- Join our [Community](/community) for support

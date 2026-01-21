@@ -1,0 +1,53 @@
+{
+	"name": "code2openapi",
+	"version": "1.0.0",
+	"description": "CLI tool to scan code and extract OpenAPI specification from API routes",
+	"main": "dist/index.js",
+	"type": "module",
+	"bin": {
+		"code2openapi": "./dist/index.js"
+	},
+	"scripts": {
+		"all": "npm run clean && npm run build && npm run lint && npm run test && npm run package",
+		"clean": "rimraf dist/",
+		"dev": "tsx src/index.ts",
+		"build": "npx tsgo",
+		"package": "vite build",
+		"start": "node dist/index.js",
+		"lint": "biome check --error-on-warnings",
+		"lint:fix": "biome check --write",
+		"test": "vitest run --coverage",
+		"test:watch": "vitest",
+		"test:coverage": "vitest run --coverage"
+	},
+	"keywords": [
+		"api",
+		"openapi",
+		"code-analysis",
+		"cli",
+		"swagger"
+	],
+	"author": "",
+	"license": "MIT",
+	"dependencies": {
+		"@babel/parser": "^7.23.0",
+		"@babel/traverse": "^7.23.0",
+		"@babel/types": "^7.23.0",
+		"commander": "^11.1.0",
+		"glob": "^10.3.0",
+		"openapi": "^1.0.0",
+		"openapi-types": "^12.1.3",
+		"yaml": "^2.3.4"
+	},
+	"devDependencies": {
+		"@types/babel__traverse": "^7.20.0",
+		"@types/node": "^20.10.0",
+		"@vitest/coverage-v8": "^2.0.0",
+		"tsx": "^4.7.0",
+		"typescript": "^5.3.0",
+		"vitest": "^2.0.0"
+	},
+	"engines": {
+		"node": ">=18.0.0"
+	}
+}

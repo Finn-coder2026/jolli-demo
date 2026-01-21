@@ -1,0 +1,51 @@
+# Docker Compose for local Mercure Hub development
+#
+# Usage:
+#   docker-compose -f docker-compose.mercure.yml up -d
+#
+# Mercure Hub will be available at:
+#   http://localhost:3001/.well-known/mercure
+#
+# To stop:
+#   docker-compose -f docker-compose.mercure.yml down
+#
+
+services:
+  mercure:
+    image: dunglas/mercure:v0.16
+    container_name: jolli-mercure
+    environment:
+      # Server configuration
+      SERVER_NAME: ":3001"
+
+      # JWT secrets for publisher and subscriber authentication
+      # Use the same values in your .env file
+      MERCURE_PUBLISHER_JWT_KEY: "${MERCURE_PUBLISHER_JWT_SECRET:-jolli-mercure-publisher-secret-change-in-production}"
+      MERCURE_SUBSCRIBER_JWT_KEY: "${MERCURE_SUBSCRIBER_JWT_SECRET:-jolli-mercure-subscriber-secret-change-in-production}"
+
+      # CORS configuration - allow all origins in development
+      # In production, set this to your actual domain(s)
+      MERCURE_EXTRA_DIRECTIVES: |
+        cors_origins *
+        anonymous
+
+      # Enable debug mode for development (shows hub info)
+      MERCURE_DEBUG: "1"
+
+    ports:
+      - "3001:3001"
+
+    # Health check to verify Mercure is running
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3001/.well-known/mercure?topic=health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+    networks:
+      - jolli-network
+
+networks:
+  jolli-network:
+    driver: bridge

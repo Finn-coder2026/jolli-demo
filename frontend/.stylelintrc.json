@@ -1,0 +1,29 @@
+{
+	"extends": ["stylelint-config-recommended", "stylelint-config-css-modules"],
+	"plugins": ["stylelint-order"],
+	"rules": {
+		"color-named": "never",
+		"order/properties-alphabetical-order": true,
+		"at-rule-no-unknown": [
+			true,
+			{
+				"ignoreAtRules": ["theme"]
+			}
+		],
+		"selector-class-pattern": ["^[a-zA-Z0-9-]+$", {}],
+		"selector-id-pattern": ["^[a-zA-Z0-9-]+$", {}]
+	},
+	"overrides": [
+		{
+			"files": ["**/*.module.css"],
+			"rules": {
+				"selector-max-type": [
+					0,
+					{
+						"ignore": ["child", "descendant"]
+					}
+				]
+			}
+		}
+	]
+}

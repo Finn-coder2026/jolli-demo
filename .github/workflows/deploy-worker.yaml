@@ -1,0 +1,109 @@
+name: Deploy Worker
+
+on:
+    workflow_dispatch:
+        inputs:
+            environment:
+                description: 'Environment to deploy to'
+                required: true
+                type: choice
+                options:
+                    - dev
+                    - preview
+                    - prod
+            branch:
+                description: 'Branch being deployed (for display)'
+                required: false
+                type: string
+            sha:
+                description: 'Commit SHA to deploy'
+                required: false
+                type: string
+
+env:
+    AWS_REGION: us-west-2
+    ECR_REPOSITORY: jolli-worker
+
+jobs:
+    deploy:
+        permissions:
+            contents: read
+            id-token: write
+        runs-on: ubuntu-24.04
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+              with:
+                  lfs: true
+                  ref: ${{ inputs.sha || github.sha }}
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v5
+              with:
+                  node-version-file: .nvmrc
+
+            - name: Display deployment info
+              id: env
+              run: |
+                  echo "environment=${{ inputs.environment }}" >> $GITHUB_OUTPUT
+                  echo "::notice::Deploying branch: ${{ inputs.branch || 'manual' }}"
+                  echo "::notice::Environment: ${{ inputs.environment }}"
+                  echo "::notice::Commit: ${{ inputs.sha || github.sha }}"
+
+            - name: Configure AWS credentials
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  aws-region: ${{ env.AWS_REGION }}
+                  role-session-name: jolli-worker-deploy
+                  role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+
+            - name: Login to Amazon ECR
+              id: login-ecr
+              uses: aws-actions/amazon-ecr-login@v2
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Build worker bundle
+              run: npm run worker:build --workspace=jolli-backend
+
+            - name: Build and push Docker image
+              env:
+                  ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+                  IMAGE_TAG: ${{ inputs.sha || github.sha }}
+                  ENVIRONMENT: ${{ steps.env.outputs.environment }}
+              run: |
+                  # Build the Docker image
+                  docker build \
+                    -f backend/Dockerfile.worker \
+                    -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+                    -t $ECR_REGISTRY/$ECR_REPOSITORY:$ENVIRONMENT \
+                    -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
+                    .
+
+                  # Push all tags
+                  docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+                  docker push $ECR_REGISTRY/$ECR_REPOSITORY:$ENVIRONMENT
+                  docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+            - name: Deploy to ECS
+              env:
+                  ENVIRONMENT: ${{ steps.env.outputs.environment }}
+              run: |
+                  # Force new deployment of the ECS service
+                  aws ecs update-service \
+                    --cluster jolli-workers-$ENVIRONMENT \
+                    --service jolli-worker-$ENVIRONMENT \
+                    --force-new-deployment \
+                    --region $AWS_REGION
+
+            - name: Wait for deployment
+              env:
+                  ENVIRONMENT: ${{ steps.env.outputs.environment }}
+              run: |
+                  echo "Waiting for ECS service to stabilize..."
+                  aws ecs wait services-stable \
+                    --cluster jolli-workers-$ENVIRONMENT \
+                    --services jolli-worker-$ENVIRONMENT \
+                    --region $AWS_REGION
+                  echo "Deployment complete!"

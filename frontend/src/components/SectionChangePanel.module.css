@@ -1,0 +1,82 @@
+/* Section Change Panel Styles */
+
+.panel {
+	background: hsl(var(--color-card));
+	border-left: 1px solid hsl(var(--border));
+	box-shadow: -4px 0 16px rgba(0, 0, 0, 0.1);
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+}
+
+.header {
+	align-items: center;
+	border-bottom: 1px solid hsl(var(--border));
+	display: flex;
+	justify-content: space-between;
+	padding: 1rem;
+}
+
+.iconContainer {
+	align-items: center;
+	display: flex;
+	gap: 0.5rem;
+}
+
+.icon {
+	font-size: 1.25rem;
+	line-height: 1;
+}
+
+.title {
+	color: hsl(var(--foreground));
+	font-size: 0.875rem;
+	font-weight: 600;
+}
+
+.closeButton {
+	align-items: center;
+	background: transparent;
+	border: none;
+	border-radius: 0.25rem;
+	color: hsl(var(--muted-foreground));
+	cursor: pointer;
+	display: flex;
+	font-size: 1.5rem;
+	height: 2rem;
+	justify-content: center;
+	line-height: 1;
+	transition: all 0.2s;
+	width: 2rem;
+}
+
+.closeButton:hover {
+	background: hsl(var(--accent));
+	color: hsl(var(--foreground));
+}
+
+.content {
+	flex: 1;
+	overflow-y: auto;
+	padding: 1rem;
+}
+
+.description {
+	color: hsl(var(--foreground));
+	font-size: 0.875rem;
+	line-height: 1.5;
+	margin: 0;
+}
+
+.footer {
+	border-top: 1px solid hsl(var(--border));
+	display: flex;
+	justify-content: flex-end;
+	margin-top: 1rem;
+	padding: 1rem;
+	padding-top: 0.5rem;
+}
+
+.tabsList {
+	margin-bottom: 1rem;
+}

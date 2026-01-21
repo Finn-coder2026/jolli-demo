@@ -1,0 +1,209 @@
+/* NumberEdit - Line Number Editor Styles */
+
+.wrapper {
+	--line-height: 20px;
+	--font-size: 14px;
+	--font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+	/* Theme colors using shadcn/tailwind CSS variables */
+	--bg-color: var(--color-background);
+	--gutter-bg: hsl(0 0% 92%);
+	--gutter-border: var(--color-border);
+	--text-color: var(--color-foreground);
+	--line-number-color: var(--color-muted-foreground);
+	--highlight-bg: rgba(255, 215, 0, 0.15);
+	--highlight-gutter-bg: rgba(255, 215, 0, 0.25);
+	--highlight-border: hsl(45 93% 47%);
+	--selection-bg: var(--color-accent);
+	--scrollbar-bg: var(--color-muted);
+	--scrollbar-thumb: var(--color-border);
+	--scrollbar-thumb-hover: var(--color-muted-foreground);
+
+	background: var(--bg-color);
+	border: 1px solid var(--gutter-border);
+	border-radius: calc(var(--radius) - 2px);
+	display: flex;
+	font-family: var(--font-family);
+	font-size: var(--font-size);
+	height: 100%;
+	line-height: var(--line-height);
+	min-height: 200px;
+	overflow: hidden;
+	position: relative;
+	width: 100%;
+}
+
+/* Gutter (line numbers) */
+.gutter {
+	background: var(--gutter-bg);
+	border-right: 1px solid var(--gutter-border);
+	flex-shrink: 0;
+	overflow: hidden;
+	padding-top: 8px;
+	text-align: right;
+	user-select: none;
+	width: 40px;
+}
+
+.lineNumber {
+	box-sizing: border-box;
+	color: var(--line-number-color);
+	cursor: pointer;
+	font-family: var(--font-family);
+	font-size: var(--font-size);
+	height: var(--line-height);
+	line-height: var(--line-height);
+	padding-left: 8px;
+	padding-right: 12px;
+	transition: background-color 0.15s ease;
+}
+
+.lineNumber:hover {
+	background: var(--gutter-border);
+}
+
+.lineNumber.highlighted {
+	background: var(--highlight-gutter-bg);
+	border-right: 2px solid var(--highlight-border);
+	color: var(--text-color);
+	padding-right: 10px;
+}
+
+/* Editor container */
+.editorContainer {
+	background: var(--bg-color);
+	flex: 1;
+	overflow: auto;
+	position: relative; /* Required for absolute positioning of ghost text */
+	scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-bg);
+	scrollbar-width: thin;
+}
+
+/* Custom scrollbars */
+.editorContainer::-webkit-scrollbar {
+	height: 10px;
+	width: 10px;
+}
+
+.editorContainer::-webkit-scrollbar-track {
+	background: var(--scrollbar-bg);
+}
+
+.editorContainer::-webkit-scrollbar-thumb {
+	background: var(--scrollbar-thumb);
+	border: 2px solid var(--scrollbar-bg);
+	border-radius: 5px;
+}
+
+.editorContainer::-webkit-scrollbar-thumb:hover {
+	background: var(--scrollbar-thumb-hover);
+}
+
+.editorContainer::-webkit-scrollbar-corner {
+	background: var(--scrollbar-bg);
+}
+
+/* Editor */
+.editor {
+	background: var(--bg-color);
+	box-sizing: border-box;
+	color: var(--text-color);
+	font-family: var(--font-family);
+	font-size: var(--font-size);
+	line-height: var(--line-height);
+	min-height: 100%;
+	min-width: 100%;
+	outline: none;
+	overflow-wrap: normal;
+	padding: 8px 12px;
+	white-space: pre;
+}
+
+/* Focus styling - must come before more specific selectors for proper cascade */
+.editor:focus {
+	outline: none;
+}
+
+.editor::selection {
+	background: var(--selection-bg);
+}
+
+/* Only enable plain text editing when NOT read-only (otherwise user-modify overrides contentEditable=false) */
+.wrapper:not(.readOnly) .editor {
+	/* stylelint-disable-next-line property-no-deprecated -- Required for Safari/WebKit plain text editing */
+	-webkit-user-modify: read-write-plaintext-only;
+}
+
+/* Prevent text resize on mobile */
+.wrapper * {
+	-webkit-text-size-adjust: 100%;
+	text-size-adjust: 100%;
+}
+
+.wrapper:focus-within {
+	border-color: hsl(var(--ring));
+	box-shadow: 0 0 0 1px hsl(var(--ring));
+}
+
+/* Dark mode - use a darker gutter */
+.wrapper.dark {
+	--gutter-bg: hsl(0 0% 8%);
+}
+
+/* Error line decoration - red wavy underline for orphaned entries in _meta.ts */
+.lineNumber.errorLine {
+	background: rgba(239, 68, 68, 0.15);
+	border-right: 2px solid rgb(239, 68, 68);
+	color: rgb(239, 68, 68);
+	padding-right: 10px;
+}
+
+.lineNumber.errorLine:hover {
+	background: rgba(239, 68, 68, 0.25);
+}
+
+/* Warning line decoration - blue wavy underline for missing files */
+.lineNumber.warningLine {
+	background: rgba(59, 130, 246, 0.15);
+	border-right: 2px solid rgb(59, 130, 246);
+	color: rgb(59, 130, 246);
+	padding-right: 10px;
+}
+
+.lineNumber.warningLine:hover {
+	background: rgba(59, 130, 246, 0.25);
+}
+
+/* Read-only mode styling - visually indicates non-editable state */
+.wrapper.readOnly {
+	--bg-color: var(--color-muted);
+}
+
+.wrapper.readOnly .editor {
+	cursor: default;
+}
+
+/* Don't show focus ring for read-only editors */
+.wrapper.readOnly:focus-within {
+	border-color: var(--gutter-border);
+	box-shadow: none;
+}
+
+/* Ghost text for autocomplete suggestions */
+.ghostText {
+	color: var(--color-muted-foreground);
+	font-family: var(--font-family);
+	font-size: var(--font-size);
+	line-height: var(--line-height);
+	opacity: 0.5;
+	pointer-events: none;
+	position: absolute;
+	user-select: none;
+	white-space: pre;
+	z-index: 1;
+}
+
+/* Darker ghost text in dark mode for better visibility */
+.wrapper.dark .ghostText {
+	opacity: 0.4;
+}

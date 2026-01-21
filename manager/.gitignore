@@ -1,0 +1,20 @@
+# Next.js build output
+.next/
+out/
+
+# Dependencies (handled by root node_modules)
+node_modules/
+
+# Environment files with secrets
+.env.local
+.env*.local
+
+# Debug logs
+npm-debug.log*
+
+# Vercel
+.vercel
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts

@@ -1,0 +1,55 @@
+{
+	"configurations": [
+		{
+			"type": "node",
+			"request": "launch",
+			"name": "Jolli frontend",
+			"skipFiles": ["<node_internals>/**"],
+			"cwd": "${workspaceFolder}/frontend",
+			"runtimeExecutable": "npm",
+			"runtimeArgs": ["start"]
+		},
+		{
+			"type": "node",
+			"request": "launch",
+			"name": "Jolli backend",
+			"skipFiles": ["<node_internals>/**"],
+			"cwd": "${workspaceFolder}/backend",
+			"runtimeExecutable": "npm",
+			"runtimeArgs": ["start"],
+			"console": "integratedTerminal"
+		},
+		{
+			"name": "VSCode Extension",
+			"type": "extensionHost",
+			"request": "launch",
+			"args": ["--extensionDevelopmentPath=${workspaceFolder}/extensions/vscode"],
+			"outFiles": ["${workspaceFolder}/extensions/vscode/out/**/*.js"],
+			"preLaunchTask": "npm: compile - extensions/vscode"
+		},
+		{
+			"type": "node",
+			"request": "launch",
+			"name": "Debug Current Test File",
+			"autoAttachChildProcesses": true,
+			"skipFiles": ["<node_internals>/**"],
+			"runtimeExecutable": "npm",
+			"runtimeArgs": ["exec", "--", "vitest", "run", "${file}"],
+			"cwd": "${fileDirname}",
+			"smartStep": true,
+			"console": "integratedTerminal"
+		}
+	],
+	"compounds": [
+		{
+			"name": "Jolli",
+			"configurations": ["Jolli frontend", "Jolli backend"],
+			"stopAll": true,
+			"presentation": {
+				"hidden": false,
+				"group": "",
+				"order": 1
+			}
+		}
+	]
+}

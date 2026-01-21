@@ -1,0 +1,29 @@
+{
+	"name": "jolli-docs-auto-updater",
+	"version": "1.0.0",
+	"type": "module",
+	"description": "LLM-powered automatic documentation updater",
+	"bin": {
+		"jolli-docs-auto-updater": "./dist/Cli.js"
+	},
+	"exports": {
+		".": "./dist/index.js"
+	},
+	"scripts": {
+		"build": "vite build",
+		"test": "vitest run --coverage",
+		"test:watch": "vitest"
+	},
+	"dependencies": {
+		"@anthropic-ai/sdk": "^0.32.1",
+		"dotenv": "^16.4.7",
+		"gray-matter": "^4.0.3"
+	},
+	"devDependencies": {
+		"@types/node": "^22.10.2",
+		"@vitest/coverage-v8": "^3.0.6",
+		"typescript": "^5.7.2",
+		"vite": "^7.1.9",
+		"vitest": "^3.0.6"
+	}
+}

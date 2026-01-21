@@ -1,0 +1,17 @@
+{
+	"editor.codeActionsOnSave": {
+		"source.fixAll.biome": "explicit",
+		"source.fixAll.stylelint": "explicit",
+		"source.organizeImports.biome": "explicit"
+	},
+	"editor.defaultFormatter": "biomejs.biome",
+	"editor.formatOnSave": true,
+	"editor.insertSpaces": false,
+	"editor.rulers": [120],
+	"explorer.fileNesting.enabled": true,
+	"explorer.fileNesting.patterns": {
+		"*.ts": "${capture}.js, ${capture}.mock.ts, ${capture}.test.json, ${capture}.test.ts, ${capture}.test.ts.snap,",
+		"*.tsx": "${capture}.ts, ${capture}.module.css, ${capture}.mock.ts, ${capture}.mock.tsx, ${capture}.test.tsx, ${capture}.test.tsx.snap"
+	},
+	"typescript.experimental.useTsgo": true
+}

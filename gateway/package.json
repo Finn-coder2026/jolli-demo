@@ -1,0 +1,10 @@
+{
+	"name": "jolli-gateway",
+	"private": true,
+	"scripts": {
+		"gateway:start": "bash gateway.sh start",
+		"gateway:stop": "bash gateway.sh stop",
+		"gateway:reload": "bash gateway.sh reload",
+		"gateway:test": "bash gateway.sh test"
+	}
+}
