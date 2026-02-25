@@ -193,3 +193,4 @@ Both `backend` and `frontend` maintain **100% test coverage** (with minor branch
 ## License
 
 Proprietary - All rights reserved.
+
