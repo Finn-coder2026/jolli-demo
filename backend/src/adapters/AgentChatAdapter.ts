@@ -31,6 +31,102 @@ function isToolCollabMessage(message: CollabMessage | Message): message is ToolC
 	return role === "tool";
 }
 
+function isAssistantToolUseMessage(message: Message): message is Extract<Message, { role: "assistant_tool_use" }> {
+	return message.role === "assistant_tool_use";
+}
+
+function isAssistantToolUsesMessage(message: Message): message is Extract<Message, { role: "assistant_tool_uses" }> {
+	return message.role === "assistant_tool_uses";
+}
+
+function isToolMessage(message: Message): message is Extract<Message, { role: "tool" }> {
+	return message.role === "tool";
+}
+
+/**
+ * Anthropic requires tool_result blocks to immediately follow the assistant
+ * tool_use turn they belong to. This sanitizer drops malformed/orphan tool
+ * history so provider calls do not fail on strict adjacency validation.
+ */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Multi-role message adjacency validation requires nested branching.
+function sanitizeToolMessageSequence(messages: Array<Message>): Array<Message> {
+	const sanitized: Array<Message> = [];
+
+	for (let i = 0; i < messages.length; i++) {
+		const message = messages[i];
+		if (!message) {
+			continue;
+		}
+
+		if (isAssistantToolUseMessage(message) || isAssistantToolUsesMessage(message)) {
+			const expectedToolIds = new Set<string>();
+			if (isAssistantToolUseMessage(message) && message.tool_call_id) {
+				expectedToolIds.add(message.tool_call_id);
+			}
+			if (isAssistantToolUsesMessage(message)) {
+				for (const call of message.calls) {
+					if (call?.tool_call_id) {
+						expectedToolIds.add(call.tool_call_id);
+					}
+				}
+			}
+
+			let j = i + 1;
+			const matchedTools: Array<Extract<Message, { role: "tool" }>> = [];
+			for (; j < messages.length; j++) {
+				const next = messages[j];
+				if (!next || !isToolMessage(next)) {
+					break;
+				}
+				if (expectedToolIds.has(next.tool_call_id)) {
+					matchedTools.push(next);
+				}
+			}
+
+			if (matchedTools.length === 0) {
+				log.warn(
+					"Dropping malformed assistant tool-use message at index %d (no matching immediate tool results)",
+					i,
+				);
+				i = j - 1;
+				continue;
+			}
+
+			if (isAssistantToolUseMessage(message)) {
+				sanitized.push(message);
+			} else {
+				const matchedIdSet = new Set(matchedTools.map(t => t.tool_call_id));
+				const filteredCalls = message.calls.filter(call => matchedIdSet.has(call.tool_call_id));
+				if (filteredCalls.length === 0) {
+					log.warn("Dropping malformed assistant_tool_uses at index %d (no matching tool IDs)", i);
+					i = j - 1;
+					continue;
+				}
+				sanitized.push({
+					role: "assistant_tool_uses",
+					calls: filteredCalls,
+				});
+			}
+
+			for (const tool of matchedTools) {
+				sanitized.push(tool);
+			}
+			i = j - 1;
+			continue;
+		}
+
+		if (isToolMessage(message)) {
+			// Orphan tool result without a preceding assistant tool_use turn.
+			log.warn("Dropping orphan tool result at index %d (tool_call_id=%s)", i, message.tool_call_id);
+			continue;
+		}
+
+		sanitized.push(message);
+	}
+
+	return sanitized;
+}
+
 /**
  * Adapter that bridges CollabConvoRouter's interface with JolliAgent
  * Converts message formats and provides streaming interface
@@ -47,24 +143,29 @@ export class AgentChatAdapter {
 	 * Convert CollabMessage[] to jolliagent Message[]
 	 */
 	private convertMessages(messages: Array<CollabMessage>, systemPrompt?: string): Array<Message> {
-		const result: Array<Message> = [];
+		const raw: Array<Message> = [];
 
 		if (systemPrompt) {
-			result.push({ role: "system", content: systemPrompt });
+			raw.push({ role: "system", content: systemPrompt });
 		}
 
 		for (const msg of messages) {
 			const message = this.toMessage(msg);
 			if (message) {
-				result.push(message);
+				raw.push(message);
 			}
 		}
 
-		return result;
+		return sanitizeToolMessageSequence(raw);
 	}
 
 	private toMessage(message: CollabMessage): Message | undefined {
 		if (isStandardCollabConvoMessage(message)) {
+			// Skip messages with empty content to prevent Anthropic API
+			// "text content blocks must be non-empty" validation errors
+			if (!message.content || message.content.trim().length === 0) {
+				return;
+			}
 			const { role, content } = message;
 			return {
 				role,
@@ -153,8 +254,11 @@ export class AgentChatAdapter {
 		// Convert messages to jolliagent format
 		// Note: systemPrompt is optional - agent has its own default in constructor
 		const history = this.convertMessages(params.messages, params.systemPrompt);
+		// Save length before chatTurn — chatTurn mutates the history array in-place,
+		// so history.length will have grown by the time it returns.
+		const initialLength = history.length;
 
-		log.debug("AgentChatAdapter: Starting chatTurn with %d messages", history.length);
+		log.debug("AgentChatAdapter: Starting chatTurn with %d messages", initialLength);
 
 		// Use chatTurn with streaming callback
 		const result = await this.agent.chatTurn({
@@ -185,7 +289,7 @@ export class AgentChatAdapter {
 		log.debug("AgentChatAdapter: chatTurn completed, response length: %d", result.assistantText.length);
 
 		// Extract only the new messages added during this turn (everything after the original history)
-		const newMessages = result.history.slice(history.length);
+		const newMessages = result.history.slice(initialLength);
 
 		return { assistantText: result.assistantText, newMessages };
 	}

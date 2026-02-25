@@ -34,7 +34,7 @@ describe("ParameterStoreLoader", () => {
 
 	it("should construct with correct path prefix", () => {
 		const loader = new ParameterStoreLoader("prod");
-		expect(loader.getPathPrefix()).toBe("/jolli/backend/prod/");
+		expect(loader.getPathPrefix()).toBe("/jolli/app/prod/");
 	});
 
 	it("should load parameters and convert to env vars", async () => {
@@ -43,23 +43,23 @@ describe("ParameterStoreLoader", () => {
 		mockSend.mockResolvedValueOnce({
 			Parameters: [
 				{
-					Name: "/jolli/backend/prod/github/apps/info",
+					Name: "/jolli/app/prod/github/apps/info",
 					Value: '{"appId":123}',
 				},
 				{
-					Name: "/jolli/backend/prod/some-other/value",
+					Name: "/jolli/app/prod/some-other/value",
 					Value: "test-value",
 				},
 				{
-					Name: "/jolli/backend/prod/api/secret",
+					Name: "/jolli/app/prod/api/secret",
 					Value: "super-secret-value",
 				},
 				{
-					Name: "/jolli/backend/prod/private/key",
+					Name: "/jolli/app/prod/private/key",
 					Value: "private-key-value",
 				},
 				{
-					Name: "/jolli/backend/prod/long/parameter",
+					Name: "/jolli/app/prod/long/parameter",
 					Value: "This is a very long parameter value that exceeds fifty characters to test truncation",
 				},
 			],
@@ -89,7 +89,7 @@ describe("ParameterStoreLoader", () => {
 		mockSend.mockResolvedValueOnce({
 			Parameters: [
 				{
-					Name: "/jolli/backend/prod/github/apps/info",
+					Name: "/jolli/app/prod/github/apps/info",
 					Value: '{"appId":123}',
 				},
 			],
@@ -112,7 +112,7 @@ describe("ParameterStoreLoader", () => {
 			.mockResolvedValueOnce({
 				Parameters: [
 					{
-						Name: "/jolli/backend/prod/github/apps/info",
+						Name: "/jolli/app/prod/github/apps/info",
 						Value: "first-value",
 					},
 				],
@@ -121,7 +121,7 @@ describe("ParameterStoreLoader", () => {
 			.mockResolvedValueOnce({
 				Parameters: [
 					{
-						Name: "/jolli/backend/prod/another/param",
+						Name: "/jolli/app/prod/another/param",
 						Value: "second-value",
 					},
 				],
@@ -143,11 +143,11 @@ describe("ParameterStoreLoader", () => {
 		mockSend.mockResolvedValueOnce({
 			Parameters: [
 				{
-					Name: "/jolli/backend/prod/github/apps/info",
+					Name: "/jolli/app/prod/github/apps/info",
 					Value: "valid-value",
 				},
 				{
-					Name: "/jolli/backend/prod/no-value",
+					Name: "/jolli/app/prod/no-value",
 					// Missing Value
 				},
 				{
@@ -170,7 +170,7 @@ describe("ParameterStoreLoader", () => {
 		mockSend.mockResolvedValueOnce({
 			Parameters: [
 				{
-					Name: "/jolli/backend/prod/github/apps/info",
+					Name: "/jolli/app/prod/github/apps/info",
 					Value: "cached-value",
 				},
 			],
@@ -191,7 +191,7 @@ describe("ParameterStoreLoader", () => {
 			.mockResolvedValueOnce({
 				Parameters: [
 					{
-						Name: "/jolli/backend/prod/github/apps/info",
+						Name: "/jolli/app/prod/github/apps/info",
 						Value: "first-load",
 					},
 				],
@@ -199,7 +199,7 @@ describe("ParameterStoreLoader", () => {
 			.mockResolvedValueOnce({
 				Parameters: [
 					{
-						Name: "/jolli/backend/prod/github/apps/info",
+						Name: "/jolli/app/prod/github/apps/info",
 						Value: "second-load",
 					},
 				],
@@ -227,7 +227,7 @@ describe("ParameterStoreLoader", () => {
 		});
 
 		await expect(loader.load()).rejects.toThrow(
-			'Parameter name "/wrong/prefix/param" does not start with expected prefix "/jolli/backend/prod/"',
+			'Parameter name "/wrong/prefix/param" does not start with expected prefix "/jolli/app/prod/"',
 		);
 	});
 
@@ -249,7 +249,7 @@ describe("ParameterStoreLoader", () => {
 
 		expect(mockSend).toHaveBeenCalledWith(
 			expect.objectContaining({
-				Path: "/jolli/backend/prod/",
+				Path: "/jolli/app/prod/",
 				Recursive: true,
 				WithDecryption: true,
 			}),
@@ -284,7 +284,7 @@ describe("ParameterStoreLoader", () => {
 		const loader = new ParameterStoreLoader("prod");
 
 		expect(loader).toBeDefined();
-		expect(loader.getPathPrefix()).toBe("/jolli/backend/prod/");
+		expect(loader.getPathPrefix()).toBe("/jolli/app/prod/");
 	});
 
 	describe("options-based constructor", () => {
@@ -296,11 +296,11 @@ describe("ParameterStoreLoader", () => {
 			expect(loader.getPathPrefix()).toBe("/jolli/vercel/prod/");
 		});
 
-		it("should default pathBase to backend", () => {
+		it("should default pathBase to app", () => {
 			const loader = new ParameterStoreLoader({
 				pstoreEnv: "staging",
 			});
-			expect(loader.getPathPrefix()).toBe("/jolli/backend/staging/");
+			expect(loader.getPathPrefix()).toBe("/jolli/app/staging/");
 		});
 
 		it("should pass credentials to SSMClient when provided", () => {
@@ -362,7 +362,7 @@ describe("ParameterStoreLoader", () => {
 			mockSend.mockResolvedValueOnce({
 				Parameters: [
 					{
-						Name: "/jolli/backend/prod/test/var",
+						Name: "/jolli/app/prod/test/var",
 						Value: "test-value",
 					},
 				],
@@ -384,7 +384,7 @@ describe("ParameterStoreLoader", () => {
 			mockSend.mockResolvedValueOnce({
 				Parameters: [
 					{
-						Name: "/jolli/backend/prod/test/var-2",
+						Name: "/jolli/app/prod/test/var-2",
 						Value: "should-not-be-set",
 					},
 				],

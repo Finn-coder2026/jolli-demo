@@ -62,11 +62,16 @@ export interface StaticFileIntegration extends Integration {
 export type NewIntegration = Omit<Integration, "id" | "createdAt" | "updatedAt">;
 
 export function defineIntegrations(sequelize: Sequelize): ModelDef<Integration> {
+	const existing = sequelize.models?.integrations;
+	if (existing) {
+		return existing as ModelDef<Integration>;
+	}
 	return sequelize.define("integrations", schema, { timestamps: true, indexes });
 }
 
 const indexes = [
 	{
+		name: "integrations_type_name_key",
 		unique: true,
 		fields: ["type", "name"],
 	},
@@ -104,9 +109,11 @@ const schema = {
 @PIISchema("integration")
 class IntegrationPII {
 	@PIIField({ description: "Integration account email (from metadata)" })
+	/* v8 ignore next */
 	accountEmail!: string;
 
 	@PIIField({ description: "Integration account name (from metadata)" })
+	/* v8 ignore next */
 	accountName!: string;
 }
 

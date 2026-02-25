@@ -1,25 +1,29 @@
 import type { DaoProvider } from "../dao/DaoProvider";
-import type { DocDao } from "../dao/DocDao";
-import { mockDocDao as createMockDocDao } from "../dao/DocDao.mock";
 import type { SiteDao } from "../dao/SiteDao";
 import { mockSiteDao as createMockSiteDao } from "../dao/SiteDao.mock";
-import type { Doc } from "../model/Doc";
+import type { PermissionMiddlewareFactory } from "../middleware/PermissionMiddleware";
 import type { Site, SiteMetadata } from "../model/Site";
 import { getBuildTempDir, unregisterBuildTempDir } from "../services/BuildStreamService";
 import { cleanupTempDirectory } from "../util/DocGenerationUtil";
 import { clearCache } from "../util/domain/SubdomainCache";
 import type { TokenUtil } from "../util/TokenUtil";
 import {
+	buildArticleTitleMap,
+	buildSiteUpdateResponse,
 	bundleImagesIntoFilesImpl,
 	computeHash,
+	computeNeedsUpdate,
 	convertToFolderMetasArray,
 	createSiteRouter,
 	extractConfigFileHashes,
 	extractFolderAndFile,
 	type FolderContent,
 	getGitHubOrg,
+	hasPathTraversal,
+	hasTreePathTraversal,
 	processContentFile,
 	registerJolliSiteDomain,
+	stripSiteSecrets,
 	validateGitHubOrgAccess,
 	writeFileTreeEntry,
 } from "./SiteRouter";
@@ -57,8 +61,12 @@ vi.mock("../services/BuildStreamService", () => ({
 // Mock OctokitUtil to avoid actual GitHub API calls
 const mockGetTree = vi.fn();
 const mockGetRepoContent = vi.fn();
+const mockOrgsGet = vi.fn();
 vi.mock("../util/OctokitUtil", () => ({
 	createOctokit: vi.fn(() => ({
+		orgs: {
+			get: mockOrgsGet,
+		},
 		rest: {
 			git: {
 				getTree: mockGetTree,
@@ -126,7 +134,6 @@ function mockDaoProvider<T>(dao: T): DaoProvider<T> {
 describe("SiteRouter", () => {
 	let app: Express;
 	let mockSiteDao: SiteDao;
-	let mockDocDaoInstance: DocDao;
 	let mockTokenUtil: TokenUtil<UserInfo>;
 
 	const mockDocsite: Site = {
@@ -149,47 +156,25 @@ describe("SiteRouter", () => {
 		updatedAt: new Date("2024-01-15T10:00:00Z"),
 	};
 
-	const mockDoc: Doc = {
-		id: 1,
-		jrn: "jrn:aws:doc:us-east-1:123456789012:doc/1",
-		content: "# Test Article\n\nContent here.",
-		contentType: "text/markdown",
-		contentMetadata: {
-			title: "Test Article",
-			sourceName: "GitHub",
-			sourceUrl: "https://github.com/test/repo",
-		},
-		createdAt: new Date("2024-01-15T09:00:00Z"),
-		updatedAt: new Date("2024-01-16T12:00:00Z"),
-		updatedBy: "test-user",
-		source: undefined,
-		sourceMetadata: undefined,
-		version: 1,
-		spaceId: undefined,
-		parentId: undefined,
-		docType: "document",
-		sortOrder: 0,
-		createdBy: "test-user",
-		deletedAt: undefined,
-		explicitlyDeleted: false,
-		slug: "test-article",
-		path: "",
-	};
-
 	beforeEach(() => {
 		mockSiteDao = createMockSiteDao();
-		mockDocDaoInstance = createMockDocDao();
 		mockTokenUtil = {
 			encodePayload: vi.fn(),
 			decodePayload: vi.fn(),
 		} as unknown as TokenUtil<UserInfo>;
 
+		// Mock permission middleware - no-op passthrough for tests
+		const mockPermissionMiddleware: PermissionMiddlewareFactory = {
+			requireAuth: vi.fn().mockReturnValue((_req: unknown, _res: unknown, next: () => void) => next()),
+			requirePermission: vi.fn().mockReturnValue((_req: unknown, _res: unknown, next: () => void) => next()),
+			requireAllPermissions: vi.fn().mockReturnValue((_req: unknown, _res: unknown, next: () => void) => next()),
+			requireRole: vi.fn().mockReturnValue((_req: unknown, _res: unknown, next: () => void) => next()),
+			loadPermissions: vi.fn().mockReturnValue((_req: unknown, _res: unknown, next: () => void) => next()),
+		};
+
 		app = express();
 		app.use(express.json());
-		app.use(
-			"/sites",
-			createSiteRouter(mockDaoProvider(mockSiteDao), mockDaoProvider(mockDocDaoInstance), mockTokenUtil),
-		);
+		app.use("/sites", createSiteRouter(mockDaoProvider(mockSiteDao), mockTokenUtil, mockPermissionMiddleware));
 	});
 
 	afterEach(() => {
@@ -244,6 +229,101 @@ describe("SiteRouter", () => {
 			expect(response.body[1].needsUpdate).toBe(false);
 		});
 
+		it("should strip privateKey from site metadata in list response", async () => {
+			const siteWithPrivateKey: Site = {
+				...mockDocsite,
+				metadata: {
+					...mockDocsite.metadata,
+					jwtAuth: {
+						enabled: true,
+						mode: "full",
+						loginUrl: "/login",
+						publicKey: "test-public-key",
+						privateKey: "test-private-key",
+					},
+				} as SiteMetadata,
+			};
+			vi.mocked(mockSiteDao.listSites).mockResolvedValue([siteWithPrivateKey]);
+			vi.mocked(mockSiteDao.checkIfNeedsUpdate).mockResolvedValue(false);
+
+			const response = await request(app).get("/sites");
+
+			expect(response.status).toBe(200);
+			expect(response.body[0].metadata.jwtAuth).not.toHaveProperty("privateKey");
+			expect(response.body[0].metadata.jwtAuth).not.toHaveProperty("publicKey");
+			expect(response.body[0].metadata.jwtAuth.enabled).toBe(true);
+		});
+
+		it("should include granular change flags when branding has changed", async () => {
+			const siteWithBrandingChange: Site = {
+				...mockDocsite,
+				metadata: {
+					...mockDocsite.metadata,
+					branding: { logo: "New Logo" },
+					generatedBranding: { logo: "Old Logo" },
+				} as SiteMetadata,
+			};
+			vi.mocked(mockSiteDao.listSites).mockResolvedValue([siteWithBrandingChange]);
+			vi.mocked(mockSiteDao.checkIfNeedsUpdate).mockResolvedValue(false);
+
+			const response = await request(app).get("/sites");
+
+			expect(response.status).toBe(200);
+			expect(response.body[0].needsUpdate).toBe(true);
+			expect(response.body[0].brandingChanged).toBe(true);
+		});
+
+		it("should include auth change details when auth config has changed", async () => {
+			const siteWithAuthChange: Site = {
+				...mockDocsite,
+				metadata: {
+					...mockDocsite.metadata,
+					jwtAuth: { enabled: true, mode: "full", loginUrl: "/login", publicKey: "key" },
+					generatedJwtAuthEnabled: false,
+				} as SiteMetadata,
+			};
+			vi.mocked(mockSiteDao.listSites).mockResolvedValue([siteWithAuthChange]);
+			vi.mocked(mockSiteDao.checkIfNeedsUpdate).mockResolvedValue(false);
+
+			const response = await request(app).get("/sites");
+
+			expect(response.status).toBe(200);
+			expect(response.body[0].needsUpdate).toBe(true);
+			expect(response.body[0].authChange).toEqual({ from: false, to: true });
+		});
+
+		it("should include folder structure change flag when folder structure has changed", async () => {
+			const siteWithFolderChange: Site = {
+				...mockDocsite,
+				metadata: {
+					...mockDocsite.metadata,
+					useSpaceFolderStructure: true,
+					generatedUseSpaceFolderStructure: false,
+				} as SiteMetadata,
+			};
+			vi.mocked(mockSiteDao.listSites).mockResolvedValue([siteWithFolderChange]);
+			vi.mocked(mockSiteDao.checkIfNeedsUpdate).mockResolvedValue(false);
+
+			const response = await request(app).get("/sites");
+
+			expect(response.status).toBe(200);
+			expect(response.body[0].needsUpdate).toBe(true);
+			expect(response.body[0].folderStructureChanged).toBe(true);
+		});
+
+		it("should not include granular flags when no config changes exist", async () => {
+			vi.mocked(mockSiteDao.listSites).mockResolvedValue([mockDocsite]);
+			vi.mocked(mockSiteDao.checkIfNeedsUpdate).mockResolvedValue(true);
+
+			const response = await request(app).get("/sites");
+
+			expect(response.status).toBe(200);
+			expect(response.body[0].needsUpdate).toBe(true);
+			expect(response.body[0]).not.toHaveProperty("authChange");
+			expect(response.body[0]).not.toHaveProperty("brandingChanged");
+			expect(response.body[0]).not.toHaveProperty("folderStructureChanged");
+		});
+
 		it("should return 500 on database error", async () => {
 			vi.mocked(mockSiteDao.listSites).mockRejectedValue(new Error("Database error"));
 
@@ -257,7 +337,6 @@ describe("SiteRouter", () => {
 	describe("GET /:id", () => {
 		it("should get docsite by id with needsUpdate flag", async () => {
 			vi.mocked(mockSiteDao.getSite).mockResolvedValue(mockDocsite);
-			vi.mocked(mockSiteDao.checkIfNeedsUpdate).mockResolvedValue(false);
 			vi.mocked(mockSiteDao.getChangedArticles).mockResolvedValue([]);
 
 			const response = await request(app).get("/sites/1");
@@ -270,7 +349,7 @@ describe("SiteRouter", () => {
 				needsUpdate: false,
 			});
 			expect(mockSiteDao.getSite).toHaveBeenCalledWith(1);
-			expect(mockSiteDao.checkIfNeedsUpdate).toHaveBeenCalledWith(1);
+			expect(mockSiteDao.getChangedArticles).toHaveBeenCalledWith(1);
 		});
 
 		it("should include changed articles when needsUpdate is true", async () => {
@@ -298,6 +377,31 @@ describe("SiteRouter", () => {
 				changedArticles,
 			});
 			expect(mockSiteDao.getChangedArticles).toHaveBeenCalledWith(1);
+		});
+
+		it("should strip privateKey from site metadata in detail response", async () => {
+			const siteWithPrivateKey: Site = {
+				...mockDocsite,
+				metadata: {
+					...mockDocsite.metadata,
+					jwtAuth: {
+						enabled: true,
+						mode: "full",
+						loginUrl: "/login",
+						publicKey: "test-public-key",
+						privateKey: "test-private-key",
+					},
+				} as SiteMetadata,
+			};
+			vi.mocked(mockSiteDao.getSite).mockResolvedValue(siteWithPrivateKey);
+			vi.mocked(mockSiteDao.getChangedArticles).mockResolvedValue([]);
+
+			const response = await request(app).get("/sites/1");
+
+			expect(response.status).toBe(200);
+			expect(response.body.metadata.jwtAuth).not.toHaveProperty("privateKey");
+			expect(response.body.metadata.jwtAuth).not.toHaveProperty("publicKey");
+			expect(response.body.metadata.jwtAuth.enabled).toBe(true);
 		});
 
 		it("should check deployment status when building with VERCEL_TOKEN", async () => {
@@ -441,90 +545,6 @@ describe("SiteRouter", () => {
 
 			expect(response.status).toBe(500);
 			expect(response.body).toEqual({ error: "Failed to get site" });
-		});
-	});
-
-	describe("GET /:id/check-update", () => {
-		it("should check if docsite needs update", async () => {
-			vi.mocked(mockSiteDao.getSite).mockResolvedValue(mockDocsite);
-			vi.mocked(mockSiteDao.checkIfNeedsUpdate).mockResolvedValue(true);
-			vi.mocked(mockDocDaoInstance.listDocs).mockResolvedValue([mockDoc]);
-
-			const response = await request(app).get("/sites/1/check-update");
-
-			expect(response.status).toBe(200);
-			expect(response.body).toMatchObject({
-				needsUpdate: true,
-				lastGeneratedAt: "2024-01-15T10:00:00.000Z",
-			});
-			expect(response.body.latestArticleUpdate).toBeDefined();
-			expect(mockSiteDao.getSite).toHaveBeenCalledWith(1);
-			expect(mockSiteDao.checkIfNeedsUpdate).toHaveBeenCalledWith(1);
-			expect(mockDocDaoInstance.listDocs).toHaveBeenCalled();
-		});
-
-		it("should handle docsite with no articles", async () => {
-			vi.mocked(mockSiteDao.getSite).mockResolvedValue(mockDocsite);
-			vi.mocked(mockSiteDao.checkIfNeedsUpdate).mockResolvedValue(false);
-			vi.mocked(mockDocDaoInstance.listDocs).mockResolvedValue([]);
-
-			const response = await request(app).get("/sites/1/check-update");
-
-			expect(response.status).toBe(200);
-			expect(response.body).toMatchObject({
-				needsUpdate: false,
-				lastGeneratedAt: "2024-01-15T10:00:00.000Z",
-				latestArticleUpdate: new Date(0).toISOString(),
-			});
-		});
-
-		it("should find latest article from multiple articles", async () => {
-			const mockDoc2: Doc = {
-				...mockDoc,
-				id: 2,
-				updatedAt: new Date("2024-01-17T15:00:00Z"), // Later than mockDoc
-			};
-			const mockDoc3: Doc = {
-				...mockDoc,
-				id: 3,
-				updatedAt: new Date("2024-01-16T08:00:00Z"), // Earlier than mockDoc2
-			};
-
-			vi.mocked(mockSiteDao.getSite).mockResolvedValue(mockDocsite);
-			vi.mocked(mockSiteDao.checkIfNeedsUpdate).mockResolvedValue(true);
-			vi.mocked(mockDocDaoInstance.listDocs).mockResolvedValue([mockDoc, mockDoc2, mockDoc3]);
-
-			const response = await request(app).get("/sites/1/check-update");
-
-			expect(response.status).toBe(200);
-			expect(new Date(response.body.latestArticleUpdate)).toEqual(new Date("2024-01-17T15:00:00Z"));
-		});
-
-		it("should return 404 when docsite not found", async () => {
-			vi.mocked(mockSiteDao.getSite).mockResolvedValue(undefined);
-
-			const response = await request(app).get("/sites/999/check-update");
-
-			expect(response.status).toBe(404);
-			expect(response.body).toEqual({ error: "Docsite not found" });
-			expect(mockSiteDao.checkIfNeedsUpdate).not.toHaveBeenCalled();
-		});
-
-		it("should return 400 for invalid id", async () => {
-			const response = await request(app).get("/sites/invalid/check-update");
-
-			expect(response.status).toBe(400);
-			expect(response.body).toEqual({ error: "Invalid docsite ID" });
-		});
-
-		it("should return 500 on database error", async () => {
-			vi.mocked(mockSiteDao.getSite).mockResolvedValue(mockDocsite);
-			vi.mocked(mockSiteDao.checkIfNeedsUpdate).mockRejectedValue(new Error("Database error"));
-
-			const response = await request(app).get("/sites/1/check-update");
-
-			expect(response.status).toBe(500);
-			expect(response.body).toEqual({ error: "Failed to check update status" });
 		});
 	});
 
@@ -1154,6 +1174,66 @@ describe("SiteRouter", () => {
 
 			expect(response.status).toBe(400);
 			expect(response.body.error).toContain("Unsupported file type");
+		});
+	});
+
+	describe("GET /for-article/:jrn", () => {
+		it("should return sites for a given article JRN", async () => {
+			const articleJrn = "/docs/getting-started";
+			const mockSites = [
+				{ id: 1, name: "public-site", displayName: "Public Site", visibility: "external" as const },
+				{ id: 2, name: "internal-site", displayName: "Internal Site", visibility: "internal" as const },
+			];
+
+			vi.mocked(mockSiteDao.getSitesForArticle).mockResolvedValue(mockSites);
+
+			const response = await request(app).get(`/sites/for-article/${encodeURIComponent(articleJrn)}`);
+
+			expect(response.status).toBe(200);
+			expect(response.body).toEqual({ sites: mockSites });
+			expect(mockSiteDao.getSitesForArticle).toHaveBeenCalledWith(articleJrn);
+		});
+
+		it("should correctly decode a URL-encoded JRN before passing to DAO", async () => {
+			// JRNs contain slashes and colons which must be URL-encoded in path params
+			const articleJrn = "jrn:doc:org/space/article-slug";
+			vi.mocked(mockSiteDao.getSitesForArticle).mockResolvedValue([]);
+
+			const response = await request(app).get(`/sites/for-article/${encodeURIComponent(articleJrn)}`);
+
+			expect(response.status).toBe(200);
+			// Verify the DAO receives the decoded JRN, not the encoded version
+			expect(mockSiteDao.getSitesForArticle).toHaveBeenCalledWith(articleJrn);
+		});
+
+		it("should return empty sites array when no sites include the article", async () => {
+			vi.mocked(mockSiteDao.getSitesForArticle).mockResolvedValue([]);
+
+			const response = await request(app).get(
+				`/sites/for-article/${encodeURIComponent("/docs/orphaned-article")}`,
+			);
+
+			expect(response.status).toBe(200);
+			expect(response.body).toEqual({ sites: [] });
+		});
+
+		it("should return 400 when JRN exceeds 2048 characters", async () => {
+			const oversizedJrn = "a".repeat(2049);
+
+			const response = await request(app).get(`/sites/for-article/${encodeURIComponent(oversizedJrn)}`);
+
+			expect(response.status).toBe(400);
+			expect(response.body).toEqual({ error: "Invalid JRN" });
+			expect(mockSiteDao.getSitesForArticle).not.toHaveBeenCalled();
+		});
+
+		it("should return 500 when DAO throws an error", async () => {
+			vi.mocked(mockSiteDao.getSitesForArticle).mockRejectedValue(new Error("Database connection lost"));
+
+			const response = await request(app).get(`/sites/for-article/${encodeURIComponent("/docs/some-article")}`);
+
+			expect(response.status).toBe(500);
+			expect(response.body).toEqual({ error: "Failed to get sites for article" });
 		});
 	});
 
@@ -2596,6 +2676,34 @@ describe("SiteRouter", () => {
 			);
 		});
 
+		it("should not include privateKey in auth config response even when stored in DB", async () => {
+			const { jwtAuth: _, ...metadataWithoutJwtAuth } = mockDocsite.metadata as SiteMetadata;
+			vi.mocked(mockSiteDao.getSite).mockResolvedValue({
+				...mockDocsite,
+				metadata: metadataWithoutJwtAuth as SiteMetadata,
+			});
+			// Mock updateSite to return a site with privateKey in metadata (as stored in DB)
+			vi.mocked(mockSiteDao.updateSite).mockResolvedValue({
+				...mockDocsite,
+				metadata: {
+					...mockDocsite.metadata,
+					jwtAuth: {
+						enabled: true,
+						mode: "full",
+						loginUrl: "/login",
+						publicKey: "-----BEGIN PUBLIC KEY-----\nTestKey\n-----END PUBLIC KEY-----",
+						privateKey: "-----BEGIN PRIVATE KEY-----\nSecretKey\n-----END PRIVATE KEY-----",
+					},
+				} as SiteMetadata,
+			});
+
+			const response = await request(app).put("/sites/1/auth/config").send({ enabled: true, mode: "full" });
+
+			expect(response.status).toBe(200);
+			expect(response.body.metadata.jwtAuth).not.toHaveProperty("privateKey");
+			expect(response.body.metadata.jwtAuth).not.toHaveProperty("publicKey");
+		});
+
 		it("should update mode without regenerating keys when keys exist", async () => {
 			const existingPublicKey = "-----BEGIN PUBLIC KEY-----\nExistingKey\n-----END PUBLIC KEY-----";
 			const existingPrivateKey = "-----BEGIN PRIVATE KEY-----\nExistingKey\n-----END PRIVATE KEY-----";
@@ -2818,6 +2926,171 @@ describe("SiteRouter", () => {
 				VERCEL_TOKEN: undefined,
 				TOKEN_SECRET: "test-secret-key-for-jwt-signing",
 			} as ReturnType<typeof getConfig>);
+		});
+	});
+
+	describe("PUT /:id/branding", () => {
+		it("should return 400 for invalid site ID", async () => {
+			const response = await request(app)
+				.put("/sites/invalid/branding")
+				.send({ primaryHue: 220, themePreset: "minimal" });
+
+			expect(response.status).toBe(400);
+			expect(response.body).toEqual({ error: "Invalid site ID" });
+		});
+
+		it("should return 404 when site does not exist", async () => {
+			vi.mocked(mockSiteDao.getSite).mockResolvedValue(undefined);
+
+			const response = await request(app)
+				.put("/sites/999/branding")
+				.send({ primaryHue: 220, themePreset: "minimal" });
+
+			expect(response.status).toBe(404);
+			expect(response.body).toEqual({ error: "Site not found" });
+		});
+
+		it("should update site branding successfully", async () => {
+			vi.mocked(mockSiteDao.getSite).mockResolvedValue(mockDocsite);
+			vi.mocked(mockSiteDao.updateSite).mockResolvedValue(mockDocsite);
+
+			const branding = {
+				primaryHue: 270,
+				themePreset: "vibrant",
+				fontFamily: "space-grotesk",
+				codeTheme: "dracula",
+				borderRadius: "rounded",
+				spacingDensity: "comfortable",
+				defaultTheme: "dark",
+			};
+
+			const response = await request(app).put("/sites/1/branding").send(branding);
+
+			expect(response.status).toBe(200);
+			expect(mockSiteDao.updateSite).toHaveBeenCalledWith(
+				expect.objectContaining({
+					metadata: expect.objectContaining({
+						branding,
+					}),
+				}),
+			);
+		});
+
+		it("should preserve existing metadata when updating branding", async () => {
+			const existingMetadata = {
+				githubRepo: "test-repo",
+				githubUrl: "https://github.com/test-repo",
+				framework: "nextra",
+				articleCount: 5,
+				jwtAuth: { enabled: true, mode: "full" as const, loginUrl: "/login", publicKey: "", privateKey: "" },
+			};
+			vi.mocked(mockSiteDao.getSite).mockResolvedValue({
+				...mockDocsite,
+				metadata: existingMetadata as SiteMetadata,
+			});
+			vi.mocked(mockSiteDao.updateSite).mockResolvedValue(mockDocsite);
+
+			const branding = { primaryHue: 180 };
+			const response = await request(app).put("/sites/1/branding").send(branding);
+
+			expect(response.status).toBe(200);
+			expect(mockSiteDao.updateSite).toHaveBeenCalledWith(
+				expect.objectContaining({
+					metadata: expect.objectContaining({
+						githubRepo: "test-repo",
+						jwtAuth: expect.objectContaining({ enabled: true }),
+						branding,
+					}),
+				}),
+			);
+		});
+
+		it("should return 500 on database error", async () => {
+			vi.mocked(mockSiteDao.getSite).mockRejectedValue(new Error("Database error"));
+
+			const response = await request(app).put("/sites/1/branding").send({ primaryHue: 220 });
+
+			expect(response.status).toBe(500);
+			expect(response.body).toEqual({ error: "Failed to update site branding" });
+		});
+
+		it("should return 400 for invalid branding data", async () => {
+			vi.mocked(mockSiteDao.getSite).mockResolvedValue(mockDocsite);
+
+			// Send invalid branding - primaryHue out of range (must be 0-360)
+			const invalidBranding = {
+				primaryHue: 500,
+				themePreset: "invalid-preset",
+			};
+
+			const response = await request(app).put("/sites/1/branding").send(invalidBranding);
+
+			expect(response.status).toBe(400);
+			expect(response.body.error).toBe("Invalid branding data");
+			expect(response.body.details).toBeDefined();
+			expect(Array.isArray(response.body.details)).toBe(true);
+		});
+	});
+
+	describe("PUT /:id/folder-structure", () => {
+		it("should return 400 for invalid site ID", async () => {
+			const response = await request(app)
+				.put("/sites/invalid/folder-structure")
+				.send({ useSpaceFolderStructure: true });
+
+			expect(response.status).toBe(400);
+			expect(response.body).toEqual({ error: "Invalid site ID" });
+		});
+
+		it("should return 404 when site does not exist", async () => {
+			vi.mocked(mockSiteDao.getSite).mockResolvedValue(undefined);
+
+			const response = await request(app)
+				.put("/sites/999/folder-structure")
+				.send({ useSpaceFolderStructure: true });
+
+			expect(response.status).toBe(404);
+			expect(response.body).toEqual({ error: "Site not found" });
+		});
+
+		it("should return 400 when useSpaceFolderStructure is not a boolean", async () => {
+			vi.mocked(mockSiteDao.getSite).mockResolvedValue(mockDocsite);
+
+			const response = await request(app)
+				.put("/sites/1/folder-structure")
+				.send({ useSpaceFolderStructure: "yes" });
+
+			expect(response.status).toBe(400);
+			expect(response.body).toEqual({ error: "useSpaceFolderStructure must be a boolean" });
+		});
+
+		it("should update folder structure setting successfully", async () => {
+			vi.mocked(mockSiteDao.getSite).mockResolvedValue(mockDocsite);
+			vi.mocked(mockSiteDao.updateSite).mockResolvedValue(mockDocsite);
+
+			const response = await request(app)
+				.put("/sites/1/folder-structure")
+				.send({ useSpaceFolderStructure: true });
+
+			expect(response.status).toBe(200);
+			expect(mockSiteDao.updateSite).toHaveBeenCalledWith(
+				expect.objectContaining({
+					metadata: expect.objectContaining({
+						useSpaceFolderStructure: true,
+					}),
+				}),
+			);
+		});
+
+		it("should return 500 on database error", async () => {
+			vi.mocked(mockSiteDao.getSite).mockRejectedValue(new Error("Database error"));
+
+			const response = await request(app)
+				.put("/sites/1/folder-structure")
+				.send({ useSpaceFolderStructure: false });
+
+			expect(response.status).toBe(500);
+			expect(response.body).toEqual({ error: "Failed to update folder structure setting" });
 		});
 	});
 });
@@ -3046,6 +3319,16 @@ describe("Helper functions", () => {
 			expect(folderContents.get("guides")?.slugs).toEqual(["intro", "setup"]);
 		});
 
+		it("should add MD file slug to folder contents", () => {
+			const folderContents = new Map<string, FolderContent>();
+			const file = { path: "content/guide.md", content: "# Guide" };
+
+			const result = processContentFile(file, folderContents);
+
+			expect(result).toBeUndefined();
+			expect(folderContents.get("")).toEqual({ slugs: ["guide"] });
+		});
+
 		it("should ignore non-MDX and non-meta files", () => {
 			const folderContents = new Map<string, FolderContent>();
 
@@ -3062,6 +3345,21 @@ describe("Helper functions", () => {
 			processContentFile(file, folderContents);
 
 			expect(folderContents.get("api/v2/endpoints")?.slugs).toEqual(["users"]);
+		});
+
+		it("should capture JSON file slugs", () => {
+			const folderContents = new Map<string, FolderContent>();
+			processContentFile({ path: "content/data/config.json", content: "{}" }, folderContents);
+
+			expect(folderContents.get("data")?.slugs).toEqual(["config"]);
+		});
+
+		it("should capture YAML file slugs", () => {
+			const folderContents = new Map<string, FolderContent>();
+			processContentFile({ path: "content/specs/api.yaml", content: "openapi: 3.0.0" }, folderContents);
+			processContentFile({ path: "content/specs/schema.yml", content: "type: object" }, folderContents);
+
+			expect(folderContents.get("specs")?.slugs).toEqual(["api", "schema"]);
 		});
 	});
 
@@ -3539,6 +3837,376 @@ describe("Helper functions", () => {
 
 			// Should not throw
 			await expect(validateGitHubOrgAccess(mockConfig)).resolves.toBeUndefined();
+		});
+
+		it("should succeed when GitHub org is accessible", async () => {
+			mockOrgsGet.mockResolvedValueOnce({ data: { login: "Sample-Repos" } });
+			const mockConfig = {
+				GITHUB_TOKEN: "ghp_test123",
+				SITE_ENV: "local",
+				GITHUB_ORG_NONPROD: "Sample-Repos",
+			} as ReturnType<typeof import("../config/Config").getConfig>;
+
+			await expect(validateGitHubOrgAccess(mockConfig)).resolves.toBeUndefined();
+			expect(mockOrgsGet).toHaveBeenCalledWith({ org: "Sample-Repos" });
+		});
+
+		it("should throw when GitHub org is not accessible (non-prod)", async () => {
+			mockOrgsGet.mockRejectedValueOnce(new Error("Not Found"));
+			const mockConfig = {
+				GITHUB_TOKEN: "ghp_test123",
+				SITE_ENV: "local",
+				GITHUB_ORG_NONPROD: "Sample-Repos",
+			} as ReturnType<typeof import("../config/Config").getConfig>;
+
+			await expect(validateGitHubOrgAccess(mockConfig)).rejects.toThrow(
+				'GitHub token does not have access to organization "Sample-Repos"',
+			);
+		});
+
+		it("should throw with correct message for prod environment", async () => {
+			mockOrgsGet.mockRejectedValueOnce(new Error("Not Found"));
+			const mockConfig = {
+				GITHUB_TOKEN: "ghp_test123",
+				SITE_ENV: "prod",
+				GITHUB_ORG: "Jolli-Sites",
+			} as ReturnType<typeof import("../config/Config").getConfig>;
+
+			await expect(validateGitHubOrgAccess(mockConfig)).rejects.toThrow("GITHUB_ORG");
+		});
+	});
+
+	describe("hasPathTraversal", () => {
+		it("should detect double-dot traversal", () => {
+			expect(hasPathTraversal("..")).toBe(true);
+			expect(hasPathTraversal("foo/../bar")).toBe(true);
+		});
+
+		it("should detect forward slash", () => {
+			expect(hasPathTraversal("foo/bar")).toBe(true);
+		});
+
+		it("should detect backslash", () => {
+			expect(hasPathTraversal("foo\\bar")).toBe(true);
+		});
+
+		it("should detect leading slash", () => {
+			expect(hasPathTraversal("/etc/passwd")).toBe(true);
+		});
+
+		it("should return false for safe filenames", () => {
+			expect(hasPathTraversal("index.mdx")).toBe(false);
+			expect(hasPathTraversal("my-file.ts")).toBe(false);
+			expect(hasPathTraversal("_meta.ts")).toBe(false);
+		});
+	});
+
+	describe("hasTreePathTraversal", () => {
+		it("should return false for an empty tree", () => {
+			expect(hasTreePathTraversal([])).toBe(false);
+		});
+
+		it("should return false for safe nodes", () => {
+			expect(
+				hasTreePathTraversal([
+					{ id: "1", name: "index.mdx", path: "content/index.mdx", type: "file" },
+					{ id: "2", name: "guide.mdx", path: "content/guide.mdx", type: "file" },
+				]),
+			).toBe(false);
+		});
+
+		it("should detect traversal in a top-level node name", () => {
+			expect(
+				hasTreePathTraversal([{ id: "1", name: "../etc/passwd", path: "../etc/passwd", type: "file" }]),
+			).toBe(true);
+		});
+
+		it("should detect traversal in a nested child node", () => {
+			expect(
+				hasTreePathTraversal([
+					{
+						id: "1",
+						name: "content",
+						path: "content",
+						type: "folder",
+						children: [{ id: "2", name: "..\\evil.txt", path: "content/..\\evil.txt", type: "file" }],
+					},
+				]),
+			).toBe(true);
+		});
+
+		it("should return false for safe nested children", () => {
+			expect(
+				hasTreePathTraversal([
+					{
+						id: "1",
+						name: "content",
+						path: "content",
+						type: "folder",
+						children: [{ id: "2", name: "page.mdx", path: "content/page.mdx", type: "file" }],
+					},
+				]),
+			).toBe(false);
+		});
+	});
+
+	describe("stripSiteSecrets", () => {
+		it("should remove privateKey and publicKey from jwtAuth metadata", () => {
+			const site = {
+				id: 1,
+				metadata: {
+					jwtAuth: {
+						enabled: true,
+						mode: "full" as const,
+						loginUrl: "/login",
+						publicKey: "test-public-key",
+						privateKey: "test-private-key",
+					},
+				} as SiteMetadata,
+			};
+			const result = stripSiteSecrets(site) as typeof site;
+			expect(result.metadata?.jwtAuth).not.toHaveProperty("privateKey");
+			expect(result.metadata?.jwtAuth).not.toHaveProperty("publicKey");
+			expect(result.metadata?.jwtAuth?.enabled).toBe(true);
+			expect(result.metadata?.jwtAuth?.mode).toBe("full");
+			expect(result.metadata?.jwtAuth?.loginUrl).toBe("/login");
+		});
+
+		it("should strip keys even when only publicKey exists (no privateKey)", () => {
+			const site = {
+				id: 1,
+				metadata: {
+					jwtAuth: { enabled: false, mode: "full" as const, loginUrl: "", publicKey: "key" },
+				} as SiteMetadata,
+			};
+			const result = stripSiteSecrets(site) as typeof site;
+			expect(result.metadata?.jwtAuth).not.toHaveProperty("publicKey");
+			expect(result.metadata?.jwtAuth?.enabled).toBe(false);
+		});
+
+		it("should return site unchanged when no jwtAuth exists", () => {
+			const site = { id: 1, metadata: { framework: "nextra-4" } as SiteMetadata };
+			const result = stripSiteSecrets(site);
+			expect(result).toEqual(site);
+		});
+
+		it("should return site unchanged when metadata is undefined", () => {
+			const site = { id: 1, metadata: undefined as SiteMetadata | undefined };
+			const result = stripSiteSecrets(site);
+			expect(result).toEqual(site);
+		});
+
+		it("should return undefined when site is undefined", () => {
+			const result = stripSiteSecrets(undefined);
+			expect(result).toBeUndefined();
+		});
+
+		it("should not mutate the original site object", () => {
+			const site = {
+				id: 1,
+				metadata: {
+					jwtAuth: {
+						enabled: true,
+						mode: "full" as const,
+						loginUrl: "/login",
+						publicKey: "pub",
+						privateKey: "priv",
+					},
+				} as SiteMetadata,
+			};
+			stripSiteSecrets(site);
+			expect(site.metadata?.jwtAuth?.privateKey).toBe("priv");
+			expect(site.metadata?.jwtAuth?.publicKey).toBe("pub");
+		});
+	});
+
+	describe("buildSiteUpdateResponse", () => {
+		const baseSite = {
+			id: 1,
+			metadata: {
+				jwtAuth: {
+					enabled: true,
+					mode: "full" as const,
+					loginUrl: "/login",
+					publicKey: "pub-key",
+					privateKey: "priv-key",
+				},
+				generatedJwtAuthEnabled: false,
+			} as SiteMetadata,
+		};
+		const noChanges = {
+			needsUpdate: false,
+			hasAuthChange: false,
+			hasBrandingChange: false,
+			hasFolderStructureChange: false,
+		};
+		const mockArticle = {
+			id: 1,
+			jrn: "jrn:1",
+			title: "Article 1",
+			updatedAt: "2026-01-01",
+			contentType: "text",
+			changeType: "new" as const,
+		};
+
+		it("should include needsUpdate and strip secrets", () => {
+			const result = buildSiteUpdateResponse(baseSite, { ...noChanges, needsUpdate: true });
+			expect(result.needsUpdate).toBe(true);
+			expect(result.metadata?.jwtAuth).not.toHaveProperty("privateKey");
+			expect(result.metadata?.jwtAuth).not.toHaveProperty("publicKey");
+		});
+
+		it("should include changedArticles only when needsUpdate is true", () => {
+			const articles = [mockArticle];
+			const resultTrue = buildSiteUpdateResponse(
+				baseSite,
+				{ ...noChanges, needsUpdate: true },
+				articles,
+			) as Record<string, unknown>;
+			expect(resultTrue.changedArticles).toEqual(articles);
+
+			const resultFalse = buildSiteUpdateResponse(baseSite, noChanges, articles) as Record<string, unknown>;
+			expect(resultFalse.changedArticles).toEqual([]);
+		});
+
+		it("should omit changedArticles when not provided", () => {
+			const result = buildSiteUpdateResponse(baseSite, { ...noChanges, needsUpdate: true });
+			expect(result).not.toHaveProperty("changedArticles");
+		});
+
+		it("should include authChange when auth has changed", () => {
+			const result = buildSiteUpdateResponse(baseSite, { ...noChanges, hasAuthChange: true }) as Record<
+				string,
+				unknown
+			>;
+			expect(result.authChange).toEqual({ from: false, to: true });
+		});
+
+		it("should include brandingChanged and folderStructureChanged flags", () => {
+			const result = buildSiteUpdateResponse(baseSite, {
+				...noChanges,
+				hasBrandingChange: true,
+				hasFolderStructureChange: true,
+			}) as Record<string, unknown>;
+			expect(result.brandingChanged).toBe(true);
+			expect(result.folderStructureChanged).toBe(true);
+		});
+
+		it("should omit granular flags when no config changes exist", () => {
+			const result = buildSiteUpdateResponse(baseSite, noChanges);
+			expect(result).not.toHaveProperty("authChange");
+			expect(result).not.toHaveProperty("brandingChanged");
+			expect(result).not.toHaveProperty("folderStructureChanged");
+		});
+	});
+
+	describe("computeNeedsUpdate", () => {
+		it("should return needsUpdate=true when articleChangesNeeded is true", () => {
+			const result = computeNeedsUpdate(undefined, true);
+			expect(result.needsUpdate).toBe(true);
+			expect(result.hasAuthChange).toBe(false);
+			expect(result.hasBrandingChange).toBe(false);
+			expect(result.hasFolderStructureChange).toBe(false);
+		});
+
+		it("should return needsUpdate=false when no changes", () => {
+			const result = computeNeedsUpdate(undefined, false);
+			expect(result.needsUpdate).toBe(false);
+		});
+
+		it("should detect auth change when jwt auth was toggled on", () => {
+			const metadata = {
+				jwtAuth: { enabled: true, mode: "full", loginUrl: "", publicKey: "" },
+				generatedJwtAuthEnabled: false,
+			} as import("../model/Site").SiteMetadata;
+			const result = computeNeedsUpdate(metadata, false);
+			expect(result.needsUpdate).toBe(true);
+			expect(result.hasAuthChange).toBe(true);
+		});
+
+		it("should detect auth change when jwt auth was toggled off", () => {
+			const metadata = {
+				jwtAuth: { enabled: false, mode: "full", loginUrl: "", publicKey: "" },
+				generatedJwtAuthEnabled: true,
+			} as import("../model/Site").SiteMetadata;
+			const result = computeNeedsUpdate(metadata, false);
+			expect(result.needsUpdate).toBe(true);
+			expect(result.hasAuthChange).toBe(true);
+		});
+
+		it("should not detect auth change when both are the same", () => {
+			const metadata = {
+				jwtAuth: { enabled: true, mode: "full", loginUrl: "", publicKey: "" },
+				generatedJwtAuthEnabled: true,
+			} as import("../model/Site").SiteMetadata;
+			const result = computeNeedsUpdate(metadata, false);
+			expect(result.hasAuthChange).toBe(false);
+		});
+
+		it("should detect branding change", () => {
+			const metadata = {
+				branding: { logo: "New Logo" },
+				generatedBranding: { logo: "Old Logo" },
+			} as import("../model/Site").SiteMetadata;
+			const result = computeNeedsUpdate(metadata, false);
+			expect(result.needsUpdate).toBe(true);
+			expect(result.hasBrandingChange).toBe(true);
+		});
+
+		it("should not detect branding change when branding is equal", () => {
+			const branding = { logo: "Same Logo" };
+			const metadata = {
+				branding,
+				generatedBranding: { ...branding },
+			} as import("../model/Site").SiteMetadata;
+			const result = computeNeedsUpdate(metadata, false);
+			expect(result.hasBrandingChange).toBe(false);
+		});
+
+		it("should detect folder structure change", () => {
+			const metadata = {
+				useSpaceFolderStructure: true,
+				generatedUseSpaceFolderStructure: false,
+			} as import("../model/Site").SiteMetadata;
+			const result = computeNeedsUpdate(metadata, false);
+			expect(result.needsUpdate).toBe(true);
+			expect(result.hasFolderStructureChange).toBe(true);
+		});
+
+		it("should not detect folder structure change when both undefined", () => {
+			const result = computeNeedsUpdate({} as import("../model/Site").SiteMetadata, false);
+			expect(result.hasFolderStructureChange).toBe(false);
+		});
+	});
+
+	describe("buildArticleTitleMap", () => {
+		it("should build a map of JRN to title from contentMetadata", () => {
+			const articles = [
+				{ jrn: "/docs/intro", contentMetadata: { title: "Introduction" } },
+				{ jrn: "/docs/setup", contentMetadata: { title: "Setup Guide" } },
+			] as Array<import("../model/Doc").Doc>;
+
+			const result = buildArticleTitleMap(articles);
+			expect(result).toEqual({
+				"/docs/intro": "Introduction",
+				"/docs/setup": "Setup Guide",
+			});
+		});
+
+		it("should skip articles without a title in contentMetadata", () => {
+			const articles = [
+				{ jrn: "/docs/intro", contentMetadata: { title: "Introduction" } },
+				{ jrn: "/docs/no-title", contentMetadata: {} },
+				{ jrn: "/docs/null-meta", contentMetadata: undefined },
+			] as Array<import("../model/Doc").Doc>;
+
+			const result = buildArticleTitleMap(articles);
+			expect(result).toEqual({ "/docs/intro": "Introduction" });
+		});
+
+		it("should return an empty map for an empty articles array", () => {
+			const result = buildArticleTitleMap([]);
+			expect(result).toEqual({});
 		});
 	});
 });

@@ -30,6 +30,11 @@ describe("AWSParameterStoreProvider", () => {
 		vi.doMock("../../util/AWSCredentials", () => ({
 			createAWSCredentialsProvider: mockCreateAWSCredentialsProvider,
 		}));
+
+		// Mock withRetry to pass through to the operation directly (no actual retries in tests)
+		vi.doMock("../../util/Retry", () => ({
+			withRetry: vi.fn().mockImplementation((operation: () => Promise<unknown>) => operation()),
+		}));
 	});
 
 	afterEach(() => {
@@ -58,6 +63,22 @@ describe("AWSParameterStoreProvider", () => {
 			const provider = new AWSParameterStoreProvider();
 			expect(provider.isAvailable()).toBe(false);
 		});
+
+		it("returns false when SKIP_PSTORE is true, even if PSTORE_ENV is set", async () => {
+			process.env.PSTORE_ENV = "prod";
+			process.env.SKIP_PSTORE = "true";
+			const { AWSParameterStoreProvider } = await import("./AWSParameterStoreProvider");
+			const provider = new AWSParameterStoreProvider();
+			expect(provider.isAvailable()).toBe(false);
+		});
+
+		it("returns true when SKIP_PSTORE is false and PSTORE_ENV is set", async () => {
+			process.env.PSTORE_ENV = "prod";
+			process.env.SKIP_PSTORE = "false";
+			const { AWSParameterStoreProvider } = await import("./AWSParameterStoreProvider");
+			const provider = new AWSParameterStoreProvider();
+			expect(provider.isAvailable()).toBe(true);
+		});
 	});
 
 	describe("load", () => {
@@ -78,9 +99,9 @@ describe("AWSParameterStoreProvider", () => {
 			expect(mockLoad).toHaveBeenCalled();
 		});
 
-		it("uses backend path base when not on Vercel", async () => {
+		it("defaults to app path base when no PSTORE_PATH_BASE is set", async () => {
 			process.env.PSTORE_ENV = "dev";
-			delete process.env.VERCEL;
+			delete process.env.PSTORE_PATH_BASE;
 
 			const { AWSParameterStoreProvider } = await import("./AWSParameterStoreProvider");
 			const provider = new AWSParameterStoreProvider();
@@ -88,15 +109,15 @@ describe("AWSParameterStoreProvider", () => {
 
 			expect(ParameterStoreLoaderMock).toHaveBeenCalledWith({
 				pstoreEnv: "dev",
-				pathBase: "backend",
+				pathBase: "app",
 				applyToProcessEnv: false,
 				credentials: undefined,
 			});
 		});
 
-		it("uses vercel path base when on Vercel", async () => {
+		it("uses PSTORE_PATH_BASE when set to backend", async () => {
 			process.env.PSTORE_ENV = "prod";
-			process.env.VERCEL = "1";
+			process.env.PSTORE_PATH_BASE = "backend";
 
 			const { AWSParameterStoreProvider } = await import("./AWSParameterStoreProvider");
 			const provider = new AWSParameterStoreProvider();
@@ -104,7 +125,23 @@ describe("AWSParameterStoreProvider", () => {
 
 			expect(ParameterStoreLoaderMock).toHaveBeenCalledWith({
 				pstoreEnv: "prod",
-				pathBase: "vercel",
+				pathBase: "backend",
+				applyToProcessEnv: false,
+				credentials: undefined,
+			});
+		});
+
+		it("uses PSTORE_PATH_BASE when set to app", async () => {
+			process.env.PSTORE_ENV = "prod";
+			process.env.PSTORE_PATH_BASE = "app";
+
+			const { AWSParameterStoreProvider } = await import("./AWSParameterStoreProvider");
+			const provider = new AWSParameterStoreProvider();
+			await provider.load();
+
+			expect(ParameterStoreLoaderMock).toHaveBeenCalledWith({
+				pstoreEnv: "prod",
+				pathBase: "app",
 				applyToProcessEnv: false,
 				credentials: undefined,
 			});
@@ -150,10 +187,9 @@ describe("AWSParameterStoreProvider", () => {
 		});
 	});
 
-	describe("OIDC credentials", () => {
-		it("calls createAWSCredentialsProvider with correct options when not on Vercel", async () => {
+	describe("credentials", () => {
+		it("calls createAWSCredentialsProvider with no role ARN by default", async () => {
 			process.env.PSTORE_ENV = "dev";
-			delete process.env.VERCEL;
 			delete process.env.AWS_OIDC_ROLE_ARN;
 			process.env.AWS_REGION = "us-west-2";
 
@@ -162,16 +198,13 @@ describe("AWSParameterStoreProvider", () => {
 			await provider.load();
 
 			expect(mockCreateAWSCredentialsProvider).toHaveBeenCalledWith({
-				roleArn: undefined,
-				isVercel: false,
 				region: "us-west-2",
 			});
 		});
 
-		it("calls createAWSCredentialsProvider with role ARN when on Vercel with OIDC", async () => {
+		it("calls createAWSCredentialsProvider with role ARN when set", async () => {
 			process.env.PSTORE_ENV = "prod";
-			process.env.VERCEL = "1";
-			process.env.AWS_OIDC_ROLE_ARN = "arn:aws:iam::123456789012:role/JolliVercelRole";
+			process.env.AWS_OIDC_ROLE_ARN = "arn:aws:iam::123456789012:role/JolliRole";
 			process.env.AWS_REGION = "us-east-1";
 
 			const { AWSParameterStoreProvider } = await import("./AWSParameterStoreProvider");
@@ -179,16 +212,14 @@ describe("AWSParameterStoreProvider", () => {
 			await provider.load();
 
 			expect(mockCreateAWSCredentialsProvider).toHaveBeenCalledWith({
-				roleArn: "arn:aws:iam::123456789012:role/JolliVercelRole",
-				isVercel: true,
+				roleArn: "arn:aws:iam::123456789012:role/JolliRole",
 				region: "us-east-1",
 			});
 		});
 
-		it("passes credentials provider to ParameterStoreLoader when OIDC is configured", async () => {
+		it("passes credentials provider to ParameterStoreLoader when configured", async () => {
 			process.env.PSTORE_ENV = "prod";
-			process.env.VERCEL = "1";
-			process.env.AWS_OIDC_ROLE_ARN = "arn:aws:iam::123456789012:role/JolliVercelRole";
+			process.env.AWS_OIDC_ROLE_ARN = "arn:aws:iam::123456789012:role/JolliRole";
 
 			const mockCredentialsProvider = vi.fn().mockResolvedValue({
 				accessKeyId: "AKIATEST",
@@ -202,15 +233,14 @@ describe("AWSParameterStoreProvider", () => {
 
 			expect(ParameterStoreLoaderMock).toHaveBeenCalledWith({
 				pstoreEnv: "prod",
-				pathBase: "vercel",
+				pathBase: "app",
 				applyToProcessEnv: false,
 				credentials: mockCredentialsProvider,
 			});
 		});
 
-		it("uses default credentials when on Vercel but no role ARN", async () => {
+		it("uses default credentials when no role ARN is set", async () => {
 			process.env.PSTORE_ENV = "preview";
-			process.env.VERCEL = "1";
 			delete process.env.AWS_OIDC_ROLE_ARN;
 			delete process.env.AWS_REGION;
 
@@ -218,16 +248,12 @@ describe("AWSParameterStoreProvider", () => {
 			const provider = new AWSParameterStoreProvider();
 			await provider.load();
 
-			expect(mockCreateAWSCredentialsProvider).toHaveBeenCalledWith({
-				roleArn: undefined,
-				isVercel: true,
-				region: undefined,
-			});
+			expect(mockCreateAWSCredentialsProvider).toHaveBeenCalledWith({});
 
 			// Should pass undefined credentials (default chain)
 			expect(ParameterStoreLoaderMock).toHaveBeenCalledWith({
 				pstoreEnv: "preview",
-				pathBase: "vercel",
+				pathBase: "app",
 				applyToProcessEnv: false,
 				credentials: undefined,
 			});

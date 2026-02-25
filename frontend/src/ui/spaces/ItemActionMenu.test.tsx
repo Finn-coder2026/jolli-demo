@@ -174,4 +174,112 @@ describe("ItemActionMenu", () => {
 
 		expect(mockOnRename).toHaveBeenCalled();
 	});
+
+	it("should show Move to option when onMoveTo is provided", async () => {
+		const mockOnMoveTo = vi.fn();
+		render(<ItemActionMenu {...defaultProps} onMoveTo={mockOnMoveTo} />);
+
+		fireEvent.click(screen.getByTestId("item-action-menu-trigger"));
+
+		await waitFor(() => {
+			expect(screen.getByTestId("move-to-option")).toBeDefined();
+			expect(screen.getByText("Move to...")).toBeDefined();
+		});
+	});
+
+	it("should not show Move to option when onMoveTo is not provided", async () => {
+		render(<ItemActionMenu {...defaultProps} />);
+
+		fireEvent.click(screen.getByTestId("item-action-menu-trigger"));
+
+		await waitFor(() => {
+			expect(screen.queryByTestId("move-to-option")).toBeNull();
+		});
+	});
+
+	it("should call onMoveTo when Move to option is clicked", async () => {
+		const mockOnMoveTo = vi.fn();
+		render(<ItemActionMenu {...defaultProps} onMoveTo={mockOnMoveTo} />);
+
+		fireEvent.click(screen.getByTestId("item-action-menu-trigger"));
+
+		await waitFor(() => {
+			fireEvent.click(screen.getByTestId("move-to-option"));
+		});
+
+		expect(mockOnMoveTo).toHaveBeenCalled();
+	});
+
+	it("should show New Folder and New Article options when onAddFolder is provided", async () => {
+		const mockOnAddArticle = vi.fn();
+		const mockOnAddFolder = vi.fn();
+		render(
+			<ItemActionMenu
+				{...defaultProps}
+				isFolder={true}
+				onAddArticle={mockOnAddArticle}
+				onAddFolder={mockOnAddFolder}
+			/>,
+		);
+
+		fireEvent.click(screen.getByTestId("item-action-menu-trigger"));
+
+		await waitFor(() => {
+			expect(screen.getByTestId("add-article-option")).toBeDefined();
+			expect(screen.getByTestId("add-folder-option")).toBeDefined();
+		});
+	});
+
+	it("should not show New Folder/Article options when callbacks are not provided", async () => {
+		render(<ItemActionMenu {...defaultProps} />);
+
+		fireEvent.click(screen.getByTestId("item-action-menu-trigger"));
+
+		await waitFor(() => {
+			expect(screen.queryByTestId("add-article-option")).toBeNull();
+			expect(screen.queryByTestId("add-folder-option")).toBeNull();
+		});
+	});
+
+	it("should call onAddArticle when New Article option is clicked", async () => {
+		const mockOnAddArticle = vi.fn();
+		const mockOnAddFolder = vi.fn();
+		render(
+			<ItemActionMenu
+				{...defaultProps}
+				isFolder={true}
+				onAddArticle={mockOnAddArticle}
+				onAddFolder={mockOnAddFolder}
+			/>,
+		);
+
+		fireEvent.click(screen.getByTestId("item-action-menu-trigger"));
+
+		await waitFor(() => {
+			fireEvent.click(screen.getByTestId("add-article-option"));
+		});
+
+		expect(mockOnAddArticle).toHaveBeenCalled();
+	});
+
+	it("should call onAddFolder when New Folder option is clicked", async () => {
+		const mockOnAddArticle = vi.fn();
+		const mockOnAddFolder = vi.fn();
+		render(
+			<ItemActionMenu
+				{...defaultProps}
+				isFolder={true}
+				onAddArticle={mockOnAddArticle}
+				onAddFolder={mockOnAddFolder}
+			/>,
+		);
+
+		fireEvent.click(screen.getByTestId("item-action-menu-trigger"));
+
+		await waitFor(() => {
+			fireEvent.click(screen.getByTestId("add-folder-option"));
+		});
+
+		expect(mockOnAddFolder).toHaveBeenCalled();
+	});
 });

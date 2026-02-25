@@ -138,13 +138,13 @@ export class WorkerStack extends cdk.Stack {
 		});
 
 		// Allow reading from Parameter Store (for secrets via PSTORE_ENV)
-		// Uses /jolli/vercel/{environment}/* path (VERCEL=1 env var makes config use this path)
+		// Uses /jolli/app/{environment}/* path
 		taskRole.addToPolicy(
 			new iam.PolicyStatement({
 				effect: iam.Effect.ALLOW,
 				actions: ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"],
 				resources: [
-					`arn:aws:ssm:${this.region}:${this.account}:parameter/jolli/vercel/${environment}/*`,
+					`arn:aws:ssm:${this.region}:${this.account}:parameter/jolli/app/${environment}/*`,
 				],
 			}),
 		);
@@ -197,16 +197,20 @@ export class WorkerStack extends cdk.Stack {
 				AWS_REGION: this.region,
 				// Use console transport for logs (CloudWatch captures stdout)
 				LOG_TRANSPORTS: "console",
-				// Use Vercel path for Parameter Store (/jolli/vercel/{env}/)
-				// This ensures worker uses same config as Vercel-deployed backend
-				VERCEL: "1",
+				// Parameter Store path base for ECS deployments
+				PSTORE_PATH_BASE: "app",
+				// Skip Sequelize sync on startup — schema is managed via bootstrap/migrations.
+				// Neon's information_schema views are too slow for alter-based sync at startup.
+				SKIP_SEQUELIZE_SYNC: "true",
 			},
 			healthCheck: {
-				command: ["CMD-SHELL", "node -e \"process.exit(0)\" || exit 1"],
+				// Verify the worker process (PID 1) is alive
+				command: ["CMD-SHELL", "kill -0 1 || exit 1"],
 				interval: cdk.Duration.seconds(30),
 				timeout: cdk.Duration.seconds(5),
 				retries: 3,
-				startPeriod: cdk.Duration.seconds(60),
+				// Worker startup is slower than app (DB connections, scheduler init)
+				startPeriod: cdk.Duration.seconds(120),
 			},
 		});
 
@@ -268,5 +272,6 @@ export class WorkerStack extends cdk.Stack {
 			value: logGroup.logGroupName,
 			description: "CloudWatch Log Group",
 		});
+
 	}
 }

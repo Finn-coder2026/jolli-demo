@@ -570,6 +570,32 @@ describe("ConnectRouter", () => {
 			);
 		});
 
+		it("should use https redirect in production even when USE_GATEWAY is false", async () => {
+			const originalNodeEnv = process.env.NODE_ENV;
+			process.env.NODE_ENV = "production";
+			process.env.USE_GATEWAY = "false";
+			resetConfig();
+
+			try {
+				const app = createApp(createMockTenantContext());
+				const response = await request(app)
+					.post("/api/connect/github/connect-existing")
+					.send({ installationId: 123 });
+
+				expect(response.status).toBe(200);
+				expect(response.body.redirectUrl).toBe(
+					"https://test-tenant.example.com/integrations/github/org/acme-org?new_installation=true",
+				);
+			} finally {
+				if (originalNodeEnv === undefined) {
+					delete process.env.NODE_ENV;
+				} else {
+					process.env.NODE_ENV = originalNodeEnv;
+				}
+				resetConfig();
+			}
+		});
+
 		it("should return error when connection fails", async () => {
 			const app = createApp(createMockTenantContext());
 			mockProvider.connectExistingInstallation.mockResolvedValueOnce({

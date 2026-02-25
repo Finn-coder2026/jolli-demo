@@ -263,7 +263,6 @@ describe("SyncUpArticleTool", () => {
 				docType: "document",
 				slug: "test",
 				path: "",
-				sortOrder: 0,
 				createdBy: "system",
 			});
 		});
@@ -401,7 +400,6 @@ describe("SyncUpArticleTool", () => {
 				docType: "document",
 				slug: "test-api",
 				path: "",
-				sortOrder: 0,
 				createdBy: "system",
 			});
 		});
@@ -451,7 +449,6 @@ describe("SyncUpArticleTool", () => {
 				docType: "document",
 				slug: "test-api",
 				path: "",
-				sortOrder: 0,
 				createdBy: "system",
 			});
 		});
@@ -501,7 +498,6 @@ describe("SyncUpArticleTool", () => {
 				docType: "document",
 				slug: "test-api",
 				path: "",
-				sortOrder: 0,
 				createdBy: "system",
 			});
 		});

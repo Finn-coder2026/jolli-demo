@@ -1,6 +1,8 @@
 import type { MercureService } from "../services/MercureService";
+import type { TokenUtil } from "../util/TokenUtil";
 import { createMercureRouter } from "./MercureRouter";
 import express, { type Express } from "express";
+import type { UserInfo } from "jolli-common";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 
@@ -17,9 +19,35 @@ vi.mock("../services/MercureService", () => ({
 import { getConfig } from "../config/Config";
 import { createMercureService } from "../services/MercureService";
 
+/**
+ * Create a mock TokenUtil for testing.
+ * decodePayload returns a UserInfo with the given userId by default.
+ */
+function createMockTokenUtil(userId = 42): TokenUtil<UserInfo> {
+	return {
+		generateToken: vi.fn().mockReturnValue("mock-token"),
+		decodePayload: vi.fn().mockReturnValue({ userId, email: "test@test.com", name: "Test", picture: undefined }),
+		decodePayloadFromToken: vi
+			.fn()
+			.mockReturnValue({ userId, email: "test@test.com", name: "Test", picture: undefined }),
+	};
+}
+
+/**
+ * Create an Express middleware that simulates UserProvisioningMiddleware
+ * by setting req.orgUser with the given user ID.
+ */
+function createMockUserMiddleware(userId: number) {
+	return (req: express.Request, _res: express.Response, next: express.NextFunction) => {
+		req.orgUser = { id: userId, email: "test@test.com", name: "Test", picture: undefined };
+		next();
+	};
+}
+
 describe("MercureRouter", () => {
 	let app: Express;
 	let mockMercureService: MercureService;
+	let mockTokenUtil: TokenUtil<UserInfo>;
 	const mockGetConfig = getConfig as Mock;
 	const mockCreateMercureService = createMercureService as Mock;
 
@@ -30,6 +58,8 @@ describe("MercureRouter", () => {
 		MERCURE_SUBSCRIBER_JWT_SECRET: "test-subscriber-secret",
 	};
 
+	const TEST_USER_ID = 42;
+
 	beforeEach(() => {
 		vi.clearAllMocks();
 
@@ -39,20 +69,28 @@ describe("MercureRouter", () => {
 			getJobEventsTopic: vi.fn().mockReturnValue("/tenants/default/jobs/events"),
 			getDraftTopic: vi.fn().mockImplementation((id: number) => `/tenants/default/drafts/${id}`),
 			getConvoTopic: vi.fn().mockImplementation((id: number) => `/tenants/default/convos/${id}`),
+			getOnboardingTopic: vi
+				.fn()
+				.mockImplementation((id: number) => `/tenants/default/orgs/default/onboarding/${id}`),
 			createSubscriberToken: vi.fn().mockReturnValue("mock-subscriber-token"),
 			publishJobEvent: vi.fn().mockResolvedValue({ success: true }),
 			publishDraftEvent: vi.fn().mockResolvedValue({ success: true }),
 			publishConvoEvent: vi.fn().mockResolvedValue({ success: true }),
+			publishOnboardingEvent: vi.fn().mockResolvedValue({ success: true }),
 		};
 		mockCreateMercureService.mockReturnValue(mockMercureService);
 
 		// Setup default config
 		mockGetConfig.mockReturnValue(defaultConfig);
 
-		// Setup Express app
+		// Setup mock TokenUtil
+		mockTokenUtil = createMockTokenUtil(TEST_USER_ID);
+
+		// Setup Express app with user middleware to simulate auth + provisioning
 		app = express();
 		app.use(express.json());
-		app.use("/mercure", createMercureRouter(mockMercureService));
+		app.use(createMockUserMiddleware(TEST_USER_ID));
+		app.use("/mercure", createMercureRouter({ tokenUtil: mockTokenUtil, mercureService: mockMercureService }));
 	});
 
 	afterEach(() => {
@@ -63,7 +101,7 @@ describe("MercureRouter", () => {
 		// Create router without passing a service to hit the ?? fallback branch
 		const appWithDefaultService = express();
 		appWithDefaultService.use(express.json());
-		appWithDefaultService.use("/mercure", createMercureRouter());
+		appWithDefaultService.use("/mercure", createMercureRouter({ tokenUtil: mockTokenUtil }));
 
 		const response = await request(appWithDefaultService).get("/mercure/config");
 
@@ -179,6 +217,50 @@ describe("MercureRouter", () => {
 				expect(response.body).toEqual({ error: "Convo ID required for type 'convo'" });
 			});
 
+			it("should return token for onboarding type using authenticated user's ID", async () => {
+				// Even if client sends a different id (e.g., 999), the router should use
+				// the authenticated user's ID (42) from req.orgUser
+				const response = await request(app).post("/mercure/token").send({ type: "onboarding", id: 999 });
+
+				expect(response.status).toBe(200);
+				expect(response.body).toEqual({
+					token: "mock-subscriber-token",
+					topics: [`/tenants/default/orgs/default/onboarding/${TEST_USER_ID}`],
+				});
+				// Should use the authenticated user ID (42), not the requested ID (999)
+				expect(mockMercureService.getOnboardingTopic).toHaveBeenCalledWith(TEST_USER_ID);
+			});
+
+			it("should return token for onboarding type without id in body", async () => {
+				// No id needed in body — the router uses the authenticated user's ID
+				const response = await request(app).post("/mercure/token").send({ type: "onboarding" });
+
+				expect(response.status).toBe(200);
+				expect(response.body).toEqual({
+					token: "mock-subscriber-token",
+					topics: [`/tenants/default/orgs/default/onboarding/${TEST_USER_ID}`],
+				});
+				expect(mockMercureService.getOnboardingTopic).toHaveBeenCalledWith(TEST_USER_ID);
+			});
+
+			it("should return 401 for onboarding type when user ID cannot be determined", async () => {
+				// Create an app without user middleware and with a tokenUtil that returns undefined
+				const noUserTokenUtil = createMockTokenUtil();
+				(noUserTokenUtil.decodePayload as Mock).mockReturnValue(undefined);
+
+				const noUserApp = express();
+				noUserApp.use(express.json());
+				noUserApp.use(
+					"/mercure",
+					createMercureRouter({ tokenUtil: noUserTokenUtil, mercureService: mockMercureService }),
+				);
+
+				const response = await request(noUserApp).post("/mercure/token").send({ type: "onboarding" });
+
+				expect(response.status).toBe(401);
+				expect(response.body).toEqual({ error: "Could not determine authenticated user ID" });
+			});
+
 			it("should return 400 for invalid type", async () => {
 				const response = await request(app).post("/mercure/token").send({ type: "invalid" });
 
@@ -233,15 +315,17 @@ describe("MercureRouter", () => {
 				getJobEventsTopic: vi.fn().mockReturnValue("/custom/topic"),
 				getDraftTopic: vi.fn(),
 				getConvoTopic: vi.fn(),
+				getOnboardingTopic: vi.fn(),
 				createSubscriberToken: vi.fn().mockReturnValue("custom-token"),
 				publishJobEvent: vi.fn(),
 				publishDraftEvent: vi.fn(),
 				publishConvoEvent: vi.fn(),
+				publishOnboardingEvent: vi.fn(),
 			};
 
 			const customApp = express();
 			customApp.use(express.json());
-			customApp.use("/mercure", createMercureRouter(customService));
+			customApp.use("/mercure", createMercureRouter({ tokenUtil: mockTokenUtil, mercureService: customService }));
 
 			const response = await request(customApp).post("/mercure/token").send({ type: "jobs" });
 
@@ -256,8 +340,8 @@ describe("MercureRouter", () => {
 
 			const defaultApp = express();
 			defaultApp.use(express.json());
-			// Call without providing a service - triggers the ?? fallback
-			defaultApp.use("/mercure", createMercureRouter());
+			// Call without providing a mercureService - triggers the ?? fallback
+			defaultApp.use("/mercure", createMercureRouter({ tokenUtil: mockTokenUtil }));
 
 			const response = await request(defaultApp).get("/mercure/config");
 

@@ -13,9 +13,10 @@ import {
 	DropdownMenu,
 	DropdownMenuContent,
 	DropdownMenuItem,
+	DropdownMenuSeparator,
 	DropdownMenuTrigger,
 } from "../../components/ui/DropdownMenu";
-import { MoreHorizontal, Pencil, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, FileText, Folder, FolderInput, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 import type { ReactElement, ReactNode } from "react";
 import { useState } from "react";
 import { useIntlayer } from "react-intlayer";
@@ -27,6 +28,22 @@ export interface ItemActionMenuProps {
 	onRename: () => void;
 	onDelete: () => Promise<void>;
 	onOpenChange?: (open: boolean) => void;
+	/** Whether the current sort mode is "default" (enables Move Up/Down) */
+	isDefaultSort?: boolean;
+	/** Whether this item can move up (not first among siblings) */
+	canMoveUp?: boolean;
+	/** Whether this item can move down (not last among siblings) */
+	canMoveDown?: boolean;
+	/** Called when Move Up is clicked */
+	onMoveUp?: (() => void) | undefined;
+	/** Called when Move Down is clicked */
+	onMoveDown?: (() => void) | undefined;
+	/** Called when Move to is clicked */
+	onMoveTo?: (() => void) | undefined;
+	/** Called when New Article is clicked (folders only) */
+	onAddArticle?: (() => void) | undefined;
+	/** Called when New Folder is clicked (folders only) */
+	onAddFolder?: (() => void) | undefined;
 }
 
 export function ItemActionMenu({
@@ -36,6 +53,14 @@ export function ItemActionMenu({
 	onRename,
 	onDelete,
 	onOpenChange,
+	isDefaultSort = false,
+	canMoveUp = false,
+	canMoveDown = false,
+	onMoveUp,
+	onMoveDown,
+	onMoveTo,
+	onAddArticle,
+	onAddFolder,
 }: ItemActionMenuProps): ReactElement {
 	const content = useIntlayer("space-tree-nav");
 	const [showDeleteDialog, setShowDeleteDialog] = useState(false);
@@ -64,10 +89,50 @@ export function ItemActionMenu({
 					</Button>
 				</DropdownMenuTrigger>
 				<DropdownMenuContent align="end">
+					{onAddFolder && (
+						<>
+							<DropdownMenuItem onClick={onAddFolder} data-testid="add-folder-option">
+								<Folder className="h-4 w-4 mr-2" />
+								{content.newFolder}
+							</DropdownMenuItem>
+							<DropdownMenuItem onClick={onAddArticle} data-testid="add-article-option">
+								<FileText className="h-4 w-4 mr-2" />
+								{content.newArticle}
+							</DropdownMenuItem>
+							<DropdownMenuSeparator />
+						</>
+					)}
 					<DropdownMenuItem onClick={onRename} data-testid="rename-item-option">
 						<Pencil className="h-4 w-4 mr-2" />
 						{content.rename}
 					</DropdownMenuItem>
+					{onMoveTo && (
+						<>
+							<DropdownMenuSeparator />
+							<DropdownMenuItem onClick={onMoveTo} data-testid="move-to-option">
+								<FolderInput className="h-4 w-4 mr-2" />
+								{content.moveTo}
+							</DropdownMenuItem>
+						</>
+					)}
+					{isDefaultSort && (
+						<>
+							<DropdownMenuSeparator />
+							<DropdownMenuItem onClick={onMoveUp} disabled={!canMoveUp} data-testid="move-up-option">
+								<ArrowUp className="h-4 w-4 mr-2" />
+								{content.moveUp}
+							</DropdownMenuItem>
+							<DropdownMenuItem
+								onClick={onMoveDown}
+								disabled={!canMoveDown}
+								data-testid="move-down-option"
+							>
+								<ArrowDown className="h-4 w-4 mr-2" />
+								{content.moveDown}
+							</DropdownMenuItem>
+						</>
+					)}
+					<DropdownMenuSeparator />
 					<DropdownMenuItem
 						onClick={() => setShowDeleteDialog(true)}
 						className="text-destructive focus:text-destructive"

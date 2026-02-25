@@ -1,7 +1,7 @@
+import type { ActiveUserDao } from "../../dao/ActiveUserDao";
 import type { DocDao } from "../../dao/DocDao";
 import type { DocDraftDao } from "../../dao/DocDraftDao";
 import type { DocDraftSectionChangesDao } from "../../dao/DocDraftSectionChangesDao";
-import type { UserDao } from "../../dao/UserDao";
 import { createEditSectionToolDefinition, executeEditSectionTool } from "./EditSectionTool";
 import { describe, expect, it, vi } from "vitest";
 
@@ -53,6 +53,7 @@ describe("EditSectionTool", () => {
 			countMySharedNewDrafts: vi.fn(),
 			countSharedWithMeDrafts: vi.fn(),
 			countArticlesWithAgentSuggestions: vi.fn(),
+			getAllContent: vi.fn(),
 		});
 
 		it("returns error if draft not found", async () => {
@@ -782,11 +783,11 @@ Details content here.`;
 		});
 
 		describe("article suggestion mode (createArticleEditSuggestion)", () => {
-			const mockUserDao = (): UserDao =>
+			const mockUserDao = (): ActiveUserDao =>
 				({
-					findUser: vi.fn(),
-					findUserById: vi.fn(),
-				}) as unknown as UserDao;
+					findByEmail: vi.fn(),
+					findById: vi.fn(),
+				}) as unknown as ActiveUserDao;
 
 			it("returns error when section not found in article suggestion mode", async () => {
 				const dao = mockDocDraftDao();
@@ -1033,8 +1034,8 @@ Details content here.`;
 
 				// Falls back to direct edit because no updatedBy to look up owner
 				expect(result).toBe('Section "Introduction" updated successfully. The article has been saved.');
-				expect(userDao.findUser).not.toHaveBeenCalled();
-				expect(userDao.findUserById).not.toHaveBeenCalled();
+				expect(userDao.findByEmail).not.toHaveBeenCalled();
+				expect(userDao.findById).not.toHaveBeenCalled();
 			});
 
 			it("creates draft with numeric updatedBy and user found by ID", async () => {
@@ -1056,7 +1057,7 @@ Details content here.`;
 				} as unknown as DocDao;
 
 				vi.mocked(dao.findByDocId).mockResolvedValue([]);
-				vi.mocked(userDao.findUserById).mockResolvedValue({ id: 42, email: "user@example.com" } as never);
+				vi.mocked(userDao.findById).mockResolvedValue({ id: 42, email: "user@example.com" } as never);
 				vi.mocked(dao.createDocDraft).mockResolvedValue({
 					id: 10,
 					docId: 100,
@@ -1093,8 +1094,8 @@ Details content here.`;
 				expect(result).toBe(
 					'Suggested edit for section "Introduction" has been created on draft 10. The user can review and apply the change.',
 				);
-				expect(userDao.findUserById).toHaveBeenCalledWith(42);
-				expect(userDao.findUser).not.toHaveBeenCalled();
+				expect(userDao.findById).toHaveBeenCalledWith(42);
+				expect(userDao.findByEmail).not.toHaveBeenCalled();
 				expect(dao.createDocDraft).toHaveBeenCalledWith(
 					expect.objectContaining({
 						docId: 100,
@@ -1128,7 +1129,7 @@ Details content here.`;
 				} as unknown as DocDao;
 
 				vi.mocked(dao.findByDocId).mockResolvedValue([]);
-				vi.mocked(userDao.findUserById).mockResolvedValue(undefined as never);
+				vi.mocked(userDao.findById).mockResolvedValue(undefined as never);
 
 				const mockSectionChangesDao = {
 					createDocDraftSectionChanges: vi.fn(),
@@ -1147,7 +1148,7 @@ Details content here.`;
 
 				// Falls back to direct edit because user not found
 				expect(result).toBe('Section "Introduction" updated successfully. The article has been saved.');
-				expect(userDao.findUserById).toHaveBeenCalledWith(999);
+				expect(userDao.findById).toHaveBeenCalledWith(999);
 				expect(dao.createDocDraft).not.toHaveBeenCalled();
 			});
 
@@ -1170,7 +1171,7 @@ Details content here.`;
 				} as unknown as DocDao;
 
 				vi.mocked(dao.findByDocId).mockResolvedValue([]);
-				vi.mocked(userDao.findUser).mockResolvedValue({ id: 55, email: "user@example.com" } as never);
+				vi.mocked(userDao.findByEmail).mockResolvedValue({ id: 55, email: "user@example.com" } as never);
 				vi.mocked(dao.createDocDraft).mockResolvedValue({
 					id: 11,
 					docId: 100,
@@ -1207,8 +1208,8 @@ Details content here.`;
 				expect(result).toBe(
 					'Suggested edit for section "Introduction" has been created on draft 11. The user can review and apply the change.',
 				);
-				expect(userDao.findUser).toHaveBeenCalledWith("user@example.com");
-				expect(userDao.findUserById).not.toHaveBeenCalled();
+				expect(userDao.findByEmail).toHaveBeenCalledWith("user@example.com");
+				expect(userDao.findById).not.toHaveBeenCalled();
 				expect(dao.createDocDraft).toHaveBeenCalledWith(
 					expect.objectContaining({
 						docId: 100,
@@ -1242,7 +1243,7 @@ Details content here.`;
 				} as unknown as DocDao;
 
 				vi.mocked(dao.findByDocId).mockResolvedValue([]);
-				vi.mocked(userDao.findUser).mockResolvedValue(undefined as never);
+				vi.mocked(userDao.findByEmail).mockResolvedValue(undefined as never);
 
 				const mockSectionChangesDao = {
 					createDocDraftSectionChanges: vi.fn(),
@@ -1261,7 +1262,7 @@ Details content here.`;
 
 				// Falls back to direct edit because user not found
 				expect(result).toBe('Section "Introduction" updated successfully. The article has been saved.');
-				expect(userDao.findUser).toHaveBeenCalledWith("unknown@example.com");
+				expect(userDao.findByEmail).toHaveBeenCalledWith("unknown@example.com");
 				expect(dao.createDocDraft).not.toHaveBeenCalled();
 			});
 
@@ -1284,7 +1285,7 @@ Details content here.`;
 				} as unknown as DocDao;
 
 				vi.mocked(dao.findByDocId).mockResolvedValue([]);
-				vi.mocked(userDao.findUserById).mockResolvedValue({ id: 42, email: "user@example.com" } as never);
+				vi.mocked(userDao.findById).mockResolvedValue({ id: 42, email: "user@example.com" } as never);
 				vi.mocked(dao.createDocDraft).mockResolvedValue({
 					id: 12,
 					docId: 100,
@@ -1321,6 +1322,67 @@ Details content here.`;
 				expect(dao.createDocDraft).toHaveBeenCalledWith(
 					expect.objectContaining({
 						title: "my-document",
+					}),
+				);
+			});
+
+			it("edits preamble (null section) in article suggestion mode", async () => {
+				const dao = mockDocDraftDao();
+				const articleId = "jrn:article:123";
+				const originalContent = "Preamble text\n\n# Introduction\n\nIntro content";
+
+				const mockDocDao = {
+					readDoc: vi.fn().mockResolvedValue({
+						id: 100,
+						jrn: articleId,
+						title: "Test Article",
+						content: originalContent,
+						version: 1,
+					}),
+				} as unknown as DocDao;
+
+				vi.mocked(dao.findByDocId).mockResolvedValue([
+					{
+						id: 5,
+						docId: 100,
+						title: "Existing Draft",
+						content: originalContent,
+						contentType: "text/markdown",
+						createdBy: 1,
+						createdAt: new Date(),
+						updatedAt: new Date(),
+						contentLastEditedAt: null,
+						contentLastEditedBy: null,
+						contentMetadata: undefined,
+						isShared: false,
+						sharedAt: null,
+						sharedBy: null,
+						createdByAgent: false,
+					},
+				]);
+
+				const mockSectionChangesDao = {
+					createDocDraftSectionChanges: vi.fn().mockResolvedValue({ id: 1 }),
+				} as unknown as DocDraftSectionChangesDao;
+
+				const result = await executeEditSectionTool(
+					undefined,
+					articleId,
+					{ sectionTitle: "null", newContent: "Updated preamble" },
+					dao,
+					1,
+					mockDocDao,
+					mockSectionChangesDao,
+				);
+
+				expect(result).toBe(
+					'Suggested edit for section "null" has been created on draft 5. The user can review and apply the change.',
+				);
+				expect(mockSectionChangesDao.createDocDraftSectionChanges).toHaveBeenCalledWith(
+					expect.objectContaining({
+						draftId: 5,
+						docId: 100,
+						changeType: "update",
 					}),
 				);
 			});

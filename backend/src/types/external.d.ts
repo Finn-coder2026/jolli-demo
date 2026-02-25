@@ -1,5 +1,10 @@
 declare module "jolli-agent/workflows" {
-	export type WorkflowType = "architecture-doc" | "code-to-api-docs" | "docs-to-site" | "run-jolliscript";
+	export type WorkflowType =
+		| "architecture-doc"
+		| "code-to-api-docs"
+		| "docs-to-site"
+		| "run-jolliscript"
+		| "cli-impact";
 	export interface WorkflowResult {
 		success: boolean;
 		assistantText?: string;

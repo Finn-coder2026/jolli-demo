@@ -87,10 +87,6 @@ const schema = {
 	createdBy: {
 		type: DataTypes.INTEGER,
 		allowNull: false,
-		references: {
-			model: "users",
-			key: "id",
-		},
 	},
 	contentLastEditedAt: {
 		type: DataTypes.DATE,
@@ -99,10 +95,6 @@ const schema = {
 	contentLastEditedBy: {
 		type: DataTypes.INTEGER,
 		allowNull: true,
-		references: {
-			model: "users",
-			key: "id",
-		},
 	},
 	contentMetadata: {
 		type: DataTypes.JSONB,
@@ -120,10 +112,6 @@ const schema = {
 	sharedBy: {
 		type: DataTypes.INTEGER,
 		allowNull: true,
-		references: {
-			model: "users",
-			key: "id",
-		},
 	},
 	createdByAgent: {
 		type: DataTypes.BOOLEAN,

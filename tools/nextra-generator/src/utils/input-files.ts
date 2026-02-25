@@ -211,7 +211,8 @@ export function buildNavigationMeta(pages: Array<PageConfig>): Record<string, st
 export function buildFullNavigationMeta(pages: Array<PageConfig>, openApiSpecs?: Array<OpenApiSpecInfo>): NavMeta {
 	const meta: NavMeta = {};
 
-	// JOLLI-191: Hide index from nav (root redirects to first article via app/page.tsx)
+	// Hidden index entry ensures Nextra doesn't auto-generate an "Index" nav item
+	// The actual root redirect is handled by app/page.tsx (JOLLI-191)
 	meta.index = { display: "hidden" };
 
 	// Add article entries

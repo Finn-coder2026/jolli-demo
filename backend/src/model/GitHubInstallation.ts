@@ -39,11 +39,16 @@ export type NewGitHubInstallation = Omit<GitHubInstallation, "id" | "createdAt" 
 export const TABLE_NAME_GITHUB_INSTALLATIONS = "github_installations";
 
 export function defineGitHubInstallations(sequelize: Sequelize): ModelDef<GitHubInstallation> {
+	const existing = sequelize.models?.github_installations;
+	if (existing) {
+		return existing as ModelDef<GitHubInstallation>;
+	}
 	return sequelize.define(TABLE_NAME_GITHUB_INSTALLATIONS, schema, { timestamps: true, indexes });
 }
 
 const indexes = [
 	{
+		name: "github_installations_name_key",
 		unique: true,
 		fields: ["name"],
 	},

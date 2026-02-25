@@ -4,7 +4,7 @@ import { DataTypes, type Sequelize } from "sequelize";
 /**
  * Types of actors that can trigger audit events
  */
-export type AuditActorType = "user" | "system" | "api_key" | "webhook" | "scheduler";
+export type AuditActorType = "user" | "system" | "api_key" | "webhook" | "scheduler" | "superadmin";
 
 /**
  * Types of actions that can be audited
@@ -32,6 +32,8 @@ export type AuditAction =
 	| "webhook_received"
 	// User management events
 	| "invite"
+	| "accept"
+	| "decline"
 	| "activate"
 	| "deactivate"
 	| "role_change"
@@ -47,6 +49,9 @@ export type AuditAction =
  */
 export type AuditResourceType =
 	| "user"
+	| "active_user"
+	| "user_invitation"
+	| "archived_user"
 	| "site"
 	| "space"
 	| "folder"
@@ -55,7 +60,11 @@ export type AuditResourceType =
 	| "settings"
 	| "tenant"
 	| "org"
-	| "session";
+	| "session"
+	| "role"
+	| "role_permissions"
+	| "image"
+	| "owner_invitation";
 
 /**
  * Represents a single field change in an audit event
@@ -147,10 +156,6 @@ const schema = {
 	actorId: {
 		type: DataTypes.INTEGER,
 		allowNull: true,
-		references: {
-			model: "users",
-			key: "id",
-		},
 	},
 	actorType: {
 		type: DataTypes.STRING(32),

@@ -8,14 +8,35 @@ import { Input } from "../../components/ui/Input";
 import { NumberEdit, type NumberEditRef } from "../../components/ui/NumberEdit";
 import { ResizablePanels } from "../../components/ui/ResizablePanels";
 import { useClient } from "../../contexts/ClientContext";
+import { useRepositoryState } from "../../hooks/useRepositoryState";
+import type { FileTreeNode } from "../../types/FileTree";
 import { formatTimestamp } from "../../util/DateTimeUtil";
-import { loadTypeScript, type ValidationIssue, validateMetaContent } from "../../util/MetaValidator";
+import {
+	applyExpandedPaths,
+	clearAllPendingContent,
+	clearNodePendingContent,
+	collectExpandedPaths,
+	collectFilesWithErrors,
+	findAllMetaFiles,
+	findNodeInTree,
+	findNodePendingContent,
+	getParentPath,
+	insertNodeOptimistically,
+	insertNodeWithMetaSync,
+	moveNodeWithMetaSync,
+	removeNodeWithMetaSync,
+	renameNodeOptimistically,
+	treeHasSyntaxErrors,
+	updateNodePendingContent,
+	updateNodeSyntaxErrors,
+} from "../../util/FileTreeUtils";
+import { getLog } from "../../util/Logger";
+import { type ValidationIssue, validateMetaContent } from "../../util/MetaValidator";
 import type { Site } from "jolli-common";
 import {
 	AlignLeft,
 	ChevronDown,
 	ChevronRight,
-	Edit,
 	File,
 	Folder,
 	FolderPlus,
@@ -32,6 +53,8 @@ import {
 import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useIntlayer } from "react-intlayer";
 
+const log = getLog(import.meta);
+
 interface GitHubTreeItem {
 	path: string;
 	mode: string;
@@ -41,21 +64,22 @@ interface GitHubTreeItem {
 	url: string;
 }
 
-interface FileTreeNode {
-	name: string;
-	path: string;
-	type: "file" | "folder";
-	size?: number;
-	children?: Array<FileTreeNode>;
-	expanded?: boolean;
-}
-
 interface RepositoryViewerProps {
 	docsite: Site;
 	/** Callback when a file is successfully saved (to refresh parent state) */
 	onFileSave?: (() => void) | undefined;
+	/** Callback when dirty state changes (unsaved changes present/absent) */
+	onDirtyStateChange?: ((isDirty: boolean) => void) | undefined;
 	/** When true, only show _meta.ts files for navigation editing (simplified view) */
 	metaFilesOnly?: boolean;
+	/** When false, hide the branch and sync info header (default: true) */
+	showBranchInfo?: boolean;
+	/** When true, only render the content/ subtree in the UI (default: false). The full tree is kept in state for meta sync. */
+	contentFolderOnly?: boolean;
+	/** When true, use full height layout instead of fixed 600px (default: false) */
+	fullHeight?: boolean;
+	/** When true, files are read-only and cannot be edited (default: false) */
+	readOnly?: boolean;
 }
 
 /** Validation issue with line/column info for navigation */
@@ -83,6 +107,13 @@ function isNextraMetaFile(path: string | null): boolean {
 }
 
 /**
+ * Generates a unique ID for nodes that don't have a SHA (e.g., implicit folders, new nodes).
+ */
+function generateNodeId(): string {
+	return crypto.randomUUID();
+}
+
+/**
  * Creates implicit parent folders for a nested file path.
  * This handles cases where GitHub API doesn't include folder entries.
  */
@@ -96,6 +127,7 @@ function ensureParentFolders(
 		const partPath = parts.slice(0, i + 1).join("/");
 		if (!nodeMap.has(partPath)) {
 			const folderNode: FileTreeNode = {
+				id: generateNodeId(),
 				name: parts[i],
 				path: partPath,
 				type: "folder",
@@ -406,8 +438,9 @@ function isMetaFilePath(path: string): boolean {
 /**
  * Builds a file tree structure from GitHub tree items.
  * @param metaOnly When true, only include _meta files and their parent folders
+ * @param contentFolderOnly When true, only include items under content/ (but keeps the content folder node in the tree)
  */
-function buildFileTree(items: Array<GitHubTreeItem>, metaOnly = false): Array<FileTreeNode> {
+function buildFileTree(items: Array<GitHubTreeItem>, metaOnly = false, contentFolderOnly = false): Array<FileTreeNode> {
 	const nodeMap: Map<string, FileTreeNode> = new Map();
 	const root: Map<string, FileTreeNode> = new Map();
 
@@ -427,6 +460,10 @@ function buildFileTree(items: Array<GitHubTreeItem>, metaOnly = false): Array<Fi
 	}
 
 	const relevantItems = items.filter(item => {
+		// When contentFolderOnly is true, only include items under content/
+		if (contentFolderOnly && !item.path.startsWith("content/") && item.path !== "content") {
+			return false;
+		}
 		if (metaOnly) {
 			return metaFilePaths.has(item.path);
 		}
@@ -440,8 +477,10 @@ function buildFileTree(items: Array<GitHubTreeItem>, metaOnly = false): Array<Fi
 		const shouldAutoExpand = item.type === "tree" && item.path === "content";
 
 		const node: FileTreeNode = {
+			id: item.sha, // Use GitHub SHA as stable ID
 			name,
 			path: item.path,
+			originalPath: item.path, // Track original GitHub path for fetching content
 			type: item.type === "tree" ? "folder" : "file",
 			...(item.size !== undefined ? { size: item.size } : {}),
 			...(item.type === "tree" ? { children: [], expanded: shouldAutoExpand } : {}),
@@ -466,7 +505,6 @@ function buildFileTree(items: Array<GitHubTreeItem>, metaOnly = false): Array<Fi
 
 	return Array.from(root.values());
 }
-
 /**
  * Checks if the path is a _meta.ts/.tsx file that needs syntax validation.
  * (Slightly different from isNextraMetaFile - only ts/tsx, no js/jsx)
@@ -559,6 +597,27 @@ function collectContentFolders(
 }
 
 /**
+ * Collect direct child folder names from a specific parent folder in the file tree.
+ * Used for _meta.ts validation so folder entries are recognized as valid.
+ */
+function collectChildFolderNames(nodes: Array<FileTreeNode>, parentFolder: string): Array<string> {
+	const folderNames: Array<string> = [];
+	for (const node of nodes) {
+		if (node.type === "folder") {
+			const nodeFolderPath = node.path.substring(0, node.path.lastIndexOf("/"));
+			// Direct children: parent path matches the target folder
+			if (nodeFolderPath === parentFolder) {
+				folderNames.push(node.name);
+			}
+		}
+		if (node.children) {
+			folderNames.push(...collectChildFolderNames(node.children, parentFolder));
+		}
+	}
+	return folderNames;
+}
+
+/**
  * Collect content files from a specific folder in the file tree.
  */
 function collectContentFilesFromFolder(nodes: Array<FileTreeNode>, normalizedFolder: string): Array<string> {
@@ -580,26 +639,46 @@ function collectContentFilesFromFolder(nodes: Array<FileTreeNode>, normalizedFol
 	return contentFiles;
 }
 
-// ========== End of extracted utility functions ==========
-
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Large UI component with many features (file operations, dialogs, validation)
-export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: RepositoryViewerProps): ReactElement | null {
+export function RepositoryViewer({
+	docsite,
+	onFileSave,
+	onDirtyStateChange,
+	metaFilesOnly,
+	showBranchInfo = true,
+	contentFolderOnly = false,
+	fullHeight = false,
+	readOnly = false,
+}: RepositoryViewerProps): ReactElement | null {
 	const client = useClient();
 	const content = useIntlayer("repository-viewer");
 	const dateTimeContent = useIntlayer("date-time");
-	const [fileTree, setFileTree] = useState<Array<FileTreeNode>>([]);
+	const {
+		workingTree: fileTree,
+		initializeTree,
+		updateWorkingTree,
+		updateOriginalTree,
+		isDirty,
+		discardChanges,
+	} = useRepositoryState();
 	const [selectedFile, setSelectedFile] = useState<string | null>(null);
 	const [fileContent, setFileContent] = useState<string>("");
 	const [editedContent, setEditedContent] = useState<string>("");
-	const [isEditing, setIsEditing] = useState(false);
 	const [loading, setLoading] = useState(false);
 	const [saving, setSaving] = useState(false);
+	// Track the last loaded pendingContent to detect changes from tree operations
+	const lastLoadedPendingContentRef = useRef<string | null>(null);
 	const [formatting, setFormatting] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [saveMessage, setSaveMessage] = useState<string | null>(null);
+	const [saveError, setSaveError] = useState<{ message: string; files: Array<string> } | null>(null);
 	const [validationIssues, setValidationIssues] = useState<Array<ValidationDisplayItem>>([]);
 	const [branch] = useState("main");
 	const lastSyncTime = docsite.lastGeneratedAt || docsite.createdAt;
+
+	// Cache for _meta.ts file content (path -> content)
+	// This allows synchronous meta file updates without loading on-demand
+	const [metaFileCache, setMetaFileCache] = useState<Map<string, string>>(new Map());
 
 	// Folder context menu state
 	const [contextMenu, setContextMenu] = useState<{ x: number; y: number; folderPath: string } | null>(null);
@@ -615,24 +694,46 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 	const [newFolderDialog, setNewFolderDialog] = useState<{ parentPath: string } | null>(null);
 	const [renameFolderDialog, setRenameFolderDialog] = useState<{ path: string; currentName: string } | null>(null);
 	const [deleteFolderDialog, setDeleteFolderDialog] = useState<{ path: string; hasChildren: boolean } | null>(null);
-	const [folderOperationLoading, setFolderOperationLoading] = useState(false);
 	const [folderOperationError, setFolderOperationError] = useState<string | null>(null);
+	const [folderOperationLoading, setFolderOperationLoading] = useState(false);
 	const [newFolderName, setNewFolderName] = useState("");
 	const [renameFolderName, setRenameFolderName] = useState("");
 	// New file dialog state
 	const [newFileDialog, setNewFileDialog] = useState<{ parentPath: string } | null>(null);
 	const [newFileName, setNewFileName] = useState("");
 	const [newFileExtension, setNewFileExtension] = useState(".mdx");
-	// Cache for recently saved files to avoid GitHub API cache issues
-	const [savedFilesCache, setSavedFilesCache] = useState<Map<string, string>>(new Map());
 	// Ref to the editor for cursor positioning
 	const editorRef = useRef<NumberEditRef>(null);
 	// Ref for debounce timer
 	const validationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	// Ref to track if component is mounted (for async operation cleanup)
+	const isMountedRef = useRef(true);
+
+	// Ref for onFileSave callback to avoid stale closures in async operations
+	const onFileSaveRef = useRef(onFileSave);
+	useEffect(() => {
+		onFileSaveRef.current = onFileSave;
+	}, [onFileSave]);
 
 	// Drag and drop state for moving files between folders
 	const [draggedFile, setDraggedFile] = useState<string | null>(null);
 	const [dropTarget, setDropTarget] = useState<string | null>(null);
+
+	// Check if the currently selected file has syntax errors (blocks navigation away from it)
+	const currentFileHasSyntaxErrors = selectedFile
+		? findNodeInTree(fileTree, selectedFile)?.hasSyntaxErrors === true
+		: false;
+	// Also collect all files with errors for display
+	const filesWithErrors = currentFileHasSyntaxErrors && selectedFile ? [selectedFile] : [];
+
+	// In contentFolderOnly mode, the full tree is kept intact (so meta sync works),
+	// but only the content folder's children are rendered in the UI.
+	const renderTree = useMemo(() => {
+		if (contentFolderOnly) {
+			return findFolderInTree(fileTree, "content")?.children ?? [];
+		}
+		return fileTree;
+	}, [contentFolderOnly, fileTree]);
 
 	/**
 	 * Extract articles from the file tree by finding MDX files in the content/ folder.
@@ -713,7 +814,7 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 	 * Extracts article slugs and folder names from the actual files in the repository.
 	 */
 	const autocompleteContext: AutocompleteContext | undefined = useMemo(() => {
-		if (!isEditing || !selectedFile || fileTree.length === 0) {
+		if (!selectedFile || fileTree.length === 0) {
 			return;
 		}
 
@@ -730,25 +831,98 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 		}
 
 		return;
-	}, [isEditing, selectedFile, fileTree]);
+	}, [selectedFile, fileTree]);
 
 	// Extract org and repo from githubRepo (used for display)
 	const githubRepo = docsite.metadata?.githubRepo;
 
 	useEffect(() => {
 		if (docsite.id && githubRepo) {
+			// Skip refetch if there are unsaved changes to preserve edits
+			if (isDirty) {
+				return;
+			}
 			loadRepositoryTree();
 		}
+		// Note: isDirty is intentionally NOT in the dependency array - it's only used as a guard
+		// to prevent re-fetching when there are unsaved changes, not as a trigger for re-fetching
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [docsite.id, githubRepo, branch]);
 
-	// Cleanup validation timer on unmount
+	// Cleanup on unmount
 	useEffect(() => {
 		return () => {
+			isMountedRef.current = false;
 			if (validationTimerRef.current) {
 				clearTimeout(validationTimerRef.current);
 			}
 		};
 	}, []);
+
+	// Notify parent when dirty state changes
+	useEffect(() => {
+		onDirtyStateChange?.(isDirty);
+	}, [isDirty, onDirtyStateChange]);
+
+	// Preload all _meta.ts files into cache for synchronous meta syncing
+	useEffect(() => {
+		async function preloadMetaFiles() {
+			if (!fileTree || fileTree.length === 0 || !docsite || !branch) {
+				return;
+			}
+
+			const metaFilePaths = findAllMetaFiles(fileTree);
+			const loaded = new Map<string, string>();
+
+			for (const metaPath of metaFilePaths) {
+				const node = findNodeInTree(fileTree, metaPath);
+
+				if (node?.pendingContent) {
+					// Use staged content if it exists (user has unsaved changes)
+					loaded.set(metaPath, node.pendingContent);
+				} else {
+					// Load from server using originalPath (to handle moved files)
+					try {
+						// Use originalPath if available (file exists in GitHub), otherwise use path (new file)
+						const pathToFetch = node?.originalPath || metaPath;
+						const response = await client.sites().getFileContent(docsite.id, pathToFetch, branch);
+						// Decode base64 content
+						if (response.content) {
+							const content = atob(response.content);
+							loaded.set(metaPath, content);
+						}
+					} catch {
+						// Skip if can't load - we'll only sync to files that exist
+					}
+				}
+			}
+
+			setMetaFileCache(loaded);
+		}
+
+		preloadMetaFiles();
+	}, [fileTree, branch, docsite.id, client]);
+
+	// Auto-refresh editor content when meta file's pendingContent changes from tree operations
+	useEffect(() => {
+		// Only for meta files currently open in editor
+		if (!selectedFile || !isMetaTsFile(selectedFile)) {
+			return;
+		}
+
+		const currentPendingContent = findNodePendingContent(fileTree, selectedFile);
+		if (!currentPendingContent) {
+			return;
+		}
+
+		// If pendingContent changed since we last loaded it AND user hasn't manually edited
+		if (currentPendingContent !== lastLoadedPendingContentRef.current && editedContent === fileContent) {
+			setFileContent(currentPendingContent);
+			setEditedContent(currentPendingContent);
+			runValidation(currentPendingContent, selectedFile);
+			lastLoadedPendingContentRef.current = currentPendingContent;
+		}
+	}, [selectedFile, fileTree, fileContent, editedContent]);
 
 	async function loadRepositoryTree() {
 		if (!docsite.id) {
@@ -757,27 +931,41 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 
 		setLoading(true);
 		setError(null);
-		// Clear the saved files cache when syncing to force fresh data from GitHub
-		setSavedFilesCache(new Map());
+
+		// Preserve expanded folder states before refetching
+		const existingTree = fileTree;
+		const expandedPaths = existingTree ? collectExpandedPaths(existingTree) : new Set<string>();
 
 		try {
 			// Fetch repository tree via backend proxy (required for private repos)
 			const data = await client.sites().getRepositoryTree(docsite.id, branch);
 			const tree: Array<GitHubTreeItem> = (data.tree || []) as Array<GitHubTreeItem>;
 
-			// Build file tree structure (filter to meta files only if metaFilesOnly prop is set)
-			const rootNodes = buildFileTree(tree, metaFilesOnly);
-			setFileTree(rootNodes);
+			// Build file tree structure (filter based on metaFilesOnly and contentFolderOnly props)
+			let rootNodes = buildFileTree(tree, metaFilesOnly, contentFolderOnly);
+
+			// Restore expanded states from previous tree
+			if (expandedPaths.size > 0) {
+				rootNodes = applyExpandedPaths(rootNodes, expandedPaths);
+			}
+
+			// Check if component is still mounted and there are no unsaved changes
+			// This prevents race conditions where user edits while tree is loading
+			if (!isMountedRef.current || isDirty) {
+				return;
+			}
+
+			initializeTree(rootNodes);
 		} catch (err) {
-			console.error("Error loading repository tree:", err);
-			setError(content.error as string);
+			log.error(err, "Failed to load repository tree");
+			setError(content.error.value);
 		} finally {
 			setLoading(false);
 		}
 	}
 
 	function toggleFolder(path: string) {
-		setFileTree(prev => toggleNodeExpanded(prev, path));
+		updateWorkingTree(prev => toggleNodeExpanded(prev, path));
 	}
 
 	async function loadFileContent(path: string) {
@@ -786,53 +974,65 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 		}
 
 		setSelectedFile(path);
-		setIsEditing(false);
 		setSaveMessage(null);
+		setValidationIssues([]);
 
-		// Check if we have this file in our local cache (recently saved)
-		const cachedContent = savedFilesCache.get(path);
-		if (cachedContent !== undefined) {
-			setFileContent(cachedContent);
-			setEditedContent(cachedContent);
-			return;
-		}
+		// Check if this file has pending (staged) content in the working tree
+		const pendingContent = findNodePendingContent(fileTree, path);
 
 		setLoading(true);
 
+		// If we have pendingContent, use it directly (represents unsaved changes or new file)
+		if (pendingContent) {
+			setFileContent(pendingContent);
+			setEditedContent(pendingContent);
+			if (isMetaTsFile(path)) {
+				runValidation(pendingContent, path);
+			}
+			lastLoadedPendingContentRef.current = pendingContent;
+			setLoading(false);
+			return;
+		}
+
+		// Otherwise, fetch from server using originalPath (to handle moved/renamed files)
 		try {
+			// Find the node to get its originalPath
+			const node = findNodeInTree(fileTree, path);
+			// Use originalPath if available (file exists in GitHub), otherwise use path (new file)
+			const pathToFetch = node?.originalPath || path;
+
 			// Fetch file content via backend proxy (required for private repos)
-			const data = await client.sites().getFileContent(docsite.id, path, branch);
+			const data = await client.sites().getFileContent(docsite.id, pathToFetch, branch);
 
 			// GitHub API returns base64 encoded content
 			if (data.content) {
 				const decoded = atob(data.content.replace(/\n/g, ""));
 				setFileContent(decoded);
 				setEditedContent(decoded);
+
+				// Run validation for _meta.ts files to show any existing issues
+				if (isMetaTsFile(path)) {
+					runValidation(decoded, path);
+				}
+
+				// Track that we loaded from server (no pendingContent)
+				lastLoadedPendingContentRef.current = null;
 			}
 		} catch (err) {
-			console.error("Error loading file content:", err);
-			setFileContent(`Error loading file: ${err}`);
+			log.error(err, "Failed to load file content");
+			const errorMessage = `Error loading file: ${err}`;
+			setFileContent(errorMessage);
+			setEditedContent(errorMessage);
 		} finally {
 			setLoading(false);
 		}
 	}
 
-	function handleEditClick() {
-		if (selectedFile && isFileEditable(selectedFile)) {
-			setIsEditing(true);
-			setEditedContent(fileContent);
-
-			// Preload TypeScript compiler for accurate syntax validation (for _meta.ts files)
-			if (isMetaTsFile(selectedFile)) {
-				loadTypeScript().catch(() => {
-					// Silently fail - will fall back to Function constructor validation
-				});
-			}
-		}
-	}
-
-	function handleCancelEdit() {
-		setIsEditing(false);
+	/**
+	 * Discard changes to the currently selected file.
+	 * Resets the editor content and clears the staged pendingContent.
+	 */
+	function handleDiscardFileChanges() {
 		setEditedContent(fileContent);
 		setSaveMessage(null);
 		setValidationIssues([]);
@@ -840,6 +1040,10 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 		if (validationTimerRef.current) {
 			clearTimeout(validationTimerRef.current);
 			validationTimerRef.current = null;
+		}
+		// Clear the pending content from the working tree (discard the staged change)
+		if (selectedFile && docsite.id) {
+			updateWorkingTree(tree => clearNodePendingContent(tree, selectedFile));
 		}
 	}
 
@@ -857,18 +1061,19 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 	 * Checks syntax errors, orphaned entries, and missing entries.
 	 */
 	const runValidation = useCallback(
-		(contentToValidate: string) => {
-			if (!selectedFile || !isMetaTsFile(selectedFile)) {
+		(contentToValidate: string, filePath?: string) => {
+			const fileToValidate = filePath ?? selectedFile;
+			if (!fileToValidate || !isMetaTsFile(fileToValidate)) {
 				return;
 			}
 
-			// Get content files from the same folder as the _meta.ts for consistency check
-			const metaFolder = getMetaFileFolder(selectedFile);
+			// Get content files and direct child folders from the same folder as the _meta.ts
+			const metaFolder = getMetaFileFolder(fileToValidate);
 			const contentFiles = getContentFilesInFolder(metaFolder);
-			const foldersFromRepo = getFoldersFromFileTree();
+			const childFolders = collectChildFolderNames(fileTree, metaFolder);
 
 			// Run client-side validation
-			const result = validateMetaContent(contentToValidate, contentFiles, foldersFromRepo);
+			const result = validateMetaContent(contentToValidate, contentFiles, childFolders);
 
 			// Helper to convert ValidationIssue to ValidationDisplayItem
 			function toDisplayItem(
@@ -900,15 +1105,28 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 			];
 
 			setValidationIssues(displayItems);
+
+			// Update the hasSyntaxErrors flag on the tree node (persists when switching files)
+			if (docsite.id) {
+				const hasSyntaxErrors = result.syntaxErrors.length > 0;
+				updateWorkingTree(tree => updateNodeSyntaxErrors(tree, fileToValidate, hasSyntaxErrors));
+			}
 		},
-		[selectedFile, fileTree],
+		[selectedFile, fileTree, docsite.id, updateWorkingTree],
 	);
 
 	/**
-	 * Handle content change with debounced validation for _meta.ts files
+	 * Handle content change with auto-staging and debounced validation for _meta.ts files.
+	 * Changes are automatically staged to pendingContent as the user types.
 	 */
 	function handleContentChange(newContent: string) {
 		setEditedContent(newContent);
+		setSaveError(null); // Clear save error when user makes edits
+
+		// Auto-stage the content change to the working tree
+		if (selectedFile && docsite.id) {
+			updateWorkingTree(tree => updateNodePendingContent(tree, selectedFile, newContent));
+		}
 
 		// Only validate _meta.ts files
 		if (selectedFile && isMetaTsFile(selectedFile)) {
@@ -990,91 +1208,6 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 		}
 	}
 
-	async function handleSaveFile() {
-		if (!selectedFile || !docsite.id) {
-			return;
-		}
-
-		setSaving(true);
-		setSaveMessage(null);
-
-		// Clear any pending validation timer
-		if (validationTimerRef.current) {
-			clearTimeout(validationTimerRef.current);
-			validationTimerRef.current = null;
-		}
-
-		// Store the content to cache after tree reload
-		const contentToCache = editedContent;
-		const fileToCache = selectedFile;
-
-		try {
-			// Validate _meta.ts syntax before saving (final validation using client-side)
-			if (isMetaTsFile(selectedFile)) {
-				const metaFolder = getMetaFileFolder(selectedFile);
-				const contentFiles = getContentFilesInFolder(metaFolder);
-				const foldersFromRepo = getFoldersFromFileTree();
-				const result = validateMetaContent(editedContent, contentFiles, foldersFromRepo);
-
-				// Block save only if there are syntax errors (warnings are OK)
-				if (result.syntaxErrors.length > 0) {
-					const displayItems: Array<ValidationDisplayItem> = result.issues.map((issue: ValidationIssue) => {
-						const item: ValidationDisplayItem = {
-							message: issue.message,
-							type: issue.type,
-						};
-						if (issue.line !== undefined) {
-							item.line = issue.line;
-						}
-						if (issue.column !== undefined) {
-							item.column = issue.column;
-						}
-						if (issue.slug !== undefined) {
-							item.slug = issue.slug;
-						}
-						return item;
-					});
-					setValidationIssues(displayItems);
-					setSaving(false);
-					return; // Don't save if there are syntax errors
-				}
-			}
-
-			await client.sites().updateRepositoryFile(docsite.id, selectedFile, editedContent);
-			setValidationIssues([]);
-
-			// Update the file content and exit edit mode
-			setFileContent(editedContent);
-			setIsEditing(false);
-			setSaveMessage(content.saveSuccess as string);
-
-			// Refresh the file tree to show updated timestamp
-			// Note: This clears savedFilesCache, so we cache after this
-			await loadRepositoryTree();
-
-			// Cache the saved content locally to avoid GitHub API cache returning stale data
-			// This must happen AFTER loadRepositoryTree since that clears the cache
-			setSavedFilesCache(prev => {
-				const newCache = new Map(prev);
-				newCache.set(fileToCache, contentToCache);
-				return newCache;
-			});
-
-			// Notify parent that a file was saved (for refreshing change detection)
-			onFileSave?.();
-
-			// Clear success message after 3 seconds
-			setTimeout(() => {
-				setSaveMessage(null);
-			}, 3000);
-		} catch (err) {
-			console.error("Error saving file:", err);
-			setSaveMessage(content.saveError as string);
-		} finally {
-			setSaving(false);
-		}
-	}
-
 	async function handleFormatCode() {
 		if (!selectedFile) {
 			return;
@@ -1086,17 +1219,95 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 		try {
 			const response = await client.sites().formatCode(editedContent, selectedFile);
 			setEditedContent(response.formatted);
-			setSaveMessage(content.formatSuccess as string);
+			setSaveMessage(content.formatSuccess.value);
 
 			// Clear success message after 3 seconds
 			setTimeout(() => {
-				setSaveMessage(null);
+				if (isMountedRef.current) {
+					setSaveMessage(null);
+				}
 			}, 3000);
 		} catch (err) {
-			console.error("Error formatting code:", err);
-			setSaveMessage(content.formatError as string);
+			log.error(err, "Failed to format code");
+			setSaveMessage(content.formatError.value);
 		} finally {
 			setFormatting(false);
+		}
+	}
+
+	/**
+	 * Save all pending changes (tree structure + file content) in a single atomic commit.
+	 */
+	async function handleSaveChanges() {
+		if (!docsite.id) {
+			return;
+		}
+
+		// Check if there are any changes
+		if (!isDirty) {
+			return;
+		}
+
+		// Block save if any file in the tree has syntax errors (warnings are OK)
+		if (treeHasSyntaxErrors(fileTree)) {
+			const filesWithErrors = collectFilesWithErrors(fileTree);
+			setSaveError({
+				message: content.cannotSaveWithErrors.value,
+				files: filesWithErrors,
+			});
+			return;
+		}
+
+		setSaving(true);
+		setSaveError(null);
+
+		try {
+			// Sync the entire tree to GitHub
+			const result = await client.sites().syncTree(docsite.id, fileTree);
+
+			if (result.success) {
+				// Update cache with saved meta file content (before clearing pendingContent)
+				const updateMetaCache = (nodes: Array<FileTreeNode>) => {
+					for (const node of nodes) {
+						if (node.type === "file" && /^_meta\.(ts|tsx|js|jsx)$/.test(node.name) && node.pendingContent) {
+							const saved = node.pendingContent;
+							setMetaFileCache(prev => new Map(prev).set(node.path, saved));
+						}
+						if (node.children) {
+							updateMetaCache(node.children);
+						}
+					}
+				};
+				updateMetaCache(fileTree);
+
+				// Update original tree to match working tree (clear dirty state)
+				// Also clear pendingContent from nodes since they've been saved
+				const cleanedTree = clearAllPendingContent(fileTree);
+				updateOriginalTree(() => cleanedTree);
+				updateWorkingTree(() => cleanedTree);
+
+				// Update fileContent to match editedContent if we're viewing a file that was saved
+				if (selectedFile) {
+					setFileContent(editedContent);
+				}
+
+				// Notify parent component that files were saved
+				onFileSaveRef.current?.();
+
+				setSaveMessage(content.changesSaved.value);
+
+				// Clear success message after 3 seconds
+				setTimeout(() => {
+					if (isMountedRef.current) {
+						setSaveMessage(null);
+					}
+				}, 3000);
+			}
+		} catch (err) {
+			log.error(err, "Failed to save changes");
+			setSaveMessage(content.changesSaveError.value);
+		} finally {
+			setSaving(false);
 		}
 	}
 
@@ -1169,55 +1380,53 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 	}
 
 	/**
-	 * Create a new folder
+	 * Create a new folder (optimistic update with job tracking)
 	 */
-	async function handleCreateFolder() {
+	function handleCreateFolder() {
 		if (!newFolderDialog || !newFolderName.trim()) {
 			return;
 		}
 
 		// Block creation in restricted folders (app, component, public)
 		if (isCreationRestrictedPath(newFolderDialog.parentPath)) {
-			setFolderOperationError(content.folderCreationRestricted as string);
+			setFolderOperationError(content.folderCreationRestricted.value);
 			return;
 		}
 
 		setFolderOperationLoading(true);
-		setFolderOperationError(null);
-
 		try {
-			const fullPath = newFolderDialog.parentPath
-				? `${newFolderDialog.parentPath}/${newFolderName.trim()}`
-				: newFolderName.trim();
+			const parentPath = newFolderDialog.parentPath;
+			const folderName = newFolderName.trim();
+			const fullPath = parentPath ? `${parentPath}/${folderName}` : folderName;
 
-			await client.sites().createFolder(docsite.id, fullPath);
-			setSaveMessage(content.folderCreated as string);
-
-			// Close dialog and refresh tree
+			// Close dialog immediately
 			setNewFolderDialog(null);
-			loadRepositoryTree();
+			setFolderOperationError(null);
 
-			// Clear success message after 3 seconds
-			setTimeout(() => {
-				setSaveMessage(null);
-			}, 3000);
-		} catch (err) {
-			console.error("Error creating folder:", err);
-			setFolderOperationError(content.folderCreateError as string);
+			// Update working tree only - actual creation happens on save
+			const newNode: FileTreeNode = {
+				id: generateNodeId(),
+				name: folderName,
+				path: fullPath,
+				type: "folder",
+				children: [],
+				expanded: false,
+			};
+			updateWorkingTree(tree => insertNodeOptimistically(tree, parentPath, newNode));
 		} finally {
 			setFolderOperationLoading(false);
 		}
 	}
 
 	/**
-	 * Get root-level files from the file tree
+	 * Get root-level files from the file tree.
 	 */
 	function getRootLevelFiles(): Array<string> {
 		return fileTree.filter(node => node.type === "file").map(node => node.name);
 	}
 
 	/**
-	 * Get files in a specific folder from the file tree
+	 * Get files in a specific folder from the file tree.
 	 */
 	function getFilesInFolder(folderPath: string): Array<string> {
 		const folder = findFolderInTree(fileTree, folderPath);
@@ -1235,16 +1444,46 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 	}
 
 	/**
-	 * Create a new file
+	 * Determine the initial content for a newly created file based on its extension.
 	 */
-	async function handleCreateFile() {
+	function getInitialFileContent(fileName: string): string {
+		const ext = fileName.substring(fileName.lastIndexOf("."));
+		if (fileName.startsWith("_meta.")) {
+			return "export default {\n};\n";
+		}
+		if (ext === ".mdx" || ext === ".md") {
+			const baseName = fileName.replace(/\.[^.]+$/, "");
+			return `---\ntitle: ${baseName}\n---\n\n# ${baseName}\n`;
+		}
+		if (ext === ".ts" || ext === ".tsx") {
+			return "// TODO: Add content\n";
+		}
+		if (ext === ".js" || ext === ".jsx" || ext === ".cjs" || ext === ".mjs") {
+			return "// TODO: Add content\n";
+		}
+		if (ext === ".css") {
+			return "/* TODO: Add styles */\n";
+		}
+		if (ext === ".json") {
+			return "{\n}\n";
+		}
+		if (ext === ".yaml" || ext === ".yml") {
+			return "# TODO: Add configuration\n";
+		}
+		return "";
+	}
+
+	/**
+	 * Create a new file (updates working tree only - actual creation happens on batch save)
+	 */
+	function handleCreateFile() {
 		if (!newFileDialog) {
 			return;
 		}
 
 		// Block creation in restricted folders (app, component, public)
 		if (isCreationRestrictedPath(newFileDialog.parentPath)) {
-			setFolderOperationError(content.fileCreationRestricted as string);
+			setFolderOperationError(content.fileCreationRestricted.value);
 			return;
 		}
 
@@ -1260,115 +1499,102 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 		}
 
 		setFolderOperationLoading(true);
-		setFolderOperationError(null);
-
 		try {
-			const fullPath = newFileDialog.parentPath ? `${newFileDialog.parentPath}/${fileName}` : fileName;
+			const parentPath = newFileDialog.parentPath;
+			const fullPath = parentPath ? `${parentPath}/${fileName}` : fileName;
 
-			// Determine initial content based on file type
-			const ext = fileName.substring(fileName.lastIndexOf("."));
+			const initialContent = getInitialFileContent(fileName);
 			const isMetaFile = fileName.startsWith("_meta.");
-			let initialContent = "";
+
+			// Close dialog immediately
+			setNewFileDialog(null);
+			setFolderOperationError(null);
+
+			// Update working tree only - actual creation happens on batch save
+			const newNode: FileTreeNode = {
+				id: generateNodeId(),
+				name: fileName,
+				path: fullPath,
+				type: "file",
+				pendingContent: initialContent,
+			};
+			updateWorkingTree(tree =>
+				insertNodeWithMetaSync(tree, parentPath, newNode, metaFileCache, setMetaFileCache),
+			);
+
+			// If user creates a _meta.ts file, add it to cache immediately
 			if (isMetaFile) {
-				// Nextra _meta file for navigation configuration
-				initialContent = "export default {\n};\n";
-			} else if (ext === ".mdx" || ext === ".md") {
-				const baseName = fileName.replace(/\.[^.]+$/, "");
-				initialContent = `---\ntitle: ${baseName}\n---\n\n# ${baseName}\n`;
-			} else if (ext === ".ts" || ext === ".tsx") {
-				initialContent = "// TODO: Add content\n";
-			} else if (ext === ".js" || ext === ".jsx" || ext === ".cjs" || ext === ".mjs") {
-				initialContent = "// TODO: Add content\n";
-			} else if (ext === ".css") {
-				initialContent = "/* TODO: Add styles */\n";
-			} else if (ext === ".json") {
-				initialContent = "{\n}\n";
-			} else if (ext === ".yaml" || ext === ".yml") {
-				initialContent = "# TODO: Add configuration\n";
+				setMetaFileCache(prev => new Map(prev).set(fullPath, initialContent));
 			}
 
-			await client.sites().updateRepositoryFile(docsite.id, fullPath, initialContent);
-			setSaveMessage(content.fileCreated as string);
-
-			// Close dialog and refresh tree
-			setNewFileDialog(null);
-			await loadRepositoryTree();
-
-			// Select the newly created file
+			// Select and open the file immediately for editing
 			setSelectedFile(fullPath);
 			setFileContent(initialContent);
 			setEditedContent(initialContent);
-			setIsEditing(true);
-
-			// Clear success message after 3 seconds
-			setTimeout(() => {
-				setSaveMessage(null);
-			}, 3000);
-		} catch (err) {
-			console.error("Error creating file:", err);
-			setFolderOperationError(content.fileCreateError as string);
 		} finally {
 			setFolderOperationLoading(false);
 		}
 	}
 
 	/**
-	 * Rename a folder
+	 * Rename a folder (updates working tree only - actual rename happens on batch save)
 	 */
-	async function handleRenameFolder() {
+	function handleRenameFolder() {
 		if (!renameFolderDialog || !renameFolderName.trim()) {
 			return;
 		}
 
 		setFolderOperationLoading(true);
-		setFolderOperationError(null);
-
 		try {
-			await client.sites().renameFolder(docsite.id, renameFolderDialog.path, renameFolderName.trim());
-			setSaveMessage(content.folderRenamed as string);
+			const oldPath = renameFolderDialog.path;
+			const newName = renameFolderName.trim();
 
-			// Close dialog and refresh tree
+			// Close dialog immediately
 			setRenameFolderDialog(null);
-			loadRepositoryTree();
+			setFolderOperationError(null);
 
-			// Clear success message after 3 seconds
-			setTimeout(() => {
-				setSaveMessage(null);
-			}, 3000);
-		} catch (err) {
-			console.error("Error renaming folder:", err);
-			setFolderOperationError(content.folderRenameError as string);
+			// Update working tree only - actual rename happens on batch save
+			updateWorkingTree(tree => renameNodeOptimistically(tree, oldPath, newName));
+
+			// Update selected file path if it was within the renamed folder
+			const parentPath = getParentPath(oldPath);
+			const newPath = parentPath ? `${parentPath}/${newName}` : newName;
+			if (selectedFile?.startsWith(`${oldPath}/`) || selectedFile === oldPath) {
+				setSelectedFile(selectedFile.replace(oldPath, newPath));
+			}
 		} finally {
 			setFolderOperationLoading(false);
 		}
 	}
 
 	/**
-	 * Delete a folder
+	 * Delete a folder (updates working tree only - actual deletion happens on batch save)
 	 */
-	async function handleDeleteFolder() {
+	function handleDeleteFolder() {
 		if (!deleteFolderDialog) {
 			return;
 		}
 
 		setFolderOperationLoading(true);
-		setFolderOperationError(null);
-
 		try {
-			await client.sites().deleteFolder(docsite.id, deleteFolderDialog.path);
-			setSaveMessage(content.folderDeleted as string);
+			const path = deleteFolderDialog.path;
 
-			// Close dialog and refresh tree
+			// Track if selected file is within the folder being deleted
+			const wasSelectedFileInFolder = selectedFile?.startsWith(`${path}/`) || selectedFile === path;
+
+			// Close dialog immediately
 			setDeleteFolderDialog(null);
-			loadRepositoryTree();
+			setFolderOperationError(null);
 
-			// Clear success message after 3 seconds
-			setTimeout(() => {
-				setSaveMessage(null);
-			}, 3000);
-		} catch (err) {
-			console.error("Error deleting folder:", err);
-			setFolderOperationError(content.folderDeleteError as string);
+			// Update working tree only - actual deletion happens on batch save
+			updateWorkingTree(tree => removeNodeWithMetaSync(tree, path, metaFileCache, setMetaFileCache));
+
+			// Clear selected file if it was within the deleted folder
+			if (wasSelectedFileInFolder) {
+				setSelectedFile(null);
+				setFileContent("");
+				setEditedContent("");
+			}
 		} finally {
 			setFolderOperationLoading(false);
 		}
@@ -1412,38 +1638,36 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 	}
 
 	/**
-	 * Move a file to a new destination folder
+	 * Move a file to a new destination folder (updates working tree only - actual move happens on batch save)
 	 */
-	async function handleMoveFile() {
+	function handleMoveFile() {
 		if (!moveFileDialog) {
 			return;
 		}
 
 		setFolderOperationLoading(true);
-		setFolderOperationError(null);
-
 		try {
-			await client.sites().moveFile(docsite.id, moveFileDialog.filePath, moveDestination);
-			setSaveMessage(content.fileMoved as string);
+			const sourcePath = moveFileDialog.filePath;
+			const fileName = moveFileDialog.fileName;
+			const destFolder = moveDestination;
+			const newPath = destFolder ? `${destFolder}/${fileName}` : fileName;
 
-			// Close dialog and refresh tree
+			// Track if the moved file was selected
+			const wasSelected = selectedFile === sourcePath;
+
+			// Close dialog immediately
 			setMoveFileDialog(null);
-			loadRepositoryTree();
+			setFolderOperationError(null);
 
-			// Clear selected file if it was the one moved
-			if (selectedFile === moveFileDialog.filePath) {
-				setSelectedFile(null);
-				setFileContent("");
-				setEditedContent("");
+			// Update working tree only - actual move happens on batch save
+			updateWorkingTree(tree =>
+				moveNodeWithMetaSync(tree, sourcePath, destFolder, metaFileCache, setMetaFileCache),
+			);
+
+			// Update selected file path if it was the moved file
+			if (wasSelected) {
+				setSelectedFile(newPath);
 			}
-
-			// Clear success message after 3 seconds
-			setTimeout(() => {
-				setSaveMessage(null);
-			}, 3000);
-		} catch (err) {
-			console.error("Error moving file:", err);
-			setFolderOperationError(content.moveFileError as string);
 		} finally {
 			setFolderOperationLoading(false);
 		}
@@ -1484,6 +1708,7 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 	 */
 	function handleFolderDragOver(e: React.DragEvent, folderPath: string) {
 		e.preventDefault();
+		e.stopPropagation();
 		e.dataTransfer.dropEffect = "move";
 
 		// Only highlight if it's a valid drop target (different from source folder)
@@ -1500,6 +1725,7 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 	 */
 	function handleFolderDragEnter(e: React.DragEvent, folderPath: string) {
 		e.preventDefault();
+		e.stopPropagation();
 		if (draggedFile) {
 			const sourceFolder = getParentFolder(draggedFile);
 			if (sourceFolder !== folderPath) {
@@ -1512,6 +1738,7 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 	 * Handle drag leave a folder.
 	 */
 	function handleFolderDragLeave(e: React.DragEvent) {
+		e.stopPropagation();
 		// Only clear if leaving the folder entirely (not entering a child)
 		const relatedTarget = e.relatedTarget as HTMLElement | null;
 		if (!relatedTarget || !e.currentTarget.contains(relatedTarget)) {
@@ -1520,58 +1747,46 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 	}
 
 	/**
-	 * Handle drop on a folder - move the file.
+	 * Handle drop on a folder - move the file (updates working tree only - actual move happens on batch save).
 	 */
-	async function handleFileDrop(e: React.DragEvent, folderPath: string) {
+	function handleFileDrop(e: React.DragEvent, destFolder: string) {
 		e.preventDefault();
-		const filePath = e.dataTransfer.getData("text/plain");
+		e.stopPropagation();
+		const sourcePath = e.dataTransfer.getData("text/plain");
 
 		// Clear drag state
 		setDraggedFile(null);
 		setDropTarget(null);
 
 		// Validate the drop
-		if (!filePath || !filePath.startsWith("content/") || !filePath.endsWith(".mdx")) {
+		if (
+			!sourcePath ||
+			!sourcePath.startsWith("content/") ||
+			(!sourcePath.endsWith(".mdx") && !sourcePath.endsWith(".md"))
+		) {
 			return;
 		}
 
 		// Don't move to the same folder
-		const sourceFolder = getParentFolder(filePath);
-		if (sourceFolder === folderPath) {
+		const sourceFolder = getParentFolder(sourcePath);
+		if (sourceFolder === destFolder) {
 			return;
 		}
 
-		// Perform the move using existing move functionality
-		setFolderOperationLoading(true);
+		const fileName = sourcePath.split("/").pop() || "";
+		const newPath = destFolder ? `${destFolder}/${fileName}` : fileName;
+
+		// Track if the moved file was selected
+		const wasSelected = selectedFile === sourcePath;
+
 		setFolderOperationError(null);
 
-		try {
-			await client.sites().moveFile(docsite.id, filePath, folderPath);
-			setSaveMessage(content.fileMoved as string);
+		// Update working tree only - actual move happens on batch save
+		updateWorkingTree(tree => moveNodeWithMetaSync(tree, sourcePath, destFolder, metaFileCache, setMetaFileCache));
 
-			// Refresh tree
-			loadRepositoryTree();
-
-			// Clear selected file if it was the one moved
-			if (selectedFile === filePath) {
-				setSelectedFile(null);
-				setFileContent("");
-				setEditedContent("");
-			}
-
-			// Clear success message after 3 seconds
-			setTimeout(() => {
-				setSaveMessage(null);
-			}, 3000);
-		} catch (err) {
-			console.error("Error moving file:", err);
-			setFolderOperationError(content.moveFileError as string);
-			// Clear error message after 5 seconds
-			setTimeout(() => {
-				setFolderOperationError(null);
-			}, 5000);
-		} finally {
-			setFolderOperationLoading(false);
+		// Update selected file path if it was the moved file
+		if (wasSelected) {
+			setSelectedFile(newPath);
 		}
 	}
 
@@ -1609,6 +1824,7 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 		);
 	}
 
+	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Large render function for file tree nodes with many UI states
 	function renderFileTreeNode(node: FileTreeNode, level = 0) {
 		const isFolder = node.type === "folder";
 		const isExpanded = node.expanded ?? false;
@@ -1619,18 +1835,32 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 		const isContentFolder = node.path === "content" || node.path.startsWith("content/");
 		// Check if this is a protected root folder (can't rename/delete)
 		const isProtectedFolder = isFolder && isProtectedRootFolder(node.path);
-		// Files in content folder that are MDX can be moved
-		const isMovableFile = !isFolder && node.path.startsWith("content/") && node.name.endsWith(".mdx");
+		// Files in content folder that are MD/MDX can be moved (unless in read-only mode)
+		const isMovableFile =
+			!isFolder &&
+			node.path.startsWith("content/") &&
+			(node.name.endsWith(".mdx") || node.name.endsWith(".md")) &&
+			!readOnly;
 
 		// Drag and drop state
 		const isDragging = draggedFile === node.path;
-		const isDroppableFolder = isFolder && isContentFolder;
+		const isDroppableFolder = isFolder && isContentFolder && !readOnly;
 		const isDropTargetFolder = isDroppableFolder && dropTarget === node.path;
 
 		// Determine which context menu handler to use
+		// Show context menu for managed folders OR root-level user-created folders (not protected/restricted)
+		// Disabled in read-only mode
+		const isRootLevelFolder = isFolder && !node.path.includes("/");
 		const showFolderMenu =
-			isFolder && isManagedFolderPath(node.path) && !(isCreationRestrictedPath(node.path) && isProtectedFolder);
+			isFolder &&
+			!readOnly &&
+			(isManagedFolderPath(node.path) ||
+				(isRootLevelFolder && !isProtectedFolder && !isCreationRestrictedPath(node.path)));
 		function getContextMenuHandler(): ((e: React.MouseEvent) => void) | undefined {
+			// Disable context menus when there are syntax errors
+			if (currentFileHasSyntaxErrors) {
+				return;
+			}
 			if (showFolderMenu) {
 				return e => handleFolderContextMenu(e, node.path);
 			}
@@ -1662,9 +1892,12 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 					type="button"
 					onClick={() => (isFolder ? toggleFolder(node.path) : loadFileContent(node.path))}
 					onContextMenu={getContextMenuHandler()}
-					draggable={isMovableFile}
-					onDragStart={isMovableFile ? e => handleDragStart(e, node.path) : undefined}
-					onDragEnd={isMovableFile ? handleDragEnd : undefined}
+					draggable={isMovableFile && !currentFileHasSyntaxErrors}
+					onDragStart={
+						isMovableFile && !currentFileHasSyntaxErrors ? e => handleDragStart(e, node.path) : undefined
+					}
+					onDragEnd={isMovableFile && !currentFileHasSyntaxErrors ? handleDragEnd : undefined}
+					disabled={currentFileHasSyntaxErrors && !isSelected}
 					className={buttonClassName}
 					style={{ paddingLeft: `${level * 16 + 8}px` }}
 					data-testid={isFolder ? `folder-${node.name}` : `file-${node.name}`}
@@ -1687,53 +1920,119 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 	}
 
 	return (
-		<div>
-			<div className="pb-4 border-b mb-4">
-				<div className="flex items-center gap-4 text-sm font-normal">
-					<div className="flex items-center gap-2">
-						<GitBranch className="h-4 w-4" />
-						<span className="text-muted-foreground">{content.branch as string}:</span>
-						<span>{branch}</span>
+		<div className={fullHeight ? "h-full flex flex-col" : undefined}>
+			{showBranchInfo && (
+				<div className="pb-4 border-b mb-4 flex-shrink-0">
+					<div className="flex items-center gap-4 text-sm font-normal">
+						<div className="flex items-center gap-2">
+							<GitBranch className="h-4 w-4" />
+							<span className="text-muted-foreground">{content.branch.value}:</span>
+							<span>{branch}</span>
+						</div>
+						<div className="flex items-center gap-2 text-muted-foreground">
+							<span>{content.lastSynced.value}:</span>
+							<span>{formatTimestamp(dateTimeContent, lastSyncTime)}</span>
+						</div>
+						<Button
+							variant="outline"
+							size="sm"
+							onClick={() => loadRepositoryTree()}
+							disabled={currentFileHasSyntaxErrors}
+						>
+							<RefreshCw className="h-4 w-4 mr-2" />
+							{content.syncNow.value}
+						</Button>
 					</div>
-					<div className="flex items-center gap-2 text-muted-foreground">
-						<span>{content.lastSynced as string}:</span>
-						<span>{formatTimestamp(dateTimeContent, lastSyncTime)}</span>
-					</div>
-					<Button variant="outline" size="sm" onClick={() => loadRepositoryTree()}>
-						<RefreshCw className="h-4 w-4 mr-2" />
-						{content.syncNow as string}
-					</Button>
 				</div>
-			</div>
-			<div>
+			)}
+			<div className={fullHeight ? "flex-1 min-h-0" : undefined}>
 				<ResizablePanels
-					className="h-[600px]"
+					className={fullHeight ? "h-full" : "h-[600px]"}
 					initialLeftWidth={25}
 					minLeftWidth={15}
 					maxLeftWidth={40}
 					data-testid="repository-split"
 					left={
-						<div className="border rounded-lg overflow-auto bg-background h-full">
-							{loading && fileTree.length === 0 && (
-								<div className="p-4 text-center text-muted-foreground">{content.loading as string}</div>
+						<div className="border rounded-lg overflow-hidden bg-background h-full flex flex-col">
+							{/* Header with Save/Discard buttons (hidden in read-only mode) */}
+							{onFileSave && (
+								<div className="flex items-center justify-end gap-2 px-2 py-1.5 border-b bg-muted/30 shrink-0">
+									<Button
+										variant="outline"
+										size="sm"
+										disabled={!isDirty || saving}
+										onClick={() => discardChanges()}
+										data-testid="discard-changes-button"
+									>
+										<X className="h-3.5 w-3.5 mr-1" />
+										{content.discardChanges.value}
+									</Button>
+									<Button
+										variant="default"
+										size="sm"
+										disabled={!isDirty || saving || currentFileHasSyntaxErrors}
+										onClick={handleSaveChanges}
+										data-testid="save-changes-button"
+									>
+										<Save className="h-3.5 w-3.5 mr-1" />
+										{saving ? content.savingChanges.value : content.saveChanges.value}
+									</Button>
+								</div>
 							)}
-							{error && <div className="p-4 text-center text-destructive">{error}</div>}
-							{!loading && !error && fileTree.length === 0 && (
-								<div className="p-4 text-center text-muted-foreground">{content.noFiles as string}</div>
+							{/* Syntax error blocking message */}
+							{currentFileHasSyntaxErrors && (
+								<div className="px-2 py-1.5 border-b bg-destructive/10 text-destructive text-xs">
+									<div className="font-medium">{content.cannotNavigateWithErrors.value}</div>
+									<ul className="mt-1 list-disc list-inside">
+										{filesWithErrors.map(file => (
+											<li key={file} className="truncate">
+												{file}
+											</li>
+										))}
+									</ul>
+								</div>
 							)}
-							<div
-								className="p-2 min-h-full"
-								onContextMenu={e => {
-									// Only show context menu if clicking on empty space (not on a file/folder)
-									if ((e.target as HTMLElement).closest("button")) {
-										return; // Let the button's own context menu handler take over
-									}
-									e.preventDefault();
-									setContextMenu({ x: e.clientX, y: e.clientY, folderPath: "" });
-								}}
-								data-testid="file-tree-container"
-							>
-								{fileTree.map(node => renderFileTreeNode(node))}
+							{/* Save error message */}
+							{saveError && (
+								<div className="px-2 py-1.5 border-b bg-destructive/10 text-destructive text-xs">
+									<div className="font-medium">{saveError.message}</div>
+									<ul className="mt-1 list-disc list-inside">
+										{saveError.files.map(file => (
+											<li key={file} className="truncate">
+												{file}
+											</li>
+										))}
+									</ul>
+								</div>
+							)}
+							{/* File tree content */}
+							<div className="overflow-auto flex-1">
+								{loading && renderTree.length === 0 && (
+									<div className="p-4 text-center text-muted-foreground">{content.loading.value}</div>
+								)}
+								{error && <div className="p-4 text-center text-destructive">{error}</div>}
+								{!loading && !error && renderTree.length === 0 && (
+									<div className="p-4 text-center text-muted-foreground">{content.noFiles.value}</div>
+								)}
+								<div
+									className="p-2 min-h-full"
+									onContextMenu={e => {
+										// Only show context menu if clicking on empty space (not on a file/folder)
+										if ((e.target as HTMLElement).closest("button")) {
+											return; // Let the button's own context menu handler take over
+										}
+										e.preventDefault();
+										// In contentFolderOnly mode, the visual root is the content folder
+										setContextMenu({
+											x: e.clientX,
+											y: e.clientY,
+											folderPath: contentFolderOnly ? "content" : "",
+										});
+									}}
+									data-testid="file-tree-container"
+								>
+									{renderTree.map(node => renderFileTreeNode(node))}
+								</div>
 							</div>
 						</div>
 					}
@@ -1741,14 +2040,14 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 						<div className="border rounded-lg overflow-hidden bg-muted/50 h-full">
 							{!selectedFile && (
 								<div className="flex items-center justify-center h-full text-muted-foreground">
-									{content.selectFile as string}
+									{content.selectFile.value}
 								</div>
 							)}
 							{selectedFile && (
 								<div className="h-full">
 									{loading ? (
 										<div className="flex items-center justify-center h-full text-muted-foreground">
-											{content.loading as string}
+											{content.loading.value}
 										</div>
 									) : (
 										<div className="h-full flex flex-col">
@@ -1762,18 +2061,12 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 															{saveMessage}
 														</span>
 													)}
-													{!isEditing && isFileEditable(selectedFile) && (
-														<Button variant="outline" size="sm" onClick={handleEditClick}>
-															<Edit className="h-4 w-4 mr-2" />
-															{content.editFile as string}
-														</Button>
-													)}
-													{!isEditing && !isFileEditable(selectedFile) && (
+													{(!isFileEditable(selectedFile) || readOnly) && (
 														<span className="text-xs text-muted-foreground">
-															{content.readOnlyFile as string}
+															{content.readOnlyFile.value}
 														</span>
 													)}
-													{isEditing && (
+													{isFileEditable(selectedFile) && !readOnly && (
 														<>
 															{isFileFormattable(selectedFile) && (
 																<Button
@@ -1784,36 +2077,27 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 																>
 																	<AlignLeft className="h-4 w-4 mr-2" />
 																	{formatting
-																		? (content.formatting as string)
-																		: (content.formatCode as string)}
+																		? content.formatting.value
+																		: content.formatCode.value}
 																</Button>
 															)}
-															<Button
-																variant="outline"
-																size="sm"
-																onClick={handleCancelEdit}
-																disabled={saving || formatting}
-															>
-																<X className="h-4 w-4 mr-2" />
-																{content.cancel as string}
-															</Button>
-															<Button
-																variant="default"
-																size="sm"
-																onClick={handleSaveFile}
-																disabled={saving || formatting}
-															>
-																<Save className="h-4 w-4 mr-2" />
-																{saving
-																	? (content.saving as string)
-																	: (content.saveFile as string)}
-															</Button>
+															{editedContent !== fileContent && (
+																<Button
+																	variant="outline"
+																	size="sm"
+																	onClick={handleDiscardFileChanges}
+																	disabled={saving || formatting}
+																>
+																	<X className="h-4 w-4 mr-2" />
+																	{content.discardFileChanges.value}
+																</Button>
+															)}
 														</>
 													)}
 												</div>
 											</div>
-											<div className="flex-1 min-h-0 overflow-auto">
-												{isEditing ? (
+											<div className="flex-1 min-h-0 overflow-auto scrollbar-thin">
+												{isFileEditable(selectedFile) && !readOnly ? (
 													<NumberEdit
 														ref={editorRef}
 														value={editedContent}
@@ -1841,15 +2125,15 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 											{/* Validation issues list at bottom */}
 											{validationIssues.length > 0 && (
 												<div
-													className="border-t bg-muted/30 max-h-40 overflow-auto"
+													className="border-t bg-muted/30 max-h-40 overflow-auto scrollbar-thin"
 													data-testid="validation-error-banner"
 												>
 													<div className="px-3 py-1.5 text-xs font-medium text-muted-foreground border-b bg-muted/50 sticky top-0">
-														{content.issuesTitle as string} (
+														{content.issuesTitle.value} (
 														{validationIssues.filter(i => i.type === "error").length}{" "}
-														{content.errorCount as string},{" "}
+														{content.errorCount.value},{" "}
 														{validationIssues.filter(i => i.type === "warning").length}{" "}
-														{content.warningCount as string})
+														{content.warningCount.value})
 													</div>
 													<ul className="divide-y">
 														{validationIssues.map((issue, index) => (
@@ -1926,48 +2210,48 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 								data-testid="context-menu-new-file"
 							>
 								<Plus className="h-4 w-4" />
-								{content.newFile as string}
+								{content.newFile.value}
 							</button>
 						)}
-						{/* Only show folder operations when NOT at root level, NOT a protected folder, and NOT restricted */}
-						{contextMenu.folderPath !== "" && !isCreationRestrictedPath(contextMenu.folderPath) && (
-							<>
-								<button
-									type="button"
-									className="w-full text-left px-3 py-1.5 text-sm hover:bg-accent flex items-center gap-2"
-									onClick={() => openNewFolderDialog(contextMenu.folderPath)}
-									data-testid="context-menu-new-folder"
-								>
-									<FolderPlus className="h-4 w-4" />
-									{content.newFolder as string}
-								</button>
-								{/* Hide rename/delete for protected root folders */}
-								{!isProtectedRootFolder(contextMenu.folderPath) && (
-									<>
-										<div className="h-px bg-border my-1" />
-										<button
-											type="button"
-											className="w-full text-left px-3 py-1.5 text-sm hover:bg-accent flex items-center gap-2"
-											onClick={() => openRenameFolderDialog(contextMenu.folderPath)}
-											data-testid="context-menu-rename-folder"
-										>
-											<Pencil className="h-4 w-4" />
-											{content.renameFolder as string}
-										</button>
-										<div className="h-px bg-border my-1" />
-										<button
-											type="button"
-											className="w-full text-left px-3 py-1.5 text-sm hover:bg-accent flex items-center gap-2 text-destructive"
-											onClick={() => openDeleteFolderDialog(contextMenu.folderPath)}
-											data-testid="context-menu-delete-folder"
-										>
-											<Trash2 className="h-4 w-4" />
-											{content.deleteFolder as string}
-										</button>
-									</>
-								)}
-							</>
+						{/* New Folder - available at root and non-restricted paths */}
+						{!isCreationRestrictedPath(contextMenu.folderPath) && (
+							<button
+								type="button"
+								className="w-full text-left px-3 py-1.5 text-sm hover:bg-accent flex items-center gap-2"
+								onClick={() => openNewFolderDialog(contextMenu.folderPath)}
+								data-testid="context-menu-new-folder"
+							>
+								<FolderPlus className="h-4 w-4" />
+								{content.newFolder.value}
+							</button>
 						)}
+						{/* Rename/Delete - only for non-protected, non-restricted folders with a path */}
+						{contextMenu.folderPath &&
+							!isCreationRestrictedPath(contextMenu.folderPath) &&
+							!isProtectedRootFolder(contextMenu.folderPath) && (
+								<>
+									<div className="h-px bg-border my-1" />
+									<button
+										type="button"
+										className="w-full text-left px-3 py-1.5 text-sm hover:bg-accent flex items-center gap-2"
+										onClick={() => openRenameFolderDialog(contextMenu.folderPath)}
+										data-testid="context-menu-rename-folder"
+									>
+										<Pencil className="h-4 w-4" />
+										{content.renameFolder.value}
+									</button>
+									<div className="h-px bg-border my-1" />
+									<button
+										type="button"
+										className="w-full text-left px-3 py-1.5 text-sm hover:bg-accent flex items-center gap-2 text-destructive"
+										onClick={() => openDeleteFolderDialog(contextMenu.folderPath)}
+										data-testid="context-menu-delete-folder"
+									>
+										<Trash2 className="h-4 w-4" />
+										{content.deleteFolder.value}
+									</button>
+								</>
+							)}
 					</div>
 				</div>
 			)}
@@ -1984,7 +2268,7 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 						onClick={e => e.stopPropagation()}
 						data-testid="new-folder-dialog"
 					>
-						<h3 className="text-lg font-semibold mb-4">{content.newFolderTitle as string}</h3>
+						<h3 className="text-lg font-semibold mb-4">{content.newFolderTitle.value}</h3>
 						{folderOperationError && (
 							<div className="bg-destructive/10 border border-destructive/20 text-destructive p-2 rounded text-sm mb-4">
 								{folderOperationError}
@@ -1994,7 +2278,6 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 							value={newFolderName}
 							onChange={e => setNewFolderName(e.target.value)}
 							placeholder={content.newFolderPlaceholder.value}
-							disabled={folderOperationLoading}
 							data-testid="new-folder-name-input"
 							autoFocus
 						/>
@@ -2004,21 +2287,16 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 								: "Creating at root level"}
 						</p>
 						<div className="flex justify-end gap-2">
-							<Button
-								variant="outline"
-								size="sm"
-								onClick={() => setNewFolderDialog(null)}
-								disabled={folderOperationLoading}
-							>
-								{content.cancel as string}
+							<Button variant="outline" size="sm" onClick={() => setNewFolderDialog(null)}>
+								{content.cancel.value}
 							</Button>
 							<Button
 								size="sm"
 								onClick={handleCreateFolder}
-								disabled={folderOperationLoading || !newFolderName.trim()}
+								disabled={!newFolderName.trim() || folderOperationLoading}
 								data-testid="create-folder-button"
 							>
-								{content.create as string}
+								{content.create.value}
 							</Button>
 						</div>
 					</div>
@@ -2037,7 +2315,7 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 						onClick={e => e.stopPropagation()}
 						data-testid="new-file-dialog"
 					>
-						<h3 className="text-lg font-semibold mb-4">{content.newFileTitle as string}</h3>
+						<h3 className="text-lg font-semibold mb-4">{content.newFileTitle.value}</h3>
 						{folderOperationError && (
 							<div className="bg-destructive/10 border border-destructive/20 text-destructive p-2 rounded text-sm mb-4">
 								{folderOperationError}
@@ -2049,11 +2327,10 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 								<select
 									value={newFileName}
 									onChange={e => setNewFileName(e.target.value)}
-									disabled={folderOperationLoading}
 									className="w-full border rounded px-3 py-2 text-sm bg-background mb-2"
 									data-testid="new-file-name-select"
 								>
-									<option value="">{content.selectConfigFile as string}</option>
+									<option value="">{content.selectConfigFile.value}</option>
 									{getAvailableRootConfigFiles(getRootLevelFiles()).map(fileName => (
 										<option key={fileName} value={fileName}>
 											{fileName}
@@ -2061,9 +2338,7 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 									))}
 								</select>
 								{getAvailableRootConfigFiles(getRootLevelFiles()).length === 0 && (
-									<p className="text-xs text-amber-600 mb-2">
-										{content.allConfigFilesExist as string}
-									</p>
+									<p className="text-xs text-amber-600 mb-2">{content.allConfigFilesExist.value}</p>
 								)}
 							</>
 						) : isContentFolder(newFileDialog.parentPath) ? (
@@ -2072,11 +2347,10 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 								<select
 									value={newFileName}
 									onChange={e => setNewFileName(e.target.value)}
-									disabled={folderOperationLoading}
 									className="w-full border rounded px-3 py-2 text-sm bg-background mb-2"
 									data-testid="new-file-name-select"
 								>
-									<option value="">{content.selectMetaFile as string}</option>
+									<option value="">{content.selectMetaFile.value}</option>
 									{getAvailableContentMetaFiles(getFilesInFolder(newFileDialog.parentPath)).map(
 										fileName => (
 											<option key={fileName} value={fileName}>
@@ -2087,7 +2361,7 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 								</select>
 								{getAvailableContentMetaFiles(getFilesInFolder(newFileDialog.parentPath)).length ===
 									0 && (
-									<p className="text-xs text-amber-600 mb-2">{content.allMetaFilesExist as string}</p>
+									<p className="text-xs text-amber-600 mb-2">{content.allMetaFilesExist.value}</p>
 								)}
 							</>
 						) : (
@@ -2097,7 +2371,6 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 									value={newFileName}
 									onChange={e => setNewFileName(e.target.value)}
 									placeholder={content.newFilePlaceholder.value}
-									disabled={folderOperationLoading}
 									data-testid="new-file-name-input"
 									className="flex-1"
 									autoFocus
@@ -2105,7 +2378,6 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 								<select
 									value={newFileExtension}
 									onChange={e => setNewFileExtension(e.target.value)}
-									disabled={folderOperationLoading}
 									className="border rounded px-2 py-1 text-sm bg-background"
 									data-testid="new-file-extension-select"
 								>
@@ -2120,24 +2392,19 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 						<p className="text-xs text-muted-foreground mt-1 mb-4">
 							{newFileDialog.parentPath
 								? `Creating in: ${newFileDialog.parentPath}`
-								: (content.creatingAtRootConfig as string)}
+								: content.creatingAtRootConfig.value}
 						</p>
 						<div className="flex justify-end gap-2">
-							<Button
-								variant="outline"
-								size="sm"
-								onClick={() => setNewFileDialog(null)}
-								disabled={folderOperationLoading}
-							>
-								{content.cancel as string}
+							<Button variant="outline" size="sm" onClick={() => setNewFileDialog(null)}>
+								{content.cancel.value}
 							</Button>
 							<Button
 								size="sm"
 								onClick={handleCreateFile}
-								disabled={folderOperationLoading || !newFileName.trim()}
+								disabled={!newFileName.trim() || folderOperationLoading}
 								data-testid="create-file-button"
 							>
-								{content.create as string}
+								{content.create.value}
 							</Button>
 						</div>
 					</div>
@@ -2156,7 +2423,7 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 						onClick={e => e.stopPropagation()}
 						data-testid="rename-folder-dialog"
 					>
-						<h3 className="text-lg font-semibold mb-4">{content.renameFolderTitle as string}</h3>
+						<h3 className="text-lg font-semibold mb-4">{content.renameFolderTitle.value}</h3>
 						{folderOperationError && (
 							<div className="bg-destructive/10 border border-destructive/20 text-destructive p-2 rounded text-sm mb-4">
 								{folderOperationError}
@@ -2165,26 +2432,20 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 						<Input
 							value={renameFolderName}
 							onChange={e => setRenameFolderName(e.target.value)}
-							disabled={folderOperationLoading}
 							data-testid="rename-folder-name-input"
 							autoFocus
 						/>
 						<div className="flex justify-end gap-2 mt-4">
-							<Button
-								variant="outline"
-								size="sm"
-								onClick={() => setRenameFolderDialog(null)}
-								disabled={folderOperationLoading}
-							>
-								{content.cancel as string}
+							<Button variant="outline" size="sm" onClick={() => setRenameFolderDialog(null)}>
+								{content.cancel.value}
 							</Button>
 							<Button
 								size="sm"
 								onClick={handleRenameFolder}
-								disabled={folderOperationLoading || !renameFolderName.trim()}
+								disabled={!renameFolderName.trim() || folderOperationLoading}
 								data-testid="rename-folder-button"
 							>
-								{content.rename as string}
+								{content.rename.value}
 							</Button>
 						</div>
 					</div>
@@ -2203,26 +2464,21 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 						onClick={e => e.stopPropagation()}
 						data-testid="delete-folder-dialog"
 					>
-						<h3 className="text-lg font-semibold mb-4">{content.deleteFolderTitle as string}</h3>
+						<h3 className="text-lg font-semibold mb-4">{content.deleteFolderTitle.value}</h3>
 						{folderOperationError && (
 							<div className="bg-destructive/10 border border-destructive/20 text-destructive p-2 rounded text-sm mb-4">
 								{folderOperationError}
 							</div>
 						)}
-						<p className="text-sm text-muted-foreground mb-2">{content.deleteFolderConfirm as string}</p>
+						<p className="text-sm text-muted-foreground mb-2">{content.deleteFolderConfirm.value}</p>
 						{deleteFolderDialog.hasChildren && (
 							<p className="text-sm text-amber-600 dark:text-amber-400 mb-4">
-								⚠️ {content.deleteFolderNonEmpty as string}
+								⚠️ {content.deleteFolderNonEmpty.value}
 							</p>
 						)}
 						<div className="flex justify-end gap-2 mt-4">
-							<Button
-								variant="outline"
-								size="sm"
-								onClick={() => setDeleteFolderDialog(null)}
-								disabled={folderOperationLoading}
-							>
-								{content.cancel as string}
+							<Button variant="outline" size="sm" onClick={() => setDeleteFolderDialog(null)}>
+								{content.cancel.value}
 							</Button>
 							<Button
 								variant="destructive"
@@ -2231,7 +2487,7 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 								disabled={folderOperationLoading}
 								data-testid="delete-folder-button"
 							>
-								{content.delete as string}
+								{content.delete.value}
 							</Button>
 						</div>
 					</div>
@@ -2262,7 +2518,7 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 							data-testid="context-menu-move-file"
 						>
 							<MoveHorizontal className="h-4 w-4" />
-							{content.moveFile as string}
+							{content.moveFile.value}
 						</button>
 					</div>
 				</div>
@@ -2280,21 +2536,20 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 						onClick={e => e.stopPropagation()}
 						data-testid="move-file-dialog"
 					>
-						<h3 className="text-lg font-semibold mb-4">{content.moveFileTitle as string}</h3>
+						<h3 className="text-lg font-semibold mb-4">{content.moveFileTitle.value}</h3>
 						{folderOperationError && (
 							<div className="bg-destructive/10 border border-destructive/20 text-destructive p-2 rounded text-sm mb-4">
 								{folderOperationError}
 							</div>
 						)}
 						<p className="text-sm text-muted-foreground mb-2">
-							{content.currentLocation as string}:{" "}
+							{content.currentLocation.value}:{" "}
 							<span className="font-mono">{moveFileDialog.filePath}</span>
 						</p>
-						<label className="text-sm font-medium mb-2 block">{content.selectDestination as string}</label>
+						<label className="text-sm font-medium mb-2 block">{content.selectDestination.value}</label>
 						<select
 							value={moveDestination}
 							onChange={e => setMoveDestination(e.target.value)}
-							disabled={folderOperationLoading}
 							className="w-full border rounded-md p-2 text-sm bg-background"
 							data-testid="move-destination-select"
 						>
@@ -2307,13 +2562,8 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 							))}
 						</select>
 						<div className="flex justify-end gap-2 mt-4">
-							<Button
-								variant="outline"
-								size="sm"
-								onClick={() => setMoveFileDialog(null)}
-								disabled={folderOperationLoading}
-							>
-								{content.cancel as string}
+							<Button variant="outline" size="sm" onClick={() => setMoveFileDialog(null)}>
+								{content.cancel.value}
 							</Button>
 							<Button
 								size="sm"
@@ -2325,7 +2575,7 @@ export function RepositoryViewer({ docsite, onFileSave, metaFilesOnly }: Reposit
 								}
 								data-testid="move-file-button"
 							>
-								{content.moveTo as string}
+								{content.moveTo.value}
 							</Button>
 						</div>
 					</div>

@@ -6,6 +6,8 @@ export function mockUserInfo(partial?: Partial<UserInfo>): UserInfo {
 		name: "Test User",
 		picture: undefined,
 		userId: 34,
+		tenantId: undefined,
+		orgId: undefined,
 		...partial,
 	};
 }

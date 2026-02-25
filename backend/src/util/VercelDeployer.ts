@@ -17,6 +17,7 @@
 
 import { getConfig } from "../config/Config";
 import { getLog } from "./Logger";
+import { withRetry } from "./Retry";
 import { readdir, readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import type { AddDomainResult, DomainStatusResult, DomainVerificationChallenge } from "jolli-common";
@@ -24,28 +25,27 @@ import type { AddDomainResult, DomainStatusResult, DomainVerificationChallenge }
 const log = getLog(import.meta);
 
 /**
+ * Determines if a Vercel API error is retryable.
+ * Retries on rate limits (429) and server errors (5xx).
+ */
+function isRetryableVercelError(error: unknown): boolean {
+	const status = (error as { status?: number }).status;
+	return status === 429 || (status !== undefined && status >= 500 && status < 600);
+}
+
+/**
  * Retry wrapper for Vercel API calls with exponential backoff.
  * Retries on rate limits (429) and server errors (5xx).
  */
-async function withVercelRetry<T>(operation: () => Promise<T>, maxRetries = 3): Promise<T> {
-	for (let attempt = 1; attempt <= maxRetries; attempt++) {
-		try {
-			return await operation();
-		} catch (error) {
-			const status = (error as { status?: number }).status;
-			const isRetryable = status === 429 || (status !== undefined && status >= 500 && status < 600);
-
-			if (!isRetryable || attempt === maxRetries) {
-				throw error;
-			}
-
-			const delayMs = 2 ** attempt * 1000; // 2s, 4s, 8s
-			log.warn({ attempt, delayMs, status }, "Retrying Vercel API call after error");
-			await new Promise(resolve => setTimeout(resolve, delayMs));
-		}
-	}
-	// TypeScript needs this even though it's unreachable
-	throw new Error("Retry loop exited unexpectedly");
+function withVercelRetry<T>(operation: () => Promise<T>, maxRetries = 3): Promise<T> {
+	return withRetry(operation, {
+		maxRetries,
+		baseDelayMs: 2000,
+		maxDelayMs: 8000,
+		jitter: false,
+		isRetryable: isRetryableVercelError,
+		label: "Vercel API",
+	});
 }
 
 // ============================================================================

@@ -5,13 +5,15 @@ import type { RunState, ToolDef } from "../Types";
 import { e2bToolDefinitions, toolDefinitions } from "../tools/tools/index";
 import { Sandbox } from "e2b";
 
+const DEFAULT_E2B_SANDBOX_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+
 /**
  * Named tool presets for different use cases
  */
 export type ToolPreset =
 	| "general" // Basic tools (ls, cat, write_file, etc.) for local execution
 	| "e2b-general" // E2B sandbox tools (ls, cat, write_file, github_checkout, etc.)
-	| "e2b-code" // E2B read-only code tools (ls, cat, git_diff, git_history, github_checkout)
+	| "e2b-code" // E2B read-only code tools (ls, cat, grep, git_status/git_diff/git_history/git_log/git_show/git_changed_files, github_checkout)
 	| "e2b-docs" // E2B with documentation generation tools
 	| "custom"; // Custom tool set provided by caller
 
@@ -56,6 +58,12 @@ export interface AgentEnvConfig {
 	 * @default 20000
 	 */
 	e2bTimeoutMs?: number;
+
+	/**
+	 * Existing E2B sandbox to reuse (from reconnectE2BSandbox)
+	 * If provided, skips sandbox creation and uses this instead
+	 */
+	existingSandbox?: Sandbox;
 
 	/**
 	 * LLM model to use
@@ -137,9 +145,20 @@ function getToolsForPreset(
 		case "e2b-code":
 			// E2B read-only code browsing tools (no write operations)
 			baseTools = e2bToolDefinitions.filter(tool =>
-				["ls", "cat", "git_diff", "git_history", "github_checkout", "web_search", "web_extract"].includes(
-					tool.name,
-				),
+				[
+					"ls",
+					"cat",
+					"grep",
+					"git_status",
+					"git_diff",
+					"git_history",
+					"git_log",
+					"git_show",
+					"git_changed_files",
+					"github_checkout",
+					"web_search",
+					"web_extract",
+				].includes(tool.name),
 			);
 			break;
 
@@ -159,8 +178,10 @@ function getToolsForPreset(
 			break;
 
 		case "custom":
-			if (!customTools || customTools.length === 0) {
-				throw new Error("Custom tool preset requires customTools to be provided");
+			if (!customTools) {
+				throw new Error(
+					"Custom tool preset requires customTools to be provided (can be empty array for client-side execution)",
+				);
 			}
 			baseTools = customTools;
 			break;
@@ -181,7 +202,7 @@ async function createE2BSandbox(
 	apiKey: string,
 	timeoutMs = 20000,
 ): Promise<{ sandbox: Sandbox; sandboxId: string }> {
-	const connect = Sandbox.create(templateId, { apiKey });
+	const connect = Sandbox.create(templateId, { apiKey, timeoutMs: DEFAULT_E2B_SANDBOX_TIMEOUT_MS });
 	const timeout = new Promise<never>((_, reject) =>
 		setTimeout(
 			() => reject(new Error(`E2B connection timed out after ${Math.round(timeoutMs / 1000)}s`)),
@@ -190,9 +211,34 @@ async function createE2BSandbox(
 	);
 
 	const sandbox = await Promise.race([connect, timeout]);
-	const sandboxId = (sandbox as { id?: string }).id || "unknown";
+	const sandboxId = sandbox.sandboxId;
 
 	return { sandbox, sandboxId };
+}
+
+/**
+ * Reconnect to an existing E2B sandbox by ID
+ * Returns null if reconnection fails (sandbox may have been garbage collected)
+ */
+export async function reconnectE2BSandbox(
+	sandboxId: string,
+	apiKey: string,
+	timeoutMs = 10000,
+): Promise<Sandbox | null> {
+	try {
+		const connect = Sandbox.connect(sandboxId, { apiKey });
+		const timeout = new Promise<never>((_, reject) =>
+			setTimeout(
+				() => reject(new Error(`E2B reconnection timed out after ${Math.round(timeoutMs / 1000)}s`)),
+				timeoutMs,
+			),
+		);
+
+		return await Promise.race([connect, timeout]);
+	} catch {
+		// Sandbox may have been garbage collected or connection failed
+		return null;
+	}
 }
 
 /**
@@ -238,6 +284,7 @@ export async function createAgentEnvironment(config: AgentEnvConfig): Promise<Ag
 		e2bApiKey,
 		e2bTemplateId,
 		e2bTimeoutMs = 20000,
+		existingSandbox,
 		model = "claude-sonnet-4-5-20250929",
 		temperature = 0.7,
 		systemPrompt,
@@ -245,18 +292,22 @@ export async function createAgentEnvironment(config: AgentEnvConfig): Promise<Ag
 		envVars = {},
 	} = config;
 
-	// Validate E2B requirements
-	if (useE2B && (!e2bApiKey || !e2bTemplateId)) {
-		throw new Error("E2B usage requires e2bApiKey and e2bTemplateId");
+	// Validate E2B requirements (not needed if existing sandbox provided)
+	if (useE2B && !existingSandbox && (!e2bApiKey || !e2bTemplateId)) {
+		throw new Error("E2B usage requires e2bApiKey and e2bTemplateId (or existingSandbox)");
 	}
 
 	// Get tools for the preset
 	const tools = getToolsForPreset(toolPreset, customTools, additionalTools);
 
-	// Create E2B sandbox if requested
+	// Use existing sandbox or create new E2B sandbox if requested
 	let sandbox: Sandbox | undefined;
 	let sandboxId: string | undefined;
-	if (useE2B && e2bApiKey && e2bTemplateId) {
+	if (existingSandbox) {
+		// Reuse the provided sandbox (from reconnectE2BSandbox)
+		sandbox = existingSandbox;
+		sandboxId = existingSandbox.sandboxId;
+	} else if (useE2B && e2bApiKey && e2bTemplateId) {
 		const result = await createE2BSandbox(e2bTemplateId, e2bApiKey, e2bTimeoutMs);
 		sandbox = result.sandbox;
 		sandboxId = result.sandboxId;

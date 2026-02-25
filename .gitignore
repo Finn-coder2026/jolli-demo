@@ -4,6 +4,10 @@
 .DS_Store
 **/.claude/settings.local.json
 .env.local
+.env.dev
+
+# VSCode workspace file (local only)
+*.code-workspace
 .idea/aws.xml
 .idea/copilot*
 .idea/dataSources*
@@ -17,6 +21,8 @@
 .idea/uiDesigner.xml
 .idea/workspace.xml
 bin/
+!deploy/app-cdk/bin/
+!deploy/worker-cdk/bin/
 coverage/
 dist/
 dist-serverless/
@@ -32,6 +38,14 @@ common/src/**/*.js.map
 
 deploy/vercel/env.json
 deploy/worker-cdk/cdk.out/
+deploy/app-cdk/cdk.out/
+
+# Backend build outputs
+dist-app/
+dist-worker/
+
+# Generated runtime dependencies manifest for Docker builds
+backend/runtime-deps.json
 
 # Jolli auto-generated files and local vector store
 .jolli/index.json
@@ -53,3 +67,24 @@ gateway/certs/dougschroeder-dev/
 # VSCode extension (removed from repo, ignore local build artifacts)
 extensions/vscode/out
 extensions/vscode/.vscode-test/
+
+# Playwright e2e testing
+e2e/.auth/
+e2e/.env.e2e
+playwright-report/
+test-results/
+
+# AGENTS.md files (AI agent instructions)
+AGENTS.md
+
+.claude
+.mcp.json
+
+# Scripts with secrets (local only)
+scripts/push-jolli-334-auth-params.sh
+
+# PR review notes (local only)
+review-pr.md
+
+.entire/
+.opencode/

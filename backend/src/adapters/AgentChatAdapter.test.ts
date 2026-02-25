@@ -261,7 +261,7 @@ describe("AgentChatAdapter", () => {
 		expect(adapter).toBeDefined();
 	});
 
-	it("converts assistant_tool_use messages correctly", async () => {
+	it("converts assistant_tool_use messages correctly when paired with tool result", async () => {
 		const mockAgent: Agent = {
 			chatTurn: vi.fn().mockResolvedValue({
 				assistantText: "response",
@@ -271,6 +271,12 @@ describe("AgentChatAdapter", () => {
 						tool_call_id: "call_1",
 						tool_name: "test_tool",
 						tool_input: { foo: "bar" },
+					},
+					{
+						role: "tool",
+						tool_call_id: "call_1",
+						tool_name: "test_tool",
+						content: "tool result",
 					},
 				],
 			}),
@@ -286,6 +292,13 @@ describe("AgentChatAdapter", () => {
 				tool_input: { foo: "bar" },
 				timestamp: "2024-01-01T00:00:00Z",
 			},
+			{
+				role: "tool" as const,
+				tool_call_id: "call_1",
+				tool_name: "test_tool",
+				content: "tool result",
+				timestamp: "2024-01-01T00:00:01Z",
+			},
 		];
 
 		const onChunk = vi.fn();
@@ -300,12 +313,18 @@ describe("AgentChatAdapter", () => {
 						tool_name: "test_tool",
 						tool_input: { foo: "bar" },
 					},
+					{
+						role: "tool",
+						tool_call_id: "call_1",
+						tool_name: "test_tool",
+						content: "tool result",
+					},
 				],
 			}),
 		);
 	});
 
-	it("converts assistant_tool_uses messages correctly", async () => {
+	it("converts assistant_tool_uses messages correctly when paired with tool results", async () => {
 		const mockAgent: Agent = {
 			chatTurn: vi.fn().mockResolvedValue({
 				assistantText: "response",
@@ -313,9 +332,21 @@ describe("AgentChatAdapter", () => {
 					{
 						role: "assistant_tool_uses",
 						calls: [
-							{ id: "call_1", name: "tool1", arguments: {} },
-							{ id: "call_2", name: "tool2", arguments: {} },
+							{ tool_call_id: "call_1", tool_name: "tool1", tool_input: {} },
+							{ tool_call_id: "call_2", tool_name: "tool2", tool_input: {} },
 						],
+					},
+					{
+						role: "tool",
+						tool_call_id: "call_1",
+						tool_name: "tool1",
+						content: "result1",
+					},
+					{
+						role: "tool",
+						tool_call_id: "call_2",
+						tool_name: "tool2",
+						content: "result2",
 					},
 				],
 			}),
@@ -332,6 +363,20 @@ describe("AgentChatAdapter", () => {
 				],
 				timestamp: "2024-01-01T00:00:00Z",
 			},
+			{
+				role: "tool" as const,
+				tool_call_id: "call_1",
+				tool_name: "tool1",
+				content: "result1",
+				timestamp: "2024-01-01T00:00:01Z",
+			},
+			{
+				role: "tool" as const,
+				tool_call_id: "call_2",
+				tool_name: "tool2",
+				content: "result2",
+				timestamp: "2024-01-01T00:00:02Z",
+			},
 		];
 
 		const onChunk = vi.fn();
@@ -347,16 +392,34 @@ describe("AgentChatAdapter", () => {
 							{ tool_call_id: "call_2", tool_name: "tool2", tool_input: {} },
 						],
 					},
+					{
+						role: "tool",
+						tool_call_id: "call_1",
+						tool_name: "tool1",
+						content: "result1",
+					},
+					{
+						role: "tool",
+						tool_call_id: "call_2",
+						tool_name: "tool2",
+						content: "result2",
+					},
 				],
 			}),
 		);
 	});
 
-	it("converts tool messages correctly", async () => {
+	it("converts tool messages correctly when paired with assistant tool_use", async () => {
 		const mockAgent: Agent = {
 			chatTurn: vi.fn().mockResolvedValue({
 				assistantText: "response",
 				history: [
+					{
+						role: "assistant_tool_use",
+						tool_call_id: "call_1",
+						tool_name: "test_tool",
+						tool_input: {},
+					},
 					{
 						role: "tool",
 						tool_call_id: "call_1",
@@ -371,11 +434,18 @@ describe("AgentChatAdapter", () => {
 
 		const messages: Array<CollabMessage> = [
 			{
+				role: "assistant_tool_use" as const,
+				tool_call_id: "call_1",
+				tool_name: "test_tool",
+				tool_input: {},
+				timestamp: "2024-01-01T00:00:00Z",
+			},
+			{
 				role: "tool" as const,
 				tool_call_id: "call_1",
 				tool_name: "test_tool",
 				content: "tool result",
-				timestamp: "2024-01-01T00:00:00Z",
+				timestamp: "2024-01-01T00:00:01Z",
 			},
 		];
 
@@ -385,6 +455,12 @@ describe("AgentChatAdapter", () => {
 		expect(mockAgent.chatTurn).toHaveBeenCalledWith(
 			expect.objectContaining({
 				history: [
+					{
+						role: "assistant_tool_use",
+						tool_call_id: "call_1",
+						tool_name: "test_tool",
+						tool_input: {},
+					},
 					{
 						role: "tool",
 						tool_call_id: "call_1",
@@ -430,6 +506,256 @@ describe("AgentChatAdapter", () => {
 			type: "tool_start",
 			tool: "test_tool",
 			status: "running",
+		});
+	});
+
+	it("returns new messages when chatTurn mutates history in-place", async () => {
+		// Simulates real Agent.chatTurn behavior: it pushes new messages onto the
+		// same history array that was passed in, rather than returning a new array.
+		const mockAgent: Agent = {
+			chatTurn: vi.fn().mockImplementation(({ history }) => {
+				// Mutate the array in-place, just like the real Agent.chatTurn
+				history.push({
+					role: "assistant_tool_uses",
+					calls: [{ tool_call_id: "call_1", tool_name: "navigate_user", tool_input: { path: "/drafts/42" } }],
+				});
+				history.push({
+					role: "tool",
+					tool_call_id: "call_1",
+					tool_name: "navigate_user",
+					content: JSON.stringify({ navigated: true }),
+				});
+				history.push({ role: "assistant", content: "Navigating you now." });
+				return Promise.resolve({
+					assistantText: "Navigating you now.",
+					history,
+				});
+			}),
+		} as unknown as Agent;
+
+		const adapter = new AgentChatAdapter({ agent: mockAgent });
+
+		const messages: Array<CollabMessage> = [
+			{ role: "user" as const, content: "Create a draft", timestamp: "2024-01-01T00:00:00Z" },
+		];
+		const onChunk = vi.fn();
+
+		const result = await adapter.streamResponse({ messages, onChunk });
+
+		// The bug was: newMessages would be [] because history.length grew in-place.
+		// After the fix, newMessages should contain all 3 messages added by chatTurn.
+		expect(result.newMessages).toHaveLength(3);
+		expect(result.newMessages[0].role).toBe("assistant_tool_uses");
+		expect(result.newMessages[1].role).toBe("tool");
+		expect(result.newMessages[2].role).toBe("assistant");
+		expect(result.assistantText).toBe("Navigating you now.");
+	});
+
+	describe("empty content filtering", () => {
+		it("skips messages with empty content", async () => {
+			const mockAgent: Agent = {
+				chatTurn: vi.fn().mockResolvedValue({
+					assistantText: "response",
+					history: [
+						{ role: "user", content: "hello" },
+						{ role: "assistant", content: "response" },
+					],
+				}),
+			} as unknown as Agent;
+
+			const adapter = new AgentChatAdapter({ agent: mockAgent });
+
+			const messages: Array<CollabMessage> = [
+				{ role: "user" as const, content: "hello", timestamp: "2024-01-01T00:00:00Z" },
+				{ role: "assistant" as const, content: "", timestamp: "2024-01-01T00:00:01Z" },
+				{ role: "user" as const, content: "world", timestamp: "2024-01-01T00:00:02Z" },
+			];
+
+			const onChunk = vi.fn();
+			await adapter.streamResponse({ messages, onChunk });
+
+			// The empty assistant message should be filtered out
+			expect(mockAgent.chatTurn).toHaveBeenCalledWith(
+				expect.objectContaining({
+					history: [
+						{ role: "user", content: "hello" },
+						{ role: "user", content: "world" },
+					],
+				}),
+			);
+		});
+
+		it("skips messages with whitespace-only content", async () => {
+			const mockAgent: Agent = {
+				chatTurn: vi.fn().mockResolvedValue({
+					assistantText: "response",
+					history: [
+						{ role: "user", content: "hello" },
+						{ role: "assistant", content: "response" },
+					],
+				}),
+			} as unknown as Agent;
+
+			const adapter = new AgentChatAdapter({ agent: mockAgent });
+
+			const messages: Array<CollabMessage> = [
+				{ role: "user" as const, content: "hello", timestamp: "2024-01-01T00:00:00Z" },
+				{ role: "assistant" as const, content: "   ", timestamp: "2024-01-01T00:00:01Z" },
+				{ role: "system" as const, content: "\n\t", timestamp: "2024-01-01T00:00:02Z" },
+				{ role: "user" as const, content: "world", timestamp: "2024-01-01T00:00:03Z" },
+			];
+
+			const onChunk = vi.fn();
+			await adapter.streamResponse({ messages, onChunk });
+
+			// Both whitespace-only messages should be filtered out
+			expect(mockAgent.chatTurn).toHaveBeenCalledWith(
+				expect.objectContaining({
+					history: [
+						{ role: "user", content: "hello" },
+						{ role: "user", content: "world" },
+					],
+				}),
+			);
+		});
+
+		it("keeps tool messages with empty content when paired with assistant tool_use", async () => {
+			const mockAgent: Agent = {
+				chatTurn: vi.fn().mockResolvedValue({
+					assistantText: "response",
+					history: [],
+				}),
+			} as unknown as Agent;
+
+			const adapter = new AgentChatAdapter({ agent: mockAgent });
+
+			const messages: Array<CollabMessage> = [
+				{
+					role: "assistant_tool_use" as const,
+					tool_call_id: "call_1",
+					tool_name: "test_tool",
+					tool_input: {},
+					timestamp: "2024-01-01T00:00:00Z",
+				},
+				{
+					role: "tool" as const,
+					tool_call_id: "call_1",
+					tool_name: "test_tool",
+					content: "",
+					timestamp: "2024-01-01T00:00:01Z",
+				},
+			];
+
+			const onChunk = vi.fn();
+			await adapter.streamResponse({ messages, onChunk });
+
+			// Tool messages should be preserved even with empty content when well-formed.
+			expect(mockAgent.chatTurn).toHaveBeenCalledWith(
+				expect.objectContaining({
+					history: [
+						{
+							role: "assistant_tool_use",
+							tool_call_id: "call_1",
+							tool_name: "test_tool",
+							tool_input: {},
+						},
+						{
+							role: "tool",
+							tool_call_id: "call_1",
+							tool_name: "test_tool",
+							content: "",
+						},
+					],
+				}),
+			);
+		});
+
+		it("drops orphan tool messages that are not paired with assistant tool_use", async () => {
+			const mockAgent: Agent = {
+				chatTurn: vi.fn().mockResolvedValue({
+					assistantText: "response",
+					history: [],
+				}),
+			} as unknown as Agent;
+
+			const adapter = new AgentChatAdapter({ agent: mockAgent });
+
+			const messages: Array<CollabMessage> = [
+				{ role: "user" as const, content: "hello", timestamp: "2024-01-01T00:00:00Z" },
+				{
+					role: "tool" as const,
+					tool_call_id: "call_orphan",
+					tool_name: "test_tool",
+					content: "orphan result",
+					timestamp: "2024-01-01T00:00:01Z",
+				},
+				{ role: "user" as const, content: "continue", timestamp: "2024-01-01T00:00:02Z" },
+			];
+
+			const onChunk = vi.fn();
+			await adapter.streamResponse({ messages, onChunk });
+
+			expect(mockAgent.chatTurn).toHaveBeenCalledWith(
+				expect.objectContaining({
+					history: [
+						{ role: "user", content: "hello" },
+						{ role: "user", content: "continue" },
+					],
+				}),
+			);
+		});
+
+		it("drops mismatched tool results and keeps only matching assistant_tool_uses pairs", async () => {
+			const mockAgent: Agent = {
+				chatTurn: vi.fn().mockResolvedValue({
+					assistantText: "response",
+					history: [],
+				}),
+			} as unknown as Agent;
+
+			const adapter = new AgentChatAdapter({ agent: mockAgent });
+
+			const messages: Array<CollabMessage> = [
+				{
+					role: "assistant_tool_uses" as const,
+					calls: [{ tool_call_id: "call_1", tool_name: "tool_a", tool_input: { a: 1 } }],
+					timestamp: "2024-01-01T00:00:00Z",
+				},
+				{
+					role: "tool" as const,
+					tool_call_id: "call_2",
+					tool_name: "tool_a",
+					content: "mismatched result",
+					timestamp: "2024-01-01T00:00:01Z",
+				},
+				{
+					role: "tool" as const,
+					tool_call_id: "call_1",
+					tool_name: "tool_a",
+					content: "matched result",
+					timestamp: "2024-01-01T00:00:02Z",
+				},
+			];
+
+			const onChunk = vi.fn();
+			await adapter.streamResponse({ messages, onChunk });
+
+			expect(mockAgent.chatTurn).toHaveBeenCalledWith(
+				expect.objectContaining({
+					history: [
+						{
+							role: "assistant_tool_uses",
+							calls: [{ tool_call_id: "call_1", tool_name: "tool_a", tool_input: { a: 1 } }],
+						},
+						{
+							role: "tool",
+							tool_call_id: "call_1",
+							tool_name: "tool_a",
+							content: "matched result",
+						},
+					],
+				}),
+			);
 		});
 	});
 

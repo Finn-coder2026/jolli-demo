@@ -162,6 +162,7 @@ export function CreateItemDialog({
 							onValueChange={setParentId}
 							options={folderOptions}
 							width="100%"
+							contentClassName="max-h-60"
 							data-testid="parent-folder-select"
 						/>
 					</div>

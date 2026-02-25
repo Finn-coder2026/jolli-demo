@@ -385,6 +385,7 @@ describe("DemoJobs", () => {
 				listDocs: vi.fn().mockResolvedValue(docs),
 				createDoc: vi.fn(),
 				readDoc: vi.fn(),
+				readDocsByJrns: vi.fn().mockResolvedValue(new Map()),
 				readDocById: vi.fn(),
 				updateDoc: vi.fn().mockImplementation(async (doc: Doc) => doc),
 				updateDocIfVersion: vi.fn(),
@@ -399,6 +400,15 @@ describe("DemoJobs", () => {
 				renameDoc: vi.fn(),
 				getMaxSortOrder: vi.fn().mockResolvedValue(0),
 				hasDeletedDocs: vi.fn().mockResolvedValue(false),
+				getAllContent: vi.fn().mockResolvedValue([]),
+				searchInSpace: vi.fn().mockResolvedValue({ results: [], total: 0, limited: false }),
+				reorderDoc: vi.fn(),
+				moveDoc: vi.fn(),
+				reorderAt: vi.fn(),
+				findFolderByName: vi.fn().mockResolvedValue(undefined),
+				findDocBySourcePath: vi.fn(),
+				findDocBySourcePathAnySpace: vi.fn(),
+				searchArticlesForLink: vi.fn(),
 			};
 		}
 

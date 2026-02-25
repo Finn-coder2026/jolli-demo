@@ -1,5 +1,6 @@
 import type { GitHubInstallationDao } from "../dao/GitHubInstallationDao";
 import { type GitHubApp, getCoreJolliGithubApp } from "../model/GitHubApp";
+import type { TenantRegistryClient } from "../tenant/TenantRegistryClient";
 import type {
 	GitHubAppConversionResponse,
 	GitHubAppInstallation,
@@ -13,6 +14,9 @@ const log = getLog(import.meta);
 
 const githubApiBaseUrl = "https://api.github.com";
 const githubAppsBaseUrl = "https://github.com/apps";
+
+/** Grace period for newly created installations — skip cleanup for anything created within this window */
+export const CLEANUP_GRACE_PERIOD_MS = 10 * 60 * 1000; // 10 minutes
 
 /**
  * Converts an app name to a GitHub-style slug
@@ -84,6 +88,111 @@ export async function uninstallGitHubApp(installationId: number): Promise<boolea
 	} catch (error) {
 		log.error(error, "Error uninstalling GitHub App installation");
 		return false;
+	}
+}
+
+/**
+ * Result from cleaning up orphaned GitHub App installations.
+ */
+export interface CleanupOrphanedResult {
+	/** Number of orphaned installations successfully uninstalled from GitHub */
+	uninstalledCount: number;
+	/** Number of orphaned installations that failed to uninstall */
+	failedCount: number;
+}
+
+/**
+ * Detects and uninstalls orphaned GitHub App installations.
+ * An orphaned installation exists on GitHub but not in Jolli's local database.
+ *
+ * In multi-tenant mode, installations that belong to other tenants (tracked
+ * in the registry) are skipped — only truly orphaned installations are removed.
+ *
+ * @param githubInstallationDao DAO for querying local installations
+ * @param registryClient Optional registry client for multi-tenant environments
+ * @returns Count of uninstalled and failed installations; never throws
+ */
+export async function cleanupOrphanedGitHubAppInstallations(
+	githubInstallationDao: GitHubInstallationDao,
+	registryClient?: TenantRegistryClient,
+): Promise<CleanupOrphanedResult> {
+	try {
+		const app = getCoreJolliGithubApp();
+		const token = createGitHubAppJWT(app.appId, app.privateKey);
+		const githubInstallations = await getInstallations(app.appId, token);
+
+		if (!githubInstallations || githubInstallations.length === 0) {
+			return { uninstalledCount: 0, failedCount: 0 };
+		}
+
+		const localInstallations = await githubInstallationDao.listInstallations();
+		const localInstallationIds = new Set(localInstallations.map(i => i.installationId));
+
+		let uninstalledCount = 0;
+		let failedCount = 0;
+
+		for (const ghInstallation of githubInstallations) {
+			if (localInstallationIds.has(ghInstallation.id)) {
+				continue; // Not orphaned — tracked locally
+			}
+
+			// Skip recently created installations — the callback may not have completed yet
+			if (ghInstallation.created_at) {
+				const createdAt = new Date(ghInstallation.created_at).getTime();
+				if (Date.now() - createdAt < CLEANUP_GRACE_PERIOD_MS) {
+					log.debug(
+						{
+							installationId: ghInstallation.id,
+							account: ghInstallation.account.login,
+							createdAt: ghInstallation.created_at,
+						},
+						"Skipping recently created installation — within grace period",
+					);
+					continue;
+				}
+			}
+
+			// In multi-tenant mode, check if this installation belongs to another tenant
+			if (registryClient) {
+				try {
+					const mapping = await registryClient.getTenantOrgByInstallationId(ghInstallation.id);
+					if (mapping) {
+						log.debug(
+							{ installationId: ghInstallation.id, account: ghInstallation.account.login },
+							"Skipping installation — belongs to another tenant",
+						);
+						continue;
+					}
+				} catch (error) {
+					log.warn(
+						{ installationId: ghInstallation.id, error },
+						"Failed to check registry for installation mapping, skipping",
+					);
+					continue;
+				}
+			}
+
+			// Orphaned — uninstall from GitHub
+			log.info(
+				{ installationId: ghInstallation.id, account: ghInstallation.account.login },
+				"Uninstalling orphaned GitHub App installation",
+			);
+			const success = await uninstallGitHubApp(ghInstallation.id);
+			if (success) {
+				uninstalledCount++;
+			} else {
+				failedCount++;
+			}
+		}
+
+		if (uninstalledCount > 0 || failedCount > 0) {
+			log.info({ uninstalledCount, failedCount }, "Orphaned GitHub App installation cleanup complete");
+		}
+
+		return { uninstalledCount, failedCount };
+	} catch (error) {
+		log.error(error, "Error cleaning up orphaned GitHub App installations");
+		return { uninstalledCount: 0, failedCount: 0 };
 	}
 }
 
@@ -733,5 +842,83 @@ export async function upsertInstallationContainer(
 			"Updated GitHub installation entry from %s",
 			flowName,
 		);
+	}
+}
+
+/**
+ * Result from comparing two commits via the GitHub compare API.
+ */
+export interface GithubCompareResult {
+	/** The raw unified diff text */
+	diff: string;
+	/** List of files changed between the two commits */
+	files: Array<{ filename: string; status: string; patch?: string }>;
+}
+
+/**
+ * Fetches the diff between two commits using the GitHub compare API.
+ * @param accessToken - GitHub access token for authentication
+ * @param owner - Repository owner (org or user)
+ * @param repo - Repository name
+ * @param base - Base commit SHA (the "before" commit)
+ * @param head - Head commit SHA (the "after" commit)
+ * @returns The compare result with diff text and file list, or undefined on failure
+ */
+export async function fetchGithubCompare(
+	accessToken: string,
+	owner: string,
+	repo: string,
+	base: string,
+	head: string,
+): Promise<GithubCompareResult | undefined> {
+	const compareUrl = `${githubApiBaseUrl}/repos/${owner}/${repo}/compare/${base}...${head}`;
+	try {
+		// Fetch the raw diff text
+		const diffResponse = await fetch(compareUrl, {
+			headers: {
+				Accept: "application/vnd.github.v3.diff",
+				Authorization: `Bearer ${accessToken}`,
+				"X-GitHub-Api-Version": "2022-11-28",
+			},
+		});
+
+		if (!diffResponse.ok) {
+			log.warn(
+				{ owner, repo, base, head, status: diffResponse.status },
+				"Failed to fetch compare diff from GitHub",
+			);
+			return;
+		}
+
+		const diff = await diffResponse.text();
+
+		// Fetch the structured JSON response for file metadata
+		const jsonResponse = await fetch(compareUrl, {
+			headers: {
+				Accept: "application/vnd.github+json",
+				Authorization: `Bearer ${accessToken}`,
+				"X-GitHub-Api-Version": "2022-11-28",
+			},
+		});
+
+		let files: Array<{ filename: string; status: string; patch?: string }> = [];
+		if (jsonResponse.ok) {
+			const jsonData = await jsonResponse.json();
+			files = (jsonData.files ?? []).map((f: { filename: string; status: string; patch?: string }) => ({
+				filename: f.filename,
+				status: f.status,
+				patch: f.patch,
+			}));
+		} else {
+			log.warn(
+				{ owner, repo, base, head, status: jsonResponse.status },
+				"Failed to fetch compare JSON from GitHub (diff was fetched successfully)",
+			);
+		}
+
+		return { diff, files };
+	} catch (error) {
+		log.error(error, "Error fetching GitHub compare for %s/%s (%s...%s)", owner, repo, base, head);
+		return;
 	}
 }

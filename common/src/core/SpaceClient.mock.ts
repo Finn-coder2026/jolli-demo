@@ -8,10 +8,12 @@ export function mockSpaceClient(partial?: Partial<SpaceClient>): SpaceClient {
 	return {
 		listSpaces: async () => [space],
 		getDefaultSpace: async () => space,
+		getPersonalSpace: async () => mockSpace({ isPersonal: true, name: "Personal Space" }),
 		getSpace: async () => space,
 		createSpace: async () => space,
 		updateSpace: async () => space,
 		deleteSpace: async () => void 0,
+		migrateContent: async () => void 0,
 		getTreeContent: async () => [doc],
 		getTrashContent: async () => [],
 		hasTrash: async () => false,

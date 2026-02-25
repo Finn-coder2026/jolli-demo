@@ -1,4 +1,4 @@
-import { type Dictionary, t } from "intlayer";
+import { type Dictionary, insert, t } from "intlayer";
 
 const articlePickerContent = {
 	key: "article-picker",
@@ -8,14 +8,10 @@ const articlePickerContent = {
 			en: "Include all articles",
 			es: "Incluir todos los artículos",
 		}),
-		selectSpecificArticles: t({
-			en: "Select specific articles",
-			es: "Seleccionar artículos específicos",
-		}),
 		// Count displays
 		articlesSelected: t({
-			en: "articles selected",
-			es: "artículos seleccionados",
+			en: "selected",
+			es: "seleccionados",
 		}),
 		articlesOf: t({
 			en: "of",
@@ -35,24 +31,15 @@ const articlePickerContent = {
 			en: "Search articles...",
 			es: "Buscar artículos...",
 		}),
-		// Empty states
-		noArticlesFound: t({
-			en: "No articles found",
-			es: "No se encontraron artículos",
+		// Space labels
+		otherArticles: t({
+			en: "Other Articles",
+			es: "Otros artículos",
 		}),
-		noArticlesMatchSearch: t({
-			en: "No articles match your search",
-			es: "Ningún artículo coincide con tu búsqueda",
-		}),
-		// Loading
-		loadingArticles: t({
-			en: "Loading articles...",
-			es: "Cargando artículos...",
-		}),
-		// Info
-		allArticlesInfo: t({
-			en: "All articles will be included in this site",
-			es: "Todos los artículos serán incluidos en este sitio",
+		// Changed articles indicator tooltip
+		changedCount: t({
+			en: insert("{{count}} changed"),
+			es: insert("{{count}} modificados"),
 		}),
 	},
 } satisfies Dictionary;

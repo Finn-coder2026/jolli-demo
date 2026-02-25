@@ -15,7 +15,6 @@ describe("AuthHandler", () => {
 	let nonJolliAuthToken: string;
 	let partnerAuthToken: string;
 	let originalAuthEmails: string | undefined;
-	let originalSuperAdminEmails: string | undefined;
 
 	const tokenUtil = createTokenUtil<UserInfo>("test-secret", {
 		algorithm: "HS256",
@@ -25,11 +24,9 @@ describe("AuthHandler", () => {
 	beforeEach(() => {
 		// Save original env
 		originalAuthEmails = process.env.AUTH_EMAILS;
-		originalSuperAdminEmails = process.env.SUPER_ADMIN_EMAILS;
 
 		// Set default auth emails for tests
 		process.env.AUTH_EMAILS = "@jolli\\.ai$";
-		delete process.env.SUPER_ADMIN_EMAILS;
 		resetConfig(); // Reset config cache after env change
 
 		app = express();
@@ -71,11 +68,6 @@ describe("AuthHandler", () => {
 			delete process.env.AUTH_EMAILS;
 		} else {
 			process.env.AUTH_EMAILS = originalAuthEmails;
-		}
-		if (originalSuperAdminEmails === undefined) {
-			delete process.env.SUPER_ADMIN_EMAILS;
-		} else {
-			process.env.SUPER_ADMIN_EMAILS = originalSuperAdminEmails;
 		}
 		resetConfig(); // Reset config cache after env restore
 		vi.restoreAllMocks();
@@ -192,33 +184,6 @@ describe("AuthHandler", () => {
 		expect(adminResponse.body).toEqual({ message: "success" });
 
 		// Test jolli.ai pattern
-		const jolliResponse = await request(customApp).get("/protected").set("Cookie", `authToken=${authToken}`);
-		expect(jolliResponse.status).toBe(200);
-		expect(jolliResponse.body).toEqual({ message: "success" });
-	});
-
-	it("should allow access for super admin emails regardless of AUTH_EMAILS", async () => {
-		// Set AUTH_EMAILS to only allow jolli.ai, but SUPER_ADMIN_EMAILS allows external.com
-		process.env.AUTH_EMAILS = "@jolli\\.ai$";
-		process.env.SUPER_ADMIN_EMAILS = "@external\\.com$";
-		resetConfig();
-
-		const customApp = express();
-		customApp.use(cookieParser());
-		customApp.use(express.json());
-		customApp.use(createAuthHandler(tokenUtil));
-		customApp.get("/protected", (_req, res) => {
-			res.json({ message: "success" });
-		});
-
-		// External user should be allowed as super admin
-		const externalResponse = await request(customApp)
-			.get("/protected")
-			.set("Cookie", `authToken=${nonJolliAuthToken}`);
-		expect(externalResponse.status).toBe(200);
-		expect(externalResponse.body).toEqual({ message: "success" });
-
-		// Jolli user should still be allowed via AUTH_EMAILS
 		const jolliResponse = await request(customApp).get("/protected").set("Cookie", `authToken=${authToken}`);
 		expect(jolliResponse.status).toBe(200);
 		expect(jolliResponse.body).toEqual({ message: "success" });

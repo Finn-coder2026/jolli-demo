@@ -46,6 +46,7 @@ jobs:
               id: env
               run: |
                   echo "environment=${{ inputs.environment }}" >> $GITHUB_OUTPUT
+                  echo "sha=${{ inputs.sha || github.sha }}" >> $GITHUB_OUTPUT
                   echo "::notice::Deploying branch: ${{ inputs.branch || 'manual' }}"
                   echo "::notice::Environment: ${{ inputs.environment }}"
                   echo "::notice::Commit: ${{ inputs.sha || github.sha }}"
@@ -64,13 +65,57 @@ jobs:
             - name: Install dependencies
               run: npm ci
 
+            - name: Check for infrastructure changes
+              id: cdk-diff
+              env:
+                  ENVIRONMENT: ${{ steps.env.outputs.environment }}
+              run: |
+                  cd deploy/worker-cdk
+                  npm ci
+
+                  # Check MemoryDB stack for changes
+                  if npx cdk diff JolliMemoryDbStack-$ENVIRONMENT --fail 2>&1; then
+                    echo "memorydb_changes=false" >> $GITHUB_OUTPUT
+                    echo "::notice::No MemoryDB infrastructure changes detected"
+                  else
+                    echo "memorydb_changes=true" >> $GITHUB_OUTPUT
+                    echo "::notice::MemoryDB infrastructure changes detected, will deploy"
+                  fi
+
+                  # Check Worker stack for changes
+                  if npx cdk diff JolliWorkerStack-$ENVIRONMENT --fail 2>&1; then
+                    echo "worker_changes=false" >> $GITHUB_OUTPUT
+                    echo "::notice::No Worker infrastructure changes detected"
+                  else
+                    echo "worker_changes=true" >> $GITHUB_OUTPUT
+                    echo "::notice::Worker infrastructure changes detected, will deploy"
+                  fi
+
+            - name: Deploy MemoryDB CDK infrastructure
+              if: steps.cdk-diff.outputs.memorydb_changes == 'true'
+              env:
+                  ENVIRONMENT: ${{ steps.env.outputs.environment }}
+              run: |
+                  cd deploy/worker-cdk
+                  npx cdk deploy JolliMemoryDbStack-$ENVIRONMENT --require-approval never
+
+            - name: Deploy Worker CDK infrastructure
+              if: steps.cdk-diff.outputs.worker_changes == 'true'
+              env:
+                  ENVIRONMENT: ${{ steps.env.outputs.environment }}
+              run: |
+                  cd deploy/worker-cdk
+                  npx cdk deploy JolliWorkerStack-$ENVIRONMENT --require-approval never
+
             - name: Build worker bundle
               run: npm run worker:build --workspace=jolli-backend
 
             - name: Build and push Docker image
               env:
                   ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-                  IMAGE_TAG: ${{ inputs.sha || github.sha }}
+                  # Prefix SHA with "sha-" so ECR lifecycle rules can distinguish
+                  # commit-tagged images from environment tags (dev, preview, prod)
+                  IMAGE_TAG: sha-${{ steps.env.outputs.sha }}
                   ENVIRONMENT: ${{ steps.env.outputs.environment }}
               run: |
                   # Build the Docker image
@@ -98,12 +143,76 @@ jobs:
                     --region $AWS_REGION
 
             - name: Wait for deployment
+              id: wait-deployment
               env:
                   ENVIRONMENT: ${{ steps.env.outputs.environment }}
               run: |
                   echo "Waiting for ECS service to stabilize..."
-                  aws ecs wait services-stable \
+                  CLUSTER="jolli-workers-$ENVIRONMENT"
+                  SERVICE="jolli-worker-$ENVIRONMENT"
+                  MAX_ATTEMPTS=60  # 60 × 15s = 15 minutes
+                  ATTEMPT=0
+
+                  while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+                    ATTEMPT=$((ATTEMPT + 1))
+
+                    # Get deployment info
+                    DEPLOYMENTS=$(aws ecs describe-services \
+                      --cluster "$CLUSTER" \
+                      --services "$SERVICE" \
+                      --region "$AWS_REGION" \
+                      --query 'services[0].deployments' \
+                      --output json)
+
+                    PRIMARY_STATUS=$(echo "$DEPLOYMENTS" | jq -r '.[0].rolloutState // "UNKNOWN"')
+                    PRIMARY_RUNNING=$(echo "$DEPLOYMENTS" | jq -r '.[0].runningCount // 0')
+                    PRIMARY_DESIRED=$(echo "$DEPLOYMENTS" | jq -r '.[0].desiredCount // 0')
+                    DEPLOYMENT_COUNT=$(echo "$DEPLOYMENTS" | jq 'length')
+
+                    echo "[$ATTEMPT/$MAX_ATTEMPTS] Status: $PRIMARY_STATUS | Running: $PRIMARY_RUNNING/$PRIMARY_DESIRED | Deployments: $DEPLOYMENT_COUNT"
+
+                    # Success: single deployment that has completed rollout
+                    if [ "$PRIMARY_STATUS" = "COMPLETED" ] && [ "$DEPLOYMENT_COUNT" -eq 1 ]; then
+                      echo "Deployment complete!"
+                      exit 0
+                    fi
+
+                    # Fail fast: circuit breaker triggered a rollback
+                    if [ "$PRIMARY_STATUS" = "FAILED" ]; then
+                      echo "::error::Deployment failed — ECS rollout state is FAILED"
+                      aws ecs describe-services \
+                        --cluster "$CLUSTER" \
+                        --services "$SERVICE" \
+                        --region "$AWS_REGION" \
+                        --query 'services[0].deployments' \
+                        --output table
+                      exit 1
+                    fi
+
+                    sleep 15
+                  done
+
+                  echo "::error::Deployment failed to stabilize within 15 minutes"
+                  aws ecs describe-services \
+                    --cluster "$CLUSTER" \
+                    --services "$SERVICE" \
+                    --region "$AWS_REGION" \
+                    --query 'services[0].deployments' \
+                    --output table
+                  exit 1
+
+            - name: Rollback on failure
+              if: failure() && steps.wait-deployment.outcome == 'failure'
+              env:
+                  ENVIRONMENT: ${{ steps.env.outputs.environment }}
+              run: |
+                  echo "::warning::Deployment failed, ECS circuit breaker will handle rollback automatically"
+                  # The ECS service has circuit breaker enabled with rollback: true
+                  # so it will automatically rollback to the previous stable deployment
+                  echo "Current deployments:"
+                  aws ecs describe-services \
                     --cluster jolli-workers-$ENVIRONMENT \
                     --services jolli-worker-$ENVIRONMENT \
-                    --region $AWS_REGION
-                  echo "Deployment complete!"
+                    --region $AWS_REGION \
+                    --query 'services[0].{desiredCount:desiredCount,runningCount:runningCount,deployments:deployments[*].{status:status,desiredCount:desiredCount,runningCount:runningCount,rolloutState:rolloutState}}' \
+                    --output yaml

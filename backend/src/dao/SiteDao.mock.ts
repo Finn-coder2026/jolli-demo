@@ -17,6 +17,7 @@ export function mockSiteDao(partial?: Partial<SiteDao>): SiteDao {
 		getArticlesForSite: vi.fn(),
 		getSiteBySubdomain: vi.fn(),
 		getSiteByCustomDomain: vi.fn(),
+		getSitesForArticle: vi.fn(),
 		...partial,
 	};
 }

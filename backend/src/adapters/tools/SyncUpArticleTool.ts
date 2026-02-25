@@ -219,7 +219,6 @@ export async function executeSyncUpArticleTool(
 			spaceId: undefined,
 			parentId: undefined,
 			docType: "document",
-			sortOrder: 0,
 			createdBy: "system",
 		});
 

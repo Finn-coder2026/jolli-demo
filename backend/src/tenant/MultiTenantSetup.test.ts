@@ -1,9 +1,10 @@
-import type { Database } from "../core/Database";
+import type { TokenUtil } from "../util/TokenUtil";
 import {
 	createMultiTenantFromEnv,
 	createMultiTenantInfrastructure,
 	type MultiTenantSetupConfig,
 } from "./MultiTenantSetup";
+import type { UserInfo } from "jolli-common";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock the config module
@@ -48,12 +49,10 @@ import { createTenantRegistryClient } from "./TenantRegistryClient";
 
 describe("MultiTenantSetup", () => {
 	let decryptPassword: ReturnType<typeof vi.fn>;
-	let mockDatabase: Database;
 
 	beforeEach(() => {
 		vi.clearAllMocks();
 		decryptPassword = vi.fn().mockResolvedValue("decrypted_password");
-		mockDatabase = {} as Database;
 		// Mock BASE_DOMAIN for createMultiTenantInfrastructure tests
 		(getConfig as ReturnType<typeof vi.fn>).mockReturnValue({
 			BASE_DOMAIN: "jolli.app",
@@ -65,7 +64,6 @@ describe("MultiTenantSetup", () => {
 			const config: MultiTenantSetupConfig = {
 				registryDatabaseUrl: "postgres://localhost/registry",
 				decryptPassword,
-				defaultDatabase: mockDatabase,
 				maxConnections: 50,
 				ttlMs: 60000,
 				poolMaxPerConnection: 10,
@@ -85,7 +83,6 @@ describe("MultiTenantSetup", () => {
 			const config: MultiTenantSetupConfig = {
 				registryDatabaseUrl: "postgres://localhost/registry",
 				decryptPassword,
-				defaultDatabase: mockDatabase,
 			};
 
 			createMultiTenantInfrastructure(config);
@@ -99,7 +96,6 @@ describe("MultiTenantSetup", () => {
 			const config: MultiTenantSetupConfig = {
 				registryDatabaseUrl: "postgres://localhost/registry",
 				decryptPassword,
-				defaultDatabase: mockDatabase,
 				maxConnections: 50,
 				ttlMs: 60000,
 				poolMaxPerConnection: 10,
@@ -122,7 +118,6 @@ describe("MultiTenantSetup", () => {
 			const config: MultiTenantSetupConfig = {
 				registryDatabaseUrl: "postgres://localhost/registry",
 				decryptPassword,
-				defaultDatabase: mockDatabase,
 			};
 
 			createMultiTenantInfrastructure(config);
@@ -131,7 +126,6 @@ describe("MultiTenantSetup", () => {
 				registryClient: expect.anything(),
 				connectionManager: expect.anything(),
 				baseDomain: "jolli.app",
-				defaultDatabase: mockDatabase,
 			});
 		});
 
@@ -139,7 +133,6 @@ describe("MultiTenantSetup", () => {
 			const config: MultiTenantSetupConfig = {
 				registryDatabaseUrl: "postgres://localhost/registry",
 				decryptPassword,
-				defaultDatabase: mockDatabase,
 			};
 
 			const infrastructure = createMultiTenantInfrastructure(config);
@@ -147,6 +140,29 @@ describe("MultiTenantSetup", () => {
 
 			expect(infrastructure.connectionManager.closeAll).toHaveBeenCalled();
 			expect(infrastructure.registryClient.close).toHaveBeenCalled();
+		});
+
+		it("passes tokenUtil to middleware when provided", () => {
+			const mockTokenUtil: TokenUtil<UserInfo> = {
+				decodePayload: vi.fn(),
+				generateToken: vi.fn(),
+				decodePayloadFromToken: vi.fn(),
+			};
+
+			const config: MultiTenantSetupConfig = {
+				registryDatabaseUrl: "postgres://localhost/registry",
+				decryptPassword,
+				tokenUtil: mockTokenUtil,
+			};
+
+			createMultiTenantInfrastructure(config);
+
+			expect(createTenantMiddleware).toHaveBeenCalledWith({
+				registryClient: expect.anything(),
+				connectionManager: expect.anything(),
+				baseDomain: "jolli.app",
+				tokenUtil: mockTokenUtil,
+			});
 		});
 	});
 
@@ -156,7 +172,7 @@ describe("MultiTenantSetup", () => {
 				MULTI_TENANT_ENABLED: false,
 			});
 
-			const result = createMultiTenantFromEnv(decryptPassword, mockDatabase);
+			const result = createMultiTenantFromEnv(decryptPassword);
 
 			expect(result).toBeUndefined();
 		});
@@ -167,7 +183,7 @@ describe("MultiTenantSetup", () => {
 				MULTI_TENANT_REGISTRY_URL: undefined,
 			});
 
-			expect(() => createMultiTenantFromEnv(decryptPassword, mockDatabase)).toThrow(
+			expect(() => createMultiTenantFromEnv(decryptPassword)).toThrow(
 				"MULTI_TENANT_REGISTRY_URL is required when MULTI_TENANT_ENABLED is true",
 			);
 		});
@@ -183,7 +199,7 @@ describe("MultiTenantSetup", () => {
 				BASE_DOMAIN: "jolli.app",
 			});
 
-			const infrastructure = createMultiTenantFromEnv(decryptPassword, mockDatabase);
+			const infrastructure = createMultiTenantFromEnv(decryptPassword);
 
 			expect(infrastructure).toBeDefined();
 			expect(createTenantRegistryClient).toHaveBeenCalledWith({
@@ -196,6 +212,47 @@ describe("MultiTenantSetup", () => {
 				ttlMs: 120000,
 				poolMax: 8,
 				logging: true,
+			});
+		});
+
+		it("passes tokenUtil to infrastructure when provided", () => {
+			const mockTokenUtil: TokenUtil<UserInfo> = {
+				decodePayload: vi.fn(),
+				generateToken: vi.fn(),
+				decodePayloadFromToken: vi.fn(),
+			};
+
+			(getConfig as ReturnType<typeof vi.fn>).mockReturnValue({
+				MULTI_TENANT_ENABLED: true,
+				MULTI_TENANT_REGISTRY_URL: "postgres://localhost/registry",
+				BASE_DOMAIN: "jolli.app",
+			});
+
+			createMultiTenantFromEnv(decryptPassword, mockTokenUtil);
+
+			expect(createTenantMiddleware).toHaveBeenCalledWith({
+				registryClient: expect.anything(),
+				connectionManager: expect.anything(),
+				baseDomain: "jolli.app",
+				tokenUtil: mockTokenUtil,
+			});
+		});
+
+		it("passes authGatewayOrigin to middleware when configured", () => {
+			(getConfig as ReturnType<typeof vi.fn>).mockReturnValue({
+				MULTI_TENANT_ENABLED: true,
+				MULTI_TENANT_REGISTRY_URL: "postgres://localhost/registry",
+				BASE_DOMAIN: "jolli.app",
+				AUTH_GATEWAY_ORIGIN: "https://auth.jolli.app",
+			});
+
+			createMultiTenantFromEnv(decryptPassword);
+
+			expect(createTenantMiddleware).toHaveBeenCalledWith({
+				registryClient: expect.anything(),
+				connectionManager: expect.anything(),
+				baseDomain: "jolli.app",
+				authGatewayOrigin: "https://auth.jolli.app",
 			});
 		});
 	});

@@ -3,9 +3,13 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/preact";
 import { describe, expect, it, vi } from "vitest";
 
 // Mock the lucide-react icons
-vi.mock("lucide-react", () => ({
-	X: () => <div data-testid="x-icon" />,
-}));
+vi.mock("lucide-react", async importOriginal => {
+	const actual = await importOriginal<typeof import("lucide-react")>();
+	return {
+		...actual,
+		X: () => <div data-testid="x-icon" />,
+	};
+});
 
 describe("AddArticleDialog", () => {
 	it("should not render when isOpen is false", () => {

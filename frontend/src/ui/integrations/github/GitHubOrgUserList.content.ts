@@ -4,7 +4,7 @@ const GitHubOrgUserListContent = {
 	key: "github-org-user-list",
 	content: {
 		breadcrumbs: {
-			integrations: t({ en: "Sources", es: "Fuentes" }),
+			sources: t({ en: "Sources", es: "Fuentes" }),
 			github: t({ en: "GitHub", es: "GitHub" }),
 		},
 		title: t({ en: "GitHub Installations", es: "Instalaciones de GitHub" }),

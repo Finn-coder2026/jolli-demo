@@ -18,7 +18,6 @@ vi.mock("diff2html/bundles/css/diff2html.min.css", () => ({}));
 
 describe("VersionHistoryDialog", () => {
 	const mockDocId = 123;
-	const mockOnClose = vi.fn();
 	const mockOnSelectVersion = vi.fn();
 	const mockOnConfirmRestore = vi.fn();
 
@@ -56,6 +55,23 @@ describe("VersionHistoryDialog", () => {
 		},
 	};
 
+	/** Renders the component and opens the popover by clicking the trigger */
+	function renderAndOpen(props: Partial<Parameters<typeof VersionHistoryDialog>[0]> = {}) {
+		render(
+			<VersionHistoryDialog
+				docId={mockDocId}
+				currentDoc={mockCurrentDoc}
+				onSelectVersion={mockOnSelectVersion}
+				{...props}
+			>
+				<button data-testid="history-trigger">History</button>
+			</VersionHistoryDialog>,
+		);
+
+		// Open the popover
+		fireEvent.click(screen.getByTestId("history-trigger"));
+	}
+
 	beforeEach(() => {
 		vi.clearAllMocks();
 		// Default mock: return list data for paginated endpoint
@@ -76,45 +92,25 @@ describe("VersionHistoryDialog", () => {
 		});
 	});
 
-	it("should not render when isOpen is false", () => {
+	it("should render trigger button", () => {
 		render(
-			<VersionHistoryDialog
-				isOpen={false}
-				docId={mockDocId}
-				currentDoc={mockCurrentDoc}
-				onClose={mockOnClose}
-				onSelectVersion={mockOnSelectVersion}
-			/>,
+			<VersionHistoryDialog docId={mockDocId} currentDoc={mockCurrentDoc}>
+				<button data-testid="history-trigger">History</button>
+			</VersionHistoryDialog>,
 		);
 
-		expect(screen.queryByTestId("version-history-dialog")).toBe(null);
+		expect(screen.getByTestId("history-trigger")).toBeDefined();
 	});
 
-	it("should render dialog when isOpen is true", () => {
-		render(
-			<VersionHistoryDialog
-				isOpen={true}
-				docId={mockDocId}
-				currentDoc={mockCurrentDoc}
-				onClose={mockOnClose}
-				onSelectVersion={mockOnSelectVersion}
-			/>,
-		);
+	it("should show popover content when trigger is clicked", async () => {
+		await renderAndOpen();
 
 		expect(screen.getByTestId("version-history-dialog")).toBeDefined();
 		expect(screen.getByTestId("version-history-title")).toBeDefined();
 	});
 
 	it("should display version history items after fetch", async () => {
-		render(
-			<VersionHistoryDialog
-				isOpen={true}
-				docId={mockDocId}
-				currentDoc={mockCurrentDoc}
-				onClose={mockOnClose}
-				onSelectVersion={mockOnSelectVersion}
-			/>,
-		);
+		await renderAndOpen();
 
 		await waitFor(() => {
 			expect(screen.getByTestId("version-item-3")).toBeDefined();
@@ -123,73 +119,8 @@ describe("VersionHistoryDialog", () => {
 		});
 	});
 
-	it("should call onClose when close button is clicked", async () => {
-		render(
-			<VersionHistoryDialog
-				isOpen={true}
-				docId={mockDocId}
-				currentDoc={mockCurrentDoc}
-				onClose={mockOnClose}
-				onSelectVersion={mockOnSelectVersion}
-			/>,
-		);
-
-		await waitFor(() => {
-			expect(screen.getByTestId("version-item-3")).toBeDefined();
-		});
-
-		fireEvent.click(screen.getByTestId("close-version-history-button"));
-		expect(mockOnClose).toHaveBeenCalledTimes(1);
-	});
-
-	it("should call onClose when backdrop is clicked", async () => {
-		render(
-			<VersionHistoryDialog
-				isOpen={true}
-				docId={mockDocId}
-				currentDoc={mockCurrentDoc}
-				onClose={mockOnClose}
-				onSelectVersion={mockOnSelectVersion}
-			/>,
-		);
-
-		await waitFor(() => {
-			expect(screen.getByTestId("version-item-3")).toBeDefined();
-		});
-
-		fireEvent.click(screen.getByTestId("version-history-dialog"));
-		expect(mockOnClose).toHaveBeenCalledTimes(1);
-	});
-
-	it("should not call onClose when inner dialog content is clicked", async () => {
-		render(
-			<VersionHistoryDialog
-				isOpen={true}
-				docId={mockDocId}
-				currentDoc={mockCurrentDoc}
-				onClose={mockOnClose}
-				onSelectVersion={mockOnSelectVersion}
-			/>,
-		);
-
-		await waitFor(() => {
-			expect(screen.getByTestId("version-item-3")).toBeDefined();
-		});
-
-		fireEvent.click(screen.getByTestId("version-history-title"));
-		expect(mockOnClose).not.toHaveBeenCalled();
-	});
-
 	it("should call onSelectVersion when a version item is clicked", async () => {
-		render(
-			<VersionHistoryDialog
-				isOpen={true}
-				docId={mockDocId}
-				currentDoc={mockCurrentDoc}
-				onClose={mockOnClose}
-				onSelectVersion={mockOnSelectVersion}
-			/>,
-		);
+		await renderAndOpen();
 
 		await waitFor(() => {
 			expect(screen.getByTestId("version-item-2")).toBeDefined();
@@ -203,15 +134,7 @@ describe("VersionHistoryDialog", () => {
 	});
 
 	it("should fetch version history with correct parameters", async () => {
-		render(
-			<VersionHistoryDialog
-				isOpen={true}
-				docId={mockDocId}
-				currentDoc={mockCurrentDoc}
-				onClose={mockOnClose}
-				onSelectVersion={mockOnSelectVersion}
-			/>,
-		);
+		await renderAndOpen();
 
 		await waitFor(() => {
 			expect(mockFetch).toHaveBeenCalled();
@@ -242,15 +165,7 @@ describe("VersionHistoryDialog", () => {
 			return Promise.resolve({ ok: false });
 		});
 
-		render(
-			<VersionHistoryDialog
-				isOpen={true}
-				docId={mockDocId}
-				currentDoc={mockCurrentDoc}
-				onClose={mockOnClose}
-				onSelectVersion={mockOnSelectVersion}
-			/>,
-		);
+		await renderAndOpen();
 
 		await waitFor(() => {
 			expect(screen.getByText("No data available")).toBeDefined();
@@ -268,15 +183,7 @@ describe("VersionHistoryDialog", () => {
 			return Promise.resolve({ ok: false });
 		});
 
-		render(
-			<VersionHistoryDialog
-				isOpen={true}
-				docId={mockDocId}
-				currentDoc={mockCurrentDoc}
-				onClose={mockOnClose}
-				onSelectVersion={mockOnSelectVersion}
-			/>,
-		);
+		await renderAndOpen();
 
 		await waitFor(() => {
 			expect(screen.getByText("Failed to load data")).toBeDefined();
@@ -284,15 +191,7 @@ describe("VersionHistoryDialog", () => {
 	});
 
 	it("should display version numbers correctly", async () => {
-		render(
-			<VersionHistoryDialog
-				isOpen={true}
-				docId={mockDocId}
-				currentDoc={mockCurrentDoc}
-				onClose={mockOnClose}
-				onSelectVersion={mockOnSelectVersion}
-			/>,
-		);
+		await renderAndOpen();
 
 		await waitFor(() => {
 			expect(screen.getByText("v3")).toBeDefined();
@@ -303,8 +202,12 @@ describe("VersionHistoryDialog", () => {
 
 	it("should work without onSelectVersion callback", async () => {
 		render(
-			<VersionHistoryDialog isOpen={true} docId={mockDocId} currentDoc={mockCurrentDoc} onClose={mockOnClose} />,
+			<VersionHistoryDialog docId={mockDocId} currentDoc={mockCurrentDoc}>
+				<button data-testid="history-trigger">History</button>
+			</VersionHistoryDialog>,
 		);
+
+		fireEvent.click(screen.getByTestId("history-trigger"));
 
 		await waitFor(() => {
 			expect(screen.getByTestId("version-item-2")).toBeDefined();
@@ -316,15 +219,7 @@ describe("VersionHistoryDialog", () => {
 
 	describe("Current version badge", () => {
 		it("should display current version badge when currentReferVersion matches a history item", async () => {
-			render(
-				<VersionHistoryDialog
-					isOpen={true}
-					docId={mockDocId}
-					currentDoc={mockCurrentDoc}
-					currentReferVersion={2}
-					onClose={mockOnClose}
-				/>,
-			);
+			await renderAndOpen({ currentReferVersion: 2 });
 
 			await waitFor(() => {
 				expect(screen.getByTestId("version-item-2")).toBeDefined();
@@ -338,14 +233,7 @@ describe("VersionHistoryDialog", () => {
 		});
 
 		it("should not display current version badge when currentReferVersion is undefined", async () => {
-			render(
-				<VersionHistoryDialog
-					isOpen={true}
-					docId={mockDocId}
-					currentDoc={mockCurrentDoc}
-					onClose={mockOnClose}
-				/>,
-			);
+			await renderAndOpen({ currentReferVersion: undefined });
 
 			await waitFor(() => {
 				expect(screen.getByTestId("version-item-3")).toBeDefined();
@@ -358,15 +246,7 @@ describe("VersionHistoryDialog", () => {
 		});
 
 		it("should not display current version badge when currentReferVersion does not match any item", async () => {
-			render(
-				<VersionHistoryDialog
-					isOpen={true}
-					docId={mockDocId}
-					currentDoc={mockCurrentDoc}
-					currentReferVersion={99}
-					onClose={mockOnClose}
-				/>,
-			);
+			await renderAndOpen({ currentReferVersion: 99 });
 
 			await waitFor(() => {
 				expect(screen.getByTestId("version-item-3")).toBeDefined();
@@ -379,16 +259,7 @@ describe("VersionHistoryDialog", () => {
 		});
 
 		it("should not allow clicking on current version item", async () => {
-			render(
-				<VersionHistoryDialog
-					isOpen={true}
-					docId={mockDocId}
-					currentDoc={mockCurrentDoc}
-					currentReferVersion={2}
-					onClose={mockOnClose}
-					onSelectVersion={mockOnSelectVersion}
-				/>,
-			);
+			await renderAndOpen({ currentReferVersion: 2 });
 
 			await waitFor(() => {
 				expect(screen.getByTestId("version-item-2")).toBeDefined();
@@ -414,14 +285,7 @@ describe("VersionHistoryDialog", () => {
 
 	describe("DiffDialog integration", () => {
 		it("should fetch history detail when clicking a version item", async () => {
-			render(
-				<VersionHistoryDialog
-					isOpen={true}
-					docId={mockDocId}
-					currentDoc={mockCurrentDoc}
-					onClose={mockOnClose}
-				/>,
-			);
+			await renderAndOpen();
 
 			await waitFor(() => {
 				expect(screen.getByTestId("version-item-3")).toBeDefined();
@@ -436,14 +300,7 @@ describe("VersionHistoryDialog", () => {
 		});
 
 		it("should show DiffDialog after fetching history detail", async () => {
-			render(
-				<VersionHistoryDialog
-					isOpen={true}
-					docId={mockDocId}
-					currentDoc={mockCurrentDoc}
-					onClose={mockOnClose}
-				/>,
-			);
+			await renderAndOpen();
 
 			await waitFor(() => {
 				expect(screen.getByTestId("version-item-3")).toBeDefined();
@@ -457,14 +314,7 @@ describe("VersionHistoryDialog", () => {
 		});
 
 		it("should show correct title in DiffDialog", async () => {
-			render(
-				<VersionHistoryDialog
-					isOpen={true}
-					docId={mockDocId}
-					currentDoc={mockCurrentDoc}
-					onClose={mockOnClose}
-				/>,
-			);
+			await renderAndOpen();
 
 			await waitFor(() => {
 				expect(screen.getByTestId("version-item-3")).toBeDefined();
@@ -482,14 +332,7 @@ describe("VersionHistoryDialog", () => {
 		});
 
 		it("should close DiffDialog when cancel is clicked", async () => {
-			render(
-				<VersionHistoryDialog
-					isOpen={true}
-					docId={mockDocId}
-					currentDoc={mockCurrentDoc}
-					onClose={mockOnClose}
-				/>,
-			);
+			await renderAndOpen();
 
 			await waitFor(() => {
 				expect(screen.getByTestId("version-item-3")).toBeDefined();
@@ -509,14 +352,7 @@ describe("VersionHistoryDialog", () => {
 		});
 
 		it("should show confirm button in DiffDialog", async () => {
-			render(
-				<VersionHistoryDialog
-					isOpen={true}
-					docId={mockDocId}
-					currentDoc={mockCurrentDoc}
-					onClose={mockOnClose}
-				/>,
-			);
+			await renderAndOpen();
 
 			await waitFor(() => {
 				expect(screen.getByTestId("version-item-3")).toBeDefined();
@@ -530,15 +366,7 @@ describe("VersionHistoryDialog", () => {
 		});
 
 		it("should show secondary confirm dialog when clicking confirm in DiffDialog", async () => {
-			render(
-				<VersionHistoryDialog
-					isOpen={true}
-					docId={mockDocId}
-					currentDoc={mockCurrentDoc}
-					onClose={mockOnClose}
-					onConfirmRestore={mockOnConfirmRestore}
-				/>,
-			);
+			await renderAndOpen({ onConfirmRestore: mockOnConfirmRestore });
 
 			await waitFor(() => {
 				expect(screen.getByTestId("version-item-3")).toBeDefined();
@@ -559,15 +387,7 @@ describe("VersionHistoryDialog", () => {
 		});
 
 		it("should close secondary confirm dialog when cancel is clicked", async () => {
-			render(
-				<VersionHistoryDialog
-					isOpen={true}
-					docId={mockDocId}
-					currentDoc={mockCurrentDoc}
-					onClose={mockOnClose}
-					onConfirmRestore={mockOnConfirmRestore}
-				/>,
-			);
+			await renderAndOpen({ onConfirmRestore: mockOnConfirmRestore });
 
 			await waitFor(() => {
 				expect(screen.getByTestId("version-item-3")).toBeDefined();
@@ -618,15 +438,7 @@ describe("VersionHistoryDialog", () => {
 				return Promise.resolve({ ok: false });
 			});
 
-			render(
-				<VersionHistoryDialog
-					isOpen={true}
-					docId={mockDocId}
-					currentDoc={mockCurrentDoc}
-					onClose={mockOnClose}
-					onConfirmRestore={mockOnConfirmRestore}
-				/>,
-			);
+			await renderAndOpen({ onConfirmRestore: mockOnConfirmRestore });
 
 			await waitFor(() => {
 				expect(screen.getByTestId("version-item-3")).toBeDefined();
@@ -655,7 +467,6 @@ describe("VersionHistoryDialog", () => {
 					}),
 				);
 				expect(mockOnConfirmRestore).toHaveBeenCalledWith(mockHistoryDetail);
-				expect(mockOnClose).toHaveBeenCalled();
 			});
 		});
 
@@ -682,15 +493,7 @@ describe("VersionHistoryDialog", () => {
 				return Promise.resolve({ ok: false });
 			});
 
-			render(
-				<VersionHistoryDialog
-					isOpen={true}
-					docId={mockDocId}
-					currentDoc={mockCurrentDoc}
-					onClose={mockOnClose}
-					onConfirmRestore={mockOnConfirmRestore}
-				/>,
-			);
+			await renderAndOpen({ onConfirmRestore: mockOnConfirmRestore });
 
 			await waitFor(() => {
 				expect(screen.getByTestId("version-item-3")).toBeDefined();
@@ -710,10 +513,9 @@ describe("VersionHistoryDialog", () => {
 
 			fireEvent.click(screen.getByTestId("confirm-restore-confirm"));
 
-			// onClose should not be called on error
+			// onConfirmRestore should not be called on error
 			await waitFor(() => {
 				expect(mockOnConfirmRestore).not.toHaveBeenCalled();
-				expect(mockOnClose).not.toHaveBeenCalled();
 			});
 		});
 
@@ -734,14 +536,7 @@ describe("VersionHistoryDialog", () => {
 				return Promise.resolve({ ok: false });
 			});
 
-			render(
-				<VersionHistoryDialog
-					isOpen={true}
-					docId={mockDocId}
-					currentDoc={mockCurrentDoc}
-					onClose={mockOnClose}
-				/>,
-			);
+			await renderAndOpen();
 
 			await waitFor(() => {
 				expect(screen.getByTestId("version-item-3")).toBeDefined();
@@ -782,14 +577,14 @@ describe("VersionHistoryDialog", () => {
 
 			render(
 				<VersionHistoryProvider onVersionRestored={mockOnVersionRestored}>
-					<VersionHistoryDialog
-						isOpen={true}
-						docId={mockDocId}
-						currentDoc={mockCurrentDoc}
-						onClose={mockOnClose}
-					/>
+					<VersionHistoryDialog docId={mockDocId} currentDoc={mockCurrentDoc}>
+						<button data-testid="history-trigger">History</button>
+					</VersionHistoryDialog>
 				</VersionHistoryProvider>,
 			);
+
+			// Open the popover
+			fireEvent.click(screen.getByTestId("history-trigger"));
 
 			await waitFor(() => {
 				expect(screen.getByTestId("version-item-3")).toBeDefined();
@@ -811,7 +606,6 @@ describe("VersionHistoryDialog", () => {
 
 			await waitFor(() => {
 				expect(mockOnVersionRestored).toHaveBeenCalledTimes(1);
-				expect(mockOnClose).toHaveBeenCalled();
 			});
 		});
 
@@ -842,14 +636,14 @@ describe("VersionHistoryDialog", () => {
 
 			render(
 				<VersionHistoryProvider onVersionRestored={mockOnVersionRestored}>
-					<VersionHistoryDialog
-						isOpen={true}
-						docId={mockDocId}
-						currentDoc={mockCurrentDoc}
-						onClose={mockOnClose}
-					/>
+					<VersionHistoryDialog docId={mockDocId} currentDoc={mockCurrentDoc}>
+						<button data-testid="history-trigger">History</button>
+					</VersionHistoryDialog>
 				</VersionHistoryProvider>,
 			);
+
+			// Open the popover
+			fireEvent.click(screen.getByTestId("history-trigger"));
 
 			await waitFor(() => {
 				expect(screen.getByTestId("version-item-3")).toBeDefined();
@@ -872,7 +666,6 @@ describe("VersionHistoryDialog", () => {
 			// Should not call onVersionRestored on error
 			await waitFor(() => {
 				expect(mockOnVersionRestored).not.toHaveBeenCalled();
-				expect(mockOnClose).not.toHaveBeenCalled();
 			});
 		});
 	});

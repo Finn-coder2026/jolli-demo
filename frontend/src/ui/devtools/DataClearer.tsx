@@ -4,6 +4,16 @@ import { Trash2 } from "lucide-react";
 import type { ReactElement } from "react";
 import { useState } from "react";
 import { useIntlayer } from "react-intlayer";
+import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+} from "@/components/ui/AlertDialog";
 
 interface DataTypeConfig {
 	type: ClearDataType;
@@ -18,6 +28,7 @@ export function DataClearer(): ReactElement {
 	const [clearingData, setClearingData] = useState<Set<ClearDataType>>(new Set());
 	const [successMessage, setSuccessMessage] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	const [pendingClear, setPendingClear] = useState<DataTypeConfig | null>(null);
 
 	const dataTypes: Array<DataTypeConfig> = [
 		{
@@ -50,15 +61,15 @@ export function DataClearer(): ReactElement {
 			description: content.dataClearer.clearSyncDesc.value,
 			confirmMessage: content.dataClearer.clearSyncConfirm.value,
 		},
+		{
+			type: "spaces",
+			displayName: content.dataClearer.clearSpaces.value,
+			description: content.dataClearer.clearSpacesDesc.value,
+			confirmMessage: content.dataClearer.clearSpacesConfirm.value,
+		},
 	];
 
 	async function handleClearData(dataTypeConfig: DataTypeConfig): Promise<void> {
-		// Show confirmation dialog
-		const confirmed = window.confirm(dataTypeConfig.confirmMessage);
-		if (!confirmed) {
-			return;
-		}
-
 		setError(null);
 		setSuccessMessage(null);
 		setClearingData(prev => new Set(prev).add(dataTypeConfig.type));
@@ -78,6 +89,13 @@ export function DataClearer(): ReactElement {
 				next.delete(dataTypeConfig.type);
 				return next;
 			});
+		}
+	}
+
+	function handleConfirm(): void {
+		if (pendingClear) {
+			handleClearData(pendingClear);
+			setPendingClear(null);
 		}
 	}
 
@@ -110,7 +128,7 @@ export function DataClearer(): ReactElement {
 							</div>
 							<button
 								type="button"
-								onClick={() => handleClearData(dataTypeConfig)}
+								onClick={() => setPendingClear(dataTypeConfig)}
 								disabled={clearingData.has(dataTypeConfig.type)}
 								className="flex items-center gap-2 px-4 py-2 bg-destructive text-destructive-foreground rounded-md text-sm font-medium hover:bg-destructive/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
 							>
@@ -127,6 +145,31 @@ export function DataClearer(): ReactElement {
 			<div className="mt-4 p-3 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded text-sm text-yellow-800 dark:text-yellow-200">
 				<strong>{content.dataClearer.warningLabel}</strong> {content.dataClearer.warningMessage}
 			</div>
+
+			<AlertDialog
+				open={pendingClear !== null}
+				onOpenChange={open => {
+					if (!open) {
+						setPendingClear(null);
+					}
+				}}
+			>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>{content.dataClearer.confirmTitle}</AlertDialogTitle>
+						<AlertDialogDescription>{pendingClear?.confirmMessage}</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel>{content.dataClearer.cancel}</AlertDialogCancel>
+						<AlertDialogAction
+							className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+							onClick={handleConfirm}
+						>
+							{pendingClear?.displayName}
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
 		</div>
 	);
 }

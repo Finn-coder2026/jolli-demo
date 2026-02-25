@@ -1,3 +1,6 @@
+---
+jrn: MKKIR4UUB5HSDJ6O
+---
 # jolli-local.me SSL Certificates
 
 These are Let's Encrypt wildcard SSL certificates for `*.jolli-local.me`, used for local development.

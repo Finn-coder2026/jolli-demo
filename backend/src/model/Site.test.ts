@@ -1,8 +1,26 @@
 // Import entire module to execute PII decorators
+import { getRegisteredPiiFields } from "../audit/PiiDecorators";
+import type { Site, SiteMetadata } from "./Site";
 import * as SiteModule from "./Site";
-import { defineSites, TABLE_NAME_SITES } from "./Site";
+import { defineSites, getMetadataForUpdate, getSiteMetadata, requireSiteMetadata, TABLE_NAME_SITES } from "./Site";
 import { DataTypes, type Sequelize } from "sequelize";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+/** Creates a minimal Site object for testing metadata accessor functions */
+function makeSite(metadata: SiteMetadata | undefined): Site {
+	return {
+		id: 1,
+		name: "test-site",
+		displayName: "Test Site",
+		userId: 1,
+		visibility: "internal",
+		status: "active",
+		metadata,
+		lastGeneratedAt: undefined,
+		createdAt: new Date(),
+		updatedAt: new Date(),
+	};
+}
 
 describe("Site Model", () => {
 	let mockSequelize: Sequelize;
@@ -52,11 +70,6 @@ describe("Site Model", () => {
 			type: DataTypes.INTEGER,
 			field: "user_id",
 			allowNull: true,
-			references: {
-				model: "users",
-				key: "id",
-			},
-			onDelete: "SET NULL",
 		});
 
 		// Validate visibility field
@@ -103,6 +116,7 @@ describe("Site Model", () => {
 
 		// Check for unique name index
 		expect(indexes[0]).toEqual({
+			name: "sites_name_key",
 			unique: true,
 			fields: ["name"],
 		});
@@ -123,10 +137,84 @@ describe("Site Model", () => {
 		});
 	});
 
+	it("should return existing model if already defined", () => {
+		const existingModel = { name: "ExistingSite" };
+		mockSequelize = {
+			define: vi.fn(),
+			models: {
+				sites: existingModel,
+			},
+		} as unknown as Sequelize;
+
+		const model = defineSites(mockSequelize);
+
+		expect(model).toBe(existingModel);
+		expect(mockSequelize.define).not.toHaveBeenCalled();
+	});
+
 	it("should register PII schema decorators", () => {
 		// This test ensures that the PII decorators are executed
 		// by importing the module (SiteModule import at top triggers decorator execution)
 		expect(SiteModule).toBeDefined();
 		expect(SiteModule.defineSites).toBeDefined();
+	});
+
+	it("should register all PII fields in the site resource type", () => {
+		// Verify that the PII decorators registered all expected fields
+		const sitePiiFields = getRegisteredPiiFields("site");
+
+		// Check that ownerEmail and contactEmail fields are registered
+		expect(sitePiiFields.has("ownerEmail")).toBe(true);
+		expect(sitePiiFields.has("contactEmail")).toBe(true);
+
+		// Verify descriptions
+		expect(sitePiiFields.get("ownerEmail")?.description).toBe("Site owner email (from metadata)");
+		expect(sitePiiFields.get("contactEmail")?.description).toBe("Site contact email (from metadata)");
+	});
+});
+
+describe("Site metadata accessors", () => {
+	const sampleMetadata: SiteMetadata = {
+		githubRepo: "org/repo",
+		githubUrl: "https://github.com/org/repo",
+		framework: "nextra-4",
+		articleCount: 5,
+	};
+
+	describe("getSiteMetadata", () => {
+		it("should return metadata when present", () => {
+			const site = makeSite(sampleMetadata);
+			expect(getSiteMetadata(site)).toBe(sampleMetadata);
+		});
+
+		it("should return undefined when metadata is missing", () => {
+			const site = makeSite(undefined);
+			expect(getSiteMetadata(site)).toBeUndefined();
+		});
+	});
+
+	describe("requireSiteMetadata", () => {
+		it("should return metadata when present", () => {
+			const site = makeSite(sampleMetadata);
+			expect(requireSiteMetadata(site)).toBe(sampleMetadata);
+		});
+
+		it("should throw when metadata is missing", () => {
+			const site = makeSite(undefined);
+			expect(() => requireSiteMetadata(site)).toThrow("Site 1 has no metadata");
+		});
+	});
+
+	describe("getMetadataForUpdate", () => {
+		it("should return metadata when present", () => {
+			const site = makeSite(sampleMetadata);
+			expect(getMetadataForUpdate(site)).toBe(sampleMetadata);
+		});
+
+		it("should return empty object when metadata is missing", () => {
+			const site = makeSite(undefined);
+			const result = getMetadataForUpdate(site);
+			expect(result).toEqual({});
+		});
 	});
 });

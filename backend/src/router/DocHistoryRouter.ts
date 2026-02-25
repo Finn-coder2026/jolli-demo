@@ -1,3 +1,4 @@
+import { auditLog } from "../audit";
 import type { DaoProvider } from "../dao/DaoProvider";
 import type { DocDao } from "../dao/DocDao";
 import type { DocHistoryDao, DocHistoryPaginatedResult } from "../dao/DocHistoryDao";
@@ -299,10 +300,16 @@ export function createDocHistoryRouter(
 				log.debug("restore: decompressed historical doc snapshot, version=%d", historicalDoc.version);
 
 				// Step 4: Update doc with historical content and set referVersion
-				const newContentMetadata = docHistoryService.setReferVersion(
-					historicalDoc.contentMetadata,
-					history.version,
-				);
+				// Only restore: content, contentType, title, referVersion
+				// Keep current: source, sourceMetadata, and other contentMetadata fields
+				const restoredContentMetadata = {
+					...currentDoc.contentMetadata,
+					referVersion: history.version,
+				};
+				// Only update title if it exists in historical snapshot
+				if (historicalDoc.contentMetadata?.title !== undefined) {
+					restoredContentMetadata.title = historicalDoc.contentMetadata.title;
+				}
 
 				const updatedDoc = await docDao.updateDoc(
 					{
@@ -310,10 +317,8 @@ export function createDocHistoryRouter(
 						// Restore content from historical snapshot
 						content: historicalDoc.content,
 						contentType: historicalDoc.contentType,
-						source: historicalDoc.source,
-						sourceMetadata: historicalDoc.sourceMetadata,
-						// Set contentMetadata with referVersion pointing to historical version
-						contentMetadata: newContentMetadata,
+						// source and sourceMetadata keep current values (not restored from history)
+						contentMetadata: restoredContentMetadata,
 						version: currentDoc.version + 1,
 					},
 					transaction,
@@ -331,6 +336,19 @@ export function createDocHistoryRouter(
 				);
 
 				return { doc: updatedDoc, savedHistory };
+			});
+
+			auditLog({
+				action: "restore",
+				resourceType: "doc",
+				resourceId: currentDoc.id,
+				resourceName: currentDoc.contentMetadata?.title ?? `doc-${currentDoc.id}`,
+				metadata: {
+					historyId: id,
+					fromVersion: history.version,
+					toVersion: currentDoc.version + 1,
+					savedHistory: result.savedHistory,
+				},
 			});
 
 			res.json({

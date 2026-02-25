@@ -7,9 +7,11 @@ import type { IntegrationsManager } from "../integrations/IntegrationsManager";
 import { createMockIntegrationsManager } from "../integrations/IntegrationsManager.mock";
 import type { Integration } from "../model/Integration";
 import { mockIntegration } from "../model/Integration.mock";
+import { createTenantOrgContext, runWithTenantContext } from "../tenant/TenantContext";
+import type { TenantRegistryClient } from "../tenant/TenantRegistryClient";
 import type { IntegrationTypeBehavior } from "../types/IntegrationTypes";
 import * as GithubAppUtil from "../util/GithubAppUtil";
-import type { GithubRepoIntegrationMetadata } from "jolli-common";
+import type { GithubRepoIntegrationMetadata, Org, Tenant } from "jolli-common";
 import jwt from "jsonwebtoken";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -391,13 +393,12 @@ describe("GithubIntegrationTypeBehavior", () => {
 
 			const jobDefinitions = integrationTypeBehavior.getJobDefinitions?.();
 
-			expect(jobDefinitions).toHaveLength(5);
+			expect(jobDefinitions).toHaveLength(4);
 			expect(jobDefinitions?.map(j => j.name)).toEqual([
 				"github:handle-installation-created",
 				"github:handle-installation-deleted",
 				"github:handle-repositories-added",
 				"github:handle-repositories-removed",
-				"github:handle-push",
 			]);
 		});
 
@@ -659,6 +660,66 @@ describe("GithubIntegrationTypeBehavior", () => {
 			await deletedJob?.handler(payload, mockContext);
 
 			expect(mockContext.log).toHaveBeenCalledWith("installation-not-found", { installationId: 999 }, "warn");
+		});
+
+		it("should delete installation mapping from registry when registryClient is provided", async () => {
+			const mockRegistryClient = {
+				deleteInstallationMapping: vi.fn().mockResolvedValue(undefined),
+			} as unknown as TenantRegistryClient;
+
+			const behaviorWithRegistry = createIntegrationTypeBehavior(mockDb, mockManager, mockRegistryClient);
+			const jobDefinitions = behaviorWithRegistry.getJobDefinitions?.() || [];
+			const deletedJob = jobDefinitions.find(j => j.name === "github:handle-installation-deleted");
+
+			mockInstallationDao.lookupByInstallationId = vi.fn().mockResolvedValue(undefined);
+			mockManager.listIntegrations = vi.fn().mockResolvedValue([]);
+
+			const mockContext = {
+				jobId: "test-job-id",
+				jobName: "github:handle-installation-deleted",
+				log: vi.fn(),
+				emitEvent: vi.fn(),
+				updateStats: vi.fn(),
+				setCompletionInfo: vi.fn(),
+			};
+
+			await deletedJob?.handler({ installation: { id: 123, app_id: 456 } }, mockContext);
+
+			expect(mockRegistryClient.deleteInstallationMapping).toHaveBeenCalledWith(123);
+			expect(mockContext.log).toHaveBeenCalledWith(
+				"installation-mapping-deleted",
+				{ installationId: 123 },
+				"info",
+			);
+		});
+
+		it("should log warning when registryClient.deleteInstallationMapping fails", async () => {
+			const mockRegistryClient = {
+				deleteInstallationMapping: vi.fn().mockRejectedValue(new Error("Registry unavailable")),
+			} as unknown as TenantRegistryClient;
+
+			const behaviorWithRegistry = createIntegrationTypeBehavior(mockDb, mockManager, mockRegistryClient);
+			const jobDefinitions = behaviorWithRegistry.getJobDefinitions?.() || [];
+			const deletedJob = jobDefinitions.find(j => j.name === "github:handle-installation-deleted");
+
+			mockInstallationDao.lookupByInstallationId = vi.fn().mockResolvedValue(undefined);
+			mockManager.listIntegrations = vi.fn().mockResolvedValue([]);
+
+			const mockContext = {
+				jobId: "test-job-id",
+				jobName: "github:handle-installation-deleted",
+				log: vi.fn(),
+				emitEvent: vi.fn(),
+				updateStats: vi.fn(),
+				setCompletionInfo: vi.fn(),
+			};
+
+			// Should not throw - error is caught and logged
+			await deletedJob?.handler({ installation: { id: 123, app_id: 456 } }, mockContext);
+
+			expect(mockRegistryClient.deleteInstallationMapping).toHaveBeenCalledWith(123);
+			// The mapping-deleted log should NOT have been called since it failed
+			expect(mockContext.log).not.toHaveBeenCalledWith("installation-mapping-deleted", expect.anything(), "info");
 		});
 
 		it("should execute repositories added job handler", async () => {
@@ -1200,6 +1261,157 @@ describe("GithubIntegrationTypeBehavior", () => {
 		});
 	});
 
+	describe("multi-tenant support", () => {
+		function createMockTenant(overrides: Partial<Tenant> = {}): Tenant {
+			return {
+				id: "tenant-123",
+				slug: "test-tenant",
+				displayName: "Test Tenant",
+				status: "active",
+				deploymentType: "shared",
+				databaseProviderId: "provider-123",
+				configs: {},
+				configsUpdatedAt: null,
+				featureFlags: {},
+				primaryDomain: null,
+				createdAt: new Date("2024-01-01"),
+				updatedAt: new Date("2024-01-01"),
+				provisionedAt: new Date("2024-01-01"),
+				...overrides,
+			};
+		}
+
+		function createMockOrg(overrides: Partial<Org> = {}): Org {
+			return {
+				id: "org-123",
+				tenantId: "tenant-123",
+				slug: "default",
+				displayName: "Default Org",
+				schemaName: "org_default",
+				status: "active",
+				isDefault: true,
+				createdAt: new Date("2024-01-01"),
+				updatedAt: new Date("2024-01-01"),
+				...overrides,
+			};
+		}
+
+		function createMockJobContext() {
+			return {
+				jobId: "test-job-id",
+				jobName: "test-job",
+				log: vi.fn(),
+				emitEvent: vi.fn(),
+				updateStats: vi.fn(),
+				setCompletionInfo: vi.fn(),
+			};
+		}
+
+		it("should use tenant context database when available instead of defaultDb", async () => {
+			const syncSpy = vi.spyOn(GithubAppUtil, "syncAllInstallationsForApp").mockResolvedValue([]);
+
+			// Create a separate installation DAO for the tenant database
+			const tenantInstallationDao = mockGitHubInstallationDao();
+			const tenantDb = mockDatabase({ githubInstallationDao: tenantInstallationDao });
+
+			// Create behavior with an error-throwing proxy as defaultDb (simulates worker mode)
+			const proxyDb = new Proxy({} as Database, {
+				get(_target, prop) {
+					throw new Error(`Attempted to access ${String(prop)} on mockDatabase outside of tenant context.`);
+				},
+			});
+
+			const proxyBehavior = createIntegrationTypeBehavior(proxyDb, mockManager);
+			const jobDefinitions = proxyBehavior.getJobDefinitions?.() || [];
+			const createdJob = jobDefinitions.find(j => j.name === "github:handle-installation-created");
+
+			const tenantContext = createTenantOrgContext(createMockTenant(), createMockOrg(), tenantDb);
+
+			mockManager.listIntegrations = vi.fn().mockResolvedValue([]);
+
+			// Within tenant context, the handler should use the tenant database (not the proxy)
+			await runWithTenantContext(tenantContext, async () => {
+				await createdJob?.handler(
+					{ installation: { id: 123, app_id: 456 }, repositories: [] },
+					createMockJobContext(),
+				);
+			});
+
+			// syncAllInstallationsForApp should have been called with the tenant's DAO
+			expect(syncSpy).toHaveBeenCalledWith(expect.anything(), tenantInstallationDao);
+			syncSpy.mockRestore();
+		});
+
+		it("should throw when using error-throwing proxy without tenant context", async () => {
+			// Create behavior with an error-throwing proxy (simulates worker mode)
+			const proxyDb = new Proxy({} as Database, {
+				get(_target, prop) {
+					throw new Error(`Attempted to access ${String(prop)} on mockDatabase outside of tenant context.`);
+				},
+			});
+
+			const proxyBehavior = createIntegrationTypeBehavior(proxyDb, mockManager);
+			const jobDefinitions = proxyBehavior.getJobDefinitions?.() || [];
+			const createdJob = jobDefinitions.find(j => j.name === "github:handle-installation-created");
+
+			// Without tenant context, accessing the proxy should throw
+			await expect(
+				createdJob?.handler(
+					{ installation: { id: 123, app_id: 456 }, repositories: [] },
+					createMockJobContext(),
+				),
+			).rejects.toThrow("Attempted to access githubInstallationDao on mockDatabase outside of tenant context.");
+		});
+
+		it("should use tenant context for all four job handlers", async () => {
+			const syncSpy = vi.spyOn(GithubAppUtil, "syncAllInstallationsForApp").mockResolvedValue([]);
+
+			const tenantInstallationDao = mockGitHubInstallationDao();
+			tenantInstallationDao.lookupByInstallationId = vi.fn().mockResolvedValue(undefined);
+			const tenantDb = mockDatabase({ githubInstallationDao: tenantInstallationDao });
+
+			// Use error-throwing proxy to ensure handlers never touch it
+			const proxyDb = new Proxy({} as Database, {
+				get(_target, prop) {
+					throw new Error(`Attempted to access ${String(prop)} on mockDatabase outside of tenant context.`);
+				},
+			});
+
+			const proxyBehavior = createIntegrationTypeBehavior(proxyDb, mockManager);
+			const jobDefinitions = proxyBehavior.getJobDefinitions?.() || [];
+			const tenantContext = createTenantOrgContext(createMockTenant(), createMockOrg(), tenantDb);
+
+			mockManager.listIntegrations = vi.fn().mockResolvedValue([]);
+
+			const jobNames = [
+				"github:handle-installation-created",
+				"github:handle-installation-deleted",
+				"github:handle-repositories-added",
+				"github:handle-repositories-removed",
+			];
+
+			for (const jobName of jobNames) {
+				const job = jobDefinitions.find(j => j.name === jobName);
+				expect(job).toBeDefined();
+
+				// Each handler should work within tenant context (not throw from proxy)
+				await runWithTenantContext(tenantContext, async () => {
+					await job?.handler(
+						{
+							installation: { id: 123, app_id: 456 },
+							repositories: [],
+							repositories_added: [],
+							repositories_removed: [],
+						},
+						createMockJobContext(),
+					);
+				});
+			}
+
+			syncSpy.mockRestore();
+		});
+	});
+
 	describe("preCreate", () => {
 		it("should return true when no installationId or githubAppId in metadata", async () => {
 			const newIntegration = {
@@ -1267,132 +1479,6 @@ describe("GithubIntegrationTypeBehavior", () => {
 			expect(result).toBe(true);
 			expect(mockManager.listIntegrations).toHaveBeenCalled();
 			expect(mockManager.deleteIntegration).not.toHaveBeenCalled();
-		});
-	});
-
-	describe("push job definition", () => {
-		it("should execute push job handler and log push event", async () => {
-			const integrationTypeBehavior = githubBehavior;
-			const jobDefinitions = integrationTypeBehavior.getJobDefinitions?.() || [];
-			const pushJob = jobDefinitions.find(j => j.name === "github:handle-push");
-
-			const mockContext = {
-				jobId: "test-job-id",
-				jobName: "github:handle-push",
-				log: vi.fn(),
-				emitEvent: vi.fn(),
-				updateStats: vi.fn(),
-				setCompletionInfo: vi.fn(),
-			};
-
-			const payload = {
-				ref: "refs/heads/main",
-				before: "abc123",
-				after: "def456",
-				repository: {
-					id: 12345,
-					full_name: "owner/repo",
-					default_branch: "main",
-				},
-				pusher: {
-					name: "test-user",
-					email: "test@example.com",
-				},
-				sender: {
-					id: 1,
-					login: "test-user",
-					type: "User" as const,
-				},
-				installation: {
-					id: 789,
-				},
-				commits: [
-					{
-						id: "abc123",
-						message: "test commit",
-						added: ["file.txt"],
-						removed: [],
-						modified: [],
-					},
-				],
-			};
-
-			await pushJob?.handler(payload, mockContext);
-
-			expect(mockContext.log).toHaveBeenCalledWith(
-				"push-received",
-				{
-					repo: "owner/repo",
-					branch: "main",
-					pusher: "test-user",
-				},
-				"info",
-			);
-
-			// Should not emit any events
-			expect(mockContext.emitEvent).not.toHaveBeenCalled();
-		});
-
-		it("should filter out push events for non-default branches", async () => {
-			const integrationTypeBehavior = githubBehavior;
-			const jobDefinitions = integrationTypeBehavior.getJobDefinitions?.() || [];
-			const pushJob = jobDefinitions.find(j => j.name === "github:handle-push");
-
-			expect(pushJob?.shouldTriggerEvent).toBeDefined();
-
-			const payloadNonDefaultBranch = {
-				ref: "refs/heads/feature-branch",
-				before: "abc123",
-				after: "def456",
-				repository: {
-					id: 12345,
-					full_name: "owner/repo",
-					default_branch: "main",
-				},
-				pusher: {
-					name: "test-user",
-					email: "test@example.com",
-				},
-				sender: {
-					id: 1,
-					login: "test-user",
-					type: "User" as const,
-				},
-			};
-
-			const shouldTrigger = await pushJob?.shouldTriggerEvent?.("github:push", payloadNonDefaultBranch);
-			expect(shouldTrigger).toBe(false);
-		});
-
-		it("should allow push events for default branch", async () => {
-			const integrationTypeBehavior = githubBehavior;
-			const jobDefinitions = integrationTypeBehavior.getJobDefinitions?.() || [];
-			const pushJob = jobDefinitions.find(j => j.name === "github:handle-push");
-
-			expect(pushJob?.shouldTriggerEvent).toBeDefined();
-
-			const payloadDefaultBranch = {
-				ref: "refs/heads/main",
-				before: "abc123",
-				after: "def456",
-				repository: {
-					id: 12345,
-					full_name: "owner/repo",
-					default_branch: "main",
-				},
-				pusher: {
-					name: "test-user",
-					email: "test@example.com",
-				},
-				sender: {
-					id: 1,
-					login: "test-user",
-					type: "User" as const,
-				},
-			};
-
-			const shouldTrigger = await pushJob?.shouldTriggerEvent?.("github:push", payloadDefaultBranch);
-			expect(shouldTrigger).toBe(true);
 		});
 	});
 });

@@ -3,7 +3,7 @@ import { defineSites, type NewSite, type Site, type SiteMetadata, type SiteStatu
 import type { TenantOrgContext } from "../tenant/TenantContext";
 import { stripJolliScriptFrontmatter } from "../util/ContentUtil";
 import type { DaoProvider } from "./DaoProvider";
-import type { ChangedArticle, DocContentMetadata } from "jolli-common";
+import type { ArticleSiteInfo, ChangedArticle, DocContentMetadata } from "jolli-common";
 import { Op, type Sequelize } from "sequelize";
 
 /**
@@ -90,6 +90,16 @@ export interface SiteDao {
 	 * @returns Site if found, undefined if domain is available
 	 */
 	getSiteByCustomDomain(domain: string): Promise<Site | undefined>;
+	/**
+	 * Gets all sites that include a given article.
+	 * A site includes an article if:
+	 * - The site's selectedArticleJrns contains the article JRN, OR
+	 * - The site's selectedArticleJrns is null/undefined (include-all mode)
+	 *
+	 * @param articleJrn - JRN of the article to look up
+	 * @returns Lightweight site info array with id, name, displayName, and visibility
+	 */
+	getSitesForArticle(articleJrn: string): Promise<Array<ArticleSiteInfo>>;
 }
 
 export function createSiteDao(sequelize: Sequelize): SiteDao {
@@ -111,6 +121,7 @@ export function createSiteDao(sequelize: Sequelize): SiteDao {
 		getArticlesForSite,
 		getSiteBySubdomain,
 		getSiteByCustomDomain,
+		getSitesForArticle,
 	};
 
 	async function createSite(docsite: NewSite): Promise<Site> {
@@ -233,9 +244,11 @@ export function createSiteDao(sequelize: Sequelize): SiteDao {
 		const lastGeneratedAt = new Date(docsite.lastGeneratedAt);
 		const isIncludeAllMode = !hasSpecificSelection(metadata);
 
-		// Get all current articles from DB (excluding /root internal/system docs)
+		// Get all current articles from DB (excluding soft-deleted and /root internal/system docs)
 		const allDocs = await Docs.findAll({
 			attributes: ["jrn", "updatedAt"],
+			// biome-ignore lint/suspicious/noExplicitAny: Sequelize Op.is null typing mismatch with Doc model
+			where: { deletedAt: { [Op.is]: null } } as any,
 			raw: true,
 		});
 		const currentDocs = allDocs.filter(d => !d.jrn.startsWith("/root"));
@@ -299,6 +312,7 @@ export function createSiteDao(sequelize: Sequelize): SiteDao {
 			contentType: doc.contentType,
 			changeType: "new",
 			changeReason,
+			docType: doc.docType,
 		};
 	}
 
@@ -315,16 +329,19 @@ export function createSiteDao(sequelize: Sequelize): SiteDao {
 			contentType: doc.contentType,
 			changeType: "updated",
 			changeReason: "content", // Updated articles are always content changes
+			docType: doc.docType,
 		};
 	}
 
 	/**
 	 * Creates a ChangedArticle entry for a deleted article (from DB).
+	 * Uses the stored title from the last generation if available, falling back to JRN.
+	 * No doc record available, so docType is left undefined.
 	 */
-	function createDeletedFromDbEntry(jrn: string): ChangedArticle {
+	function createDeletedFromDbEntry(jrn: string, generatedTitles: Record<string, string>): ChangedArticle {
 		return {
 			id: -1, // No ID for deleted articles
-			title: jrn, // Use JRN as title since article is gone
+			title: generatedTitles[jrn] || jrn, // Use stored title from last generation, fallback to JRN
 			jrn,
 			updatedAt: new Date().toISOString(),
 			contentType: "unknown",
@@ -338,7 +355,7 @@ export function createSiteDao(sequelize: Sequelize): SiteDao {
 	 */
 	function createDeselectedEntry(jrn: string, doc: Doc | undefined): ChangedArticle {
 		const docMetadata = doc?.contentMetadata as DocContentMetadata | undefined;
-		return {
+		const entry: ChangedArticle = {
 			/* v8 ignore next */ id: doc?.id ?? -1, // Fallback if doc lookup fails
 			/* v8 ignore next */ title: docMetadata?.title || jrn, // Fallback to JRN
 			jrn,
@@ -347,6 +364,11 @@ export function createSiteDao(sequelize: Sequelize): SiteDao {
 			changeType: "deleted", // Deselection shows as "deleted" since it will be removed from site
 			changeReason: "selection", // Article was deselected by user
 		};
+		/* v8 ignore next 3 */
+		if (doc?.docType !== undefined) {
+			entry.docType = doc.docType;
+		}
+		return entry;
 	}
 
 	/**
@@ -377,6 +399,7 @@ export function createSiteDao(sequelize: Sequelize): SiteDao {
 
 	/**
 	 * Finds deleted and deselected articles by comparing generated JRNs with current state.
+	 * Uses generatedTitles to recover the original title for articles deleted from the DB.
 	 */
 	function findDeletedAndDeselectedArticles(
 		generatedJrns: Set<string>,
@@ -384,6 +407,7 @@ export function createSiteDao(sequelize: Sequelize): SiteDao {
 		selectedJrns: Set<string>,
 		docsByJrn: Map<string, Doc>,
 		isIncludeAllMode: boolean,
+		generatedTitles: Record<string, string>,
 	): Array<ChangedArticle> {
 		const changedArticles: Array<ChangedArticle> = [];
 
@@ -392,7 +416,7 @@ export function createSiteDao(sequelize: Sequelize): SiteDao {
 			const isSelected = selectedJrns.has(jrn);
 
 			if (!existsInDb) {
-				changedArticles.push(createDeletedFromDbEntry(jrn));
+				changedArticles.push(createDeletedFromDbEntry(jrn, generatedTitles));
 			} else if (!isIncludeAllMode && !isSelected) {
 				changedArticles.push(createDeselectedEntry(jrn, docsByJrn.get(jrn)));
 			}
@@ -434,11 +458,13 @@ export function createSiteDao(sequelize: Sequelize): SiteDao {
 		const metadata = docsite.metadata as SiteMetadata | undefined;
 		const isIncludeAllMode = !hasSpecificSelection(metadata);
 
-		// Get all current articles (excluding /root internal/system docs)
-		const allDocs = await Docs.findAll({ order: [["updatedAt", "DESC"]] });
-		const currentDocs = allDocs
-			.filter(d => !d.get({ plain: true }).jrn.startsWith("/root"))
-			.map(d => d.get({ plain: true }));
+		// Get all current articles (excluding soft-deleted and /root internal/system docs)
+		const allDocs = await Docs.findAll({
+			// biome-ignore lint/suspicious/noExplicitAny: Sequelize Op.is null typing mismatch with Doc model
+			where: { deletedAt: { [Op.is]: null } } as any,
+			order: [["updatedAt", "DESC"]],
+		});
+		const currentDocs = allDocs.map(d => d.get({ plain: true })).filter(d => !d.jrn.startsWith("/root"));
 
 		// Build lookup structures
 		const currentJrns = new Set<string>(currentDocs.map(d => d.jrn));
@@ -452,6 +478,7 @@ export function createSiteDao(sequelize: Sequelize): SiteDao {
 
 		const lastGeneratedAt = new Date(docsite.lastGeneratedAt);
 		const generatedJrns = new Set(metadata?.generatedArticleJrns || []);
+		const generatedTitles = metadata?.generatedArticleTitles || {};
 
 		// Find all changed articles
 		const newAndUpdated = findNewAndUpdatedArticles(
@@ -467,6 +494,7 @@ export function createSiteDao(sequelize: Sequelize): SiteDao {
 			selectedJrns,
 			docsByJrn,
 			isIncludeAllMode,
+			generatedTitles,
 		);
 
 		return [...newAndUpdated, ...deletedAndDeselected];
@@ -513,7 +541,14 @@ export function createSiteDao(sequelize: Sequelize): SiteDao {
 		// non-empty array = return only selected articles
 		if (selectedJrns === null || selectedJrns === undefined) {
 			const allDocs = await Docs.findAll({
-				order: [["updatedAt", "DESC"]],
+				// biome-ignore lint/suspicious/noExplicitAny: Sequelize Op.is null typing mismatch with Doc model
+				where: { deletedAt: { [Op.is]: null } } as any,
+				// Sort by parentId first to group siblings together (sortOrder is scoped per parent),
+				// then by sortOrder within each parent to preserve tree structure
+				order: [
+					["parentId", "ASC"],
+					["sortOrder", "ASC"],
+				],
 			});
 			// Filter out internal /root docs and strip jolliscript frontmatter
 			const filteredDocs = allDocs.filter(d => !d.get({ plain: true }).jrn.startsWith("/root"));
@@ -529,11 +564,17 @@ export function createSiteDao(sequelize: Sequelize): SiteDao {
 		}
 
 		// Return only selected articles with jolliscript frontmatter stripped
+		// Sort by parentId to group siblings, then sortOrder within each parent
 		const selectedDocs = await Docs.findAll({
 			where: {
 				jrn: { [Op.in]: selectedJrns },
-			},
-			order: [["updatedAt", "DESC"]],
+				deletedAt: { [Op.is]: null },
+				// biome-ignore lint/suspicious/noExplicitAny: Sequelize Op.is null typing mismatch with Doc model
+			} as any,
+			order: [
+				["parentId", "ASC"],
+				["sortOrder", "ASC"],
+			],
 		});
 		return selectedDocs.map(d => {
 			const doc = d.get({ plain: true });
@@ -578,6 +619,34 @@ export function createSiteDao(sequelize: Sequelize): SiteDao {
 		});
 
 		return sites.length > 0 ? sites[0].get({ plain: true }) : undefined;
+	}
+
+	/**
+	 * Gets all sites that include a given article.
+	 * Filters at the database level to avoid a full table scan:
+	 *  - Include-all mode: selectedArticleJrns key is absent/null in metadata JSONB
+	 *  - Explicit selection: selectedArticleJrns array contains the article JRN
+	 *
+	 * Note: visibility is derived from metadata.jwtAuth.enabled rather than a stored
+	 * column because jwtAuth.enabled is the canonical source of truth for site access control.
+	 */
+	async function getSitesForArticle(articleJrn: string): Promise<Array<ArticleSiteInfo>> {
+		const sites = await NewDocsites.findAll({
+			attributes: ["id", "name", "displayName", "metadata"],
+			where: sequelize.literal(
+				`(metadata->'selectedArticleJrns' IS NULL
+				OR metadata->'selectedArticleJrns' @> :jrnJson::jsonb)`,
+			),
+			replacements: { jrnJson: JSON.stringify([articleJrn]) },
+		});
+
+		return sites.map(siteModel => {
+			const site = siteModel.get({ plain: true });
+			const metadata = site.metadata as SiteMetadata | undefined;
+			// "internal" when JWT auth is enforced, "external" for public sites
+			const visibility = metadata?.jwtAuth?.enabled === true ? "internal" : "external";
+			return { id: site.id, name: site.name, displayName: site.displayName, visibility };
+		});
 	}
 }
 

@@ -1,3 +1,6 @@
+---
+jrn: MKKIR4VM09KIBNSV
+---
 # Jolli Extensions
 
 IDE extensions for Jolli integration.

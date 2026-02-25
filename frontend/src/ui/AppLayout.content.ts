@@ -8,6 +8,10 @@ const appLayoutContent = {
 			es: "Navegación",
 		}),
 		// Navigation tab labels
+		tabInbox: t({
+			en: "Inbox",
+			es: "Bandeja de entrada",
+		}),
 		tabDashboard: t({
 			en: "Dashboard",
 			es: "Panel",
@@ -28,6 +32,14 @@ const appLayoutContent = {
 			en: "Sources",
 			es: "Fuentes",
 		}),
+		tabUsers: t({
+			en: "Users",
+			es: "Usuarios",
+		}),
+		tabRoles: t({
+			en: "Roles",
+			es: "Roles",
+		}),
 		tabSettings: t({
 			en: "Settings",
 			es: "Ajustes",
@@ -35,34 +47,6 @@ const appLayoutContent = {
 		tabDevTools: t({
 			en: "Dev Tools",
 			es: "Desarrollo",
-		}),
-		searchPlaceholder: t({
-			en: "Search articles...",
-			es: "Buscar artículos...",
-		}),
-		noNotifications: t({
-			en: "No new notifications",
-			es: "No hay notificaciones nuevas",
-		}),
-		viewAllNotifications: t({
-			en: "View all notifications",
-			es: "Ver todas las notificaciones",
-		}),
-		myProfile: t({
-			en: "My Profile",
-			es: "Mi Perfil",
-		}),
-		settings: t({
-			en: "Settings",
-			es: "Configuración",
-		}),
-		signOut: t({
-			en: "Sign Out",
-			es: "Cerrar Sesión",
-		}),
-		askAiAssistant: t({
-			en: "Ask AI Assistant",
-			es: "Preguntar al Asistente IA",
 		}),
 	},
 } satisfies Dictionary;

@@ -40,11 +40,6 @@ describe("UserSpacePreference", () => {
 		expect(schema.userId).toEqual({
 			type: DataTypes.INTEGER,
 			allowNull: false,
-			references: {
-				model: "users",
-				key: "id",
-			},
-			onDelete: "CASCADE",
 		});
 
 		// Validate spaceId field

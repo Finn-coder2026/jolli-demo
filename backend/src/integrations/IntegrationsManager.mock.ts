@@ -59,6 +59,10 @@ export function createMockIntegrationsManager(): IntegrationsManager {
 			return [];
 		},
 		// biome-ignore lint/suspicious/useAwait: Mock must match async interface
+		countIntegrations: async (): Promise<number> => {
+			return 0;
+		},
+		// biome-ignore lint/suspicious/useAwait: Mock must match async interface
 		updateIntegration: async (
 			integration: Integration,
 			update: Partial<Integration>,

@@ -152,7 +152,6 @@ export default function DomainDetailPage() {
 		<main style={{ padding: "2rem", fontFamily: "system-ui, sans-serif", maxWidth: "800px" }}>
 			<Breadcrumb
 				items={[
-					{ label: "Dashboard", href: "/" },
 					{ label: "Tenants", href: "/tenants" },
 					{ label: tenantName || "Tenant", href: `/tenants/${tenantId}` },
 					{ label: "Domains", href: `/tenants/${tenantId}/domains` },

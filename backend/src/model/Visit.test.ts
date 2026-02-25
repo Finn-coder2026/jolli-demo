@@ -32,10 +32,6 @@ describe("Visit", () => {
 				userId: expect.objectContaining({
 					type: DataTypes.INTEGER,
 					allowNull: true,
-					references: expect.objectContaining({
-						model: "users",
-						key: "id",
-					}),
 				}),
 			}),
 			{ timestamps: false },

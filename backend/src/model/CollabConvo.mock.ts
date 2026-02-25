@@ -15,7 +15,9 @@ export function mockCollabConvo(overrides?: Partial<CollabConvo>): CollabConvo {
 		id: 1,
 		artifactType: "doc_draft",
 		artifactId: 1,
+		title: null,
 		messages: [],
+		metadata: null,
 		createdAt: new Date("2025-01-01T00:00:00Z"),
 		updatedAt: new Date("2025-01-01T00:00:00Z"),
 		...overrides,
@@ -27,6 +29,7 @@ export function mockNewCollabConvo(overrides?: Partial<NewCollabConvo>): NewColl
 		artifactType: "doc_draft",
 		artifactId: 1,
 		messages: [],
+		metadata: null,
 		...overrides,
 	};
 }

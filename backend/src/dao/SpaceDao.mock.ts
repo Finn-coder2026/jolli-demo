@@ -10,7 +10,15 @@ export function mockSpaceDao(partial?: Partial<SpaceDao>): SpaceDao {
 		listSpaces: vi.fn(),
 		updateSpace: vi.fn(),
 		deleteSpace: vi.fn(),
-		getOrCreateDefaultSpace: vi.fn(),
+		migrateContent: vi.fn(),
+		getSpaceStats: vi.fn(),
+		getDefaultSpace: vi.fn(),
+		createDefaultSpaceIfNeeded: vi.fn(),
+		migrateOrphanedDocs: vi.fn(),
+		getPersonalSpace: vi.fn(),
+		createPersonalSpaceIfNeeded: vi.fn(),
+		orphanPersonalSpace: vi.fn(),
+		deleteAllSpaces: vi.fn(),
 		...partial,
 	};
 }

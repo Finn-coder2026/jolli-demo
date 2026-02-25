@@ -1004,9 +1004,9 @@ describe("GitHubRepoList", () => {
 			expect(screen.getByText("test-org Repositories")).toBeDefined();
 		});
 
-		// Find and click the "Integrations" breadcrumb link
-		const integrationsBreadcrumb = screen.getByText("Integrations");
-		fireEvent.click(integrationsBreadcrumb);
+		// Find and click the "Sources" breadcrumb link
+		const sourcesBreadcrumb = screen.getByText("Sources");
+		fireEvent.click(sourcesBreadcrumb);
 
 		// Should call navigate with "/integrations"
 		await waitFor(() => {

@@ -1,6 +1,6 @@
 import { getConfig } from "../config/Config";
-import type { Database } from "../core/Database";
 import { getLog } from "../util/Logger";
+import type { TokenUtil } from "../util/TokenUtil";
 import { createTenantMiddleware, type TenantMiddlewareConfig } from "./TenantMiddleware";
 import {
 	createTenantOrgConnectionManager,
@@ -9,6 +9,7 @@ import {
 } from "./TenantOrgConnectionManager";
 import { createTenantRegistryClient, type TenantRegistryClient } from "./TenantRegistryClient";
 import type { RequestHandler } from "express";
+import type { UserInfo } from "jolli-common";
 
 const log = getLog(import.meta);
 
@@ -34,8 +35,6 @@ export interface MultiTenantSetupConfig {
 	registryDatabaseUrl: string;
 	/** Function to decrypt encrypted database passwords */
 	decryptPassword: (encrypted: string) => Promise<string>;
-	/** Default database for the "jolli" tenant fallback */
-	defaultDatabase: Database;
 	/** Maximum number of cached connections (default: 100) */
 	maxConnections?: number;
 	/** TTL for cached connections in ms (default: 30 minutes) */
@@ -44,6 +43,8 @@ export interface MultiTenantSetupConfig {
 	poolMaxPerConnection?: number;
 	/** Whether to enable Sequelize logging (default: false) */
 	logging?: boolean;
+	/** Token utility for JWT-based tenant resolution */
+	tokenUtil?: TokenUtil<UserInfo>;
 }
 
 /**
@@ -70,12 +71,15 @@ export function createMultiTenantInfrastructure(config: MultiTenantSetupConfig):
 	const connectionManager = createTenantOrgConnectionManager(connectionManagerConfig);
 
 	// Create middleware
-	const baseDomain = getConfig().BASE_DOMAIN;
+	const appConfig = getConfig();
+	const baseDomain = appConfig.BASE_DOMAIN;
+	const authGatewayOrigin = appConfig.AUTH_GATEWAY_ORIGIN;
 	const middlewareConfig: TenantMiddlewareConfig = {
 		registryClient,
 		connectionManager,
-		defaultDatabase: config.defaultDatabase,
 		...(baseDomain && { baseDomain }),
+		...(config.tokenUtil && { tokenUtil: config.tokenUtil }),
+		...(authGatewayOrigin && { authGatewayOrigin }),
 	};
 	const middleware = createTenantMiddleware(middlewareConfig);
 
@@ -102,11 +106,11 @@ export function createMultiTenantInfrastructure(config: MultiTenantSetupConfig):
  * Returns undefined if multi-tenant mode is not enabled.
  *
  * @param decryptPassword Function to decrypt encrypted database passwords
- * @param defaultDatabase Default database for the "jolli" tenant fallback
+ * @param tokenUtil Optional token utility for JWT-based tenant resolution
  */
 export function createMultiTenantFromEnv(
 	decryptPassword: (encrypted: string) => Promise<string>,
-	defaultDatabase: Database,
+	tokenUtil?: TokenUtil<UserInfo>,
 ): MultiTenantInfrastructure | undefined {
 	const envConfig = getConfig();
 
@@ -123,10 +127,10 @@ export function createMultiTenantFromEnv(
 	return createMultiTenantInfrastructure({
 		registryDatabaseUrl: registryUrl,
 		decryptPassword,
-		defaultDatabase,
 		maxConnections: envConfig.MULTI_TENANT_CONNECTION_POOL_MAX,
 		ttlMs: envConfig.MULTI_TENANT_CONNECTION_TTL_MS,
 		poolMaxPerConnection: envConfig.MULTI_TENANT_POOL_MAX_PER_CONNECTION,
 		logging: envConfig.POSTGRES_LOGGING,
+		...(tokenUtil && { tokenUtil }),
 	});
 }

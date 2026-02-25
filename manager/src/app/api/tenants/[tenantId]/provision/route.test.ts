@@ -44,6 +44,14 @@ describe("POST /api/tenants/[tenantId]/provision", () => {
 		getProvider: vi.fn(),
 	};
 
+	const mockUserOrgDao = {
+		findOwnerByOrg: vi.fn(),
+	};
+
+	const mockGlobalUserDao = {
+		findById: vi.fn(),
+	};
+
 	const mockAdapter = {
 		provisionSchema: vi.fn(),
 		checkSchemaExists: vi.fn(),
@@ -53,6 +61,8 @@ describe("POST /api/tenants/[tenantId]/provision", () => {
 		tenantDao: mockTenantDao,
 		orgDao: mockOrgDao,
 		providerDao: mockProviderDao,
+		userOrgDao: mockUserOrgDao,
+		globalUserDao: mockGlobalUserDao,
 	};
 
 	beforeEach(() => {
@@ -65,6 +75,8 @@ describe("POST /api/tenants/[tenantId]/provision", () => {
 		// Default: schema doesn't exist, provisionSchema creates it
 		mockAdapter.checkSchemaExists.mockResolvedValue(false);
 		mockAdapter.provisionSchema.mockResolvedValue({ created: true, existed: false });
+		// Default: no owner user for orgs
+		mockUserOrgDao.findOwnerByOrg.mockResolvedValue(undefined);
 	});
 
 	afterEach(() => {

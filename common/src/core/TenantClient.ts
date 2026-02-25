@@ -13,6 +13,8 @@ export interface TenantListItem {
 	slug: string;
 	displayName: string;
 	primaryDomain: string | null;
+	/** Default organization ID for this tenant */
+	defaultOrgId: string;
 }
 
 /**

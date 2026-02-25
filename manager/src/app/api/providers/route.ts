@@ -8,12 +8,18 @@ import type { DatabaseProvider, NeonProviderConfig, NewDatabaseProvider } from "
 import { encrypt } from "../../../lib/util/Encryption";
 import { generateProviderSlug, isValidProviderSlug } from "../../../lib/util/SlugUtils";
 import { encryptPassword } from "jolli-common/server";
-import { NextResponse } from "next/server";
+import { type NextRequest, NextResponse } from "next/server";
+import { forbiddenResponse, getUserFromRequest, isSuperAdmin, unauthorizedResponse } from "@/lib/auth";
 
 /**
  * GET /api/providers - List all database providers
+ * Requires: Authenticated (SuperAdmin or User with read-only access)
  */
-export async function GET() {
+export async function GET(request: NextRequest) {
+	const user = getUserFromRequest(request);
+	if (!user) {
+		return unauthorizedResponse();
+	}
 	try {
 		const db = await getDatabase();
 		const providers = await db.providerDao.listProviders();
@@ -244,8 +250,18 @@ function toSafeProvider(provider: DatabaseProvider): Record<string, unknown> {
  * 3. Creates the provider record with status "pending"
  * 4. Provisions the database for the provider
  * 5. Stores the credentials and marks provider as "active"
+ *
+ * Requires: SuperAdmin
  */
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
+	const user = getUserFromRequest(request);
+	if (!user) {
+		return unauthorizedResponse();
+	}
+	if (!isSuperAdmin(user.role)) {
+		return forbiddenResponse("SuperAdmin access required");
+	}
+
 	try {
 		const body = (await request.json()) as CreateProviderRequest;
 		const db = await getDatabase();

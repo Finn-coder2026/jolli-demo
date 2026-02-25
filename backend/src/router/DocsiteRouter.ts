@@ -4,6 +4,7 @@ import type { DaoProvider } from "../dao/DaoProvider";
 import type { DocsiteDao } from "../dao/DocsiteDao";
 import type { IntegrationDao } from "../dao/IntegrationDao";
 import type { IntegrationsManager } from "../integrations/IntegrationsManager";
+import type { PermissionMiddlewareFactory } from "../middleware/PermissionMiddleware";
 import type { Docsite, Site } from "../model/Docsite";
 import { getCoreJolliGithubApp } from "../model/GitHubApp";
 import { getTenantContext } from "../tenant/TenantContext";
@@ -28,11 +29,12 @@ export function createDocsiteRouter(
 	docsiteDaoProvider: DaoProvider<DocsiteDao>,
 	integrationDaoProvider: DaoProvider<IntegrationDao>,
 	integrationsManager: IntegrationsManager,
+	permissionMiddleware: PermissionMiddlewareFactory,
 ): Router {
 	const router = express.Router();
 
 	// List all docsites
-	router.get("/", async (_req, res) => {
+	router.get("/", permissionMiddleware.requirePermission("sites.view"), async (_req, res) => {
 		try {
 			const docsiteDao = docsiteDaoProvider.getDao(getTenantContext());
 			const docsites = await docsiteDao.listDocsites();
@@ -44,7 +46,7 @@ export function createDocsiteRouter(
 	});
 
 	// Get docsite by ID
-	router.get("/:id", async (req, res) => {
+	router.get("/:id", permissionMiddleware.requirePermission("sites.view"), async (req, res) => {
 		try {
 			const docsiteDao = docsiteDaoProvider.getDao(getTenantContext());
 			const id = Number.parseInt(req.params.id, 10);
@@ -66,7 +68,7 @@ export function createDocsiteRouter(
 	});
 
 	// Create docsite
-	router.post("/", async (req, res) => {
+	router.post("/", permissionMiddleware.requirePermission("sites.edit"), async (req, res) => {
 		try {
 			const docsiteDao = docsiteDaoProvider.getDao(getTenantContext());
 			const newDocsite: Site = req.body;
@@ -97,7 +99,7 @@ export function createDocsiteRouter(
 	});
 
 	// Update docsite
-	router.put("/:id", async (req, res) => {
+	router.put("/:id", permissionMiddleware.requirePermission("sites.edit"), async (req, res) => {
 		try {
 			const docsiteDao = docsiteDaoProvider.getDao(getTenantContext());
 			const id = Number.parseInt(req.params.id, 10);
@@ -142,7 +144,7 @@ export function createDocsiteRouter(
 	});
 
 	// Delete docsite
-	router.delete("/:id", async (req, res) => {
+	router.delete("/:id", permissionMiddleware.requirePermission("sites.edit"), async (req, res) => {
 		try {
 			const docsiteDao = docsiteDaoProvider.getDao(getTenantContext());
 			const id = Number.parseInt(req.params.id, 10);
@@ -177,7 +179,7 @@ export function createDocsiteRouter(
 	// Generate docsite from repositories (enables repos and generates docsite atomically)
 	/* c8 ignore start */
 	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This endpoint handles multiple sequential operations atomically
-	router.post("/generate-from-repos", async (req, res) => {
+	router.post("/generate-from-repos", permissionMiddleware.requirePermission("sites.edit"), async (req, res) => {
 		const docsiteDao = docsiteDaoProvider.getDao(getTenantContext());
 		const integrationDao = integrationDaoProvider.getDao(getTenantContext());
 		const { repositories, name, displayName, visibility } = req.body;
@@ -409,7 +411,7 @@ export function createDocsiteRouter(
 	/* c8 ignore stop */
 
 	// Generate docsite from one or more integrations
-	router.post("/generate", async (req, res) => {
+	router.post("/generate", permissionMiddleware.requirePermission("sites.edit"), async (req, res) => {
 		const docsiteDao = docsiteDaoProvider.getDao(getTenantContext());
 		const integrationDao = integrationDaoProvider.getDao(getTenantContext());
 		const { integrationIds, name, displayName, visibility } = req.body;

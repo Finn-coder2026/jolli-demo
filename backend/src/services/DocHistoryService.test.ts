@@ -138,6 +138,14 @@ describe("DocHistoryService", () => {
 			expect(result[1]).toBe(0x8b);
 		});
 
+		it("should throw and log error when serialization fails", () => {
+			const doc = mockDoc({ id: 99, content: "test" });
+			// Create a circular reference so JSON.stringify throws
+			(doc as unknown as Record<string, unknown>).self = doc;
+
+			expect(() => service.compressDocSnapshot(doc)).toThrow();
+		});
+
 		it("should produce a smaller buffer for large content", () => {
 			const largeContent = "x".repeat(10000);
 			const doc = mockDoc({ id: 1, content: largeContent });

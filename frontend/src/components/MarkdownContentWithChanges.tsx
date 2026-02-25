@@ -59,6 +59,7 @@ function findSectionEndElement(mainContent: Element, sectionTitle: string | null
 		const el = children[i];
 		const tagMatch = el.tagName.match(/^H([1-6])$/i);
 		if (tagMatch) {
+			/* v8 ignore next - textContent fallback is defensive */
 			const text = el.textContent?.trim() || "";
 			if (text === sectionTitle) {
 				headingIndex = i;

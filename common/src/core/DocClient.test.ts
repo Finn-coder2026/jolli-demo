@@ -42,6 +42,7 @@ describe("DocClient", () => {
 		expect(client.deleteDoc).toBeDefined();
 		expect(client.clearAll).toBeDefined();
 		expect(client.search).toBeDefined();
+		expect(client.reorderDoc).toBeDefined();
 	});
 
 	describe("createDoc", () => {
@@ -806,6 +807,421 @@ describe("DocClient", () => {
 		});
 	});
 
+	describe("reorderDoc", () => {
+		it("should reorder a document up", async () => {
+			const mockDoc = {
+				id: 1,
+				jrn: "doc:test",
+				sortOrder: 0,
+			};
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => mockDoc,
+			});
+			global.fetch = mockFetch;
+
+			const client = createDocClient("", createMockAuth());
+			const result = await client.reorderDoc(1, "up");
+
+			expect(mockFetch).toHaveBeenCalledWith("/api/docs/by-id/1/reorder", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ direction: "up" }),
+				credentials: "include",
+			});
+			expect(result).toEqual(mockDoc);
+		});
+
+		it("should reorder a document down", async () => {
+			const mockDoc = {
+				id: 1,
+				jrn: "doc:test",
+				sortOrder: 2,
+			};
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => mockDoc,
+			});
+			global.fetch = mockFetch;
+
+			const client = createDocClient("", createMockAuth());
+			const result = await client.reorderDoc(1, "down");
+
+			expect(mockFetch).toHaveBeenCalledWith("/api/docs/by-id/1/reorder", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ direction: "down" }),
+				credentials: "include",
+			});
+			expect(result).toEqual(mockDoc);
+		});
+
+		it("should return undefined when document is at boundary", async () => {
+			global.fetch = vi.fn().mockResolvedValue({
+				ok: false,
+				status: 400,
+				statusText: "Bad Request",
+			});
+
+			const client = createDocClient("", createMockAuth());
+			const result = await client.reorderDoc(1, "up");
+
+			expect(result).toBeUndefined();
+		});
+
+		it("should throw error when reorder fails with non-400 error", async () => {
+			global.fetch = vi.fn().mockResolvedValue({
+				ok: false,
+				status: 500,
+				statusText: "Internal Server Error",
+			});
+
+			const client = createDocClient("", createMockAuth());
+
+			await expect(client.reorderDoc(1, "up")).rejects.toThrow(
+				"Failed to reorder document: Internal Server Error",
+			);
+		});
+
+		it("should call checkUnauthorized", async () => {
+			const checkUnauthorized = vi.fn();
+			const mockDoc = { id: 1, jrn: "doc:test", sortOrder: 0 };
+			global.fetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => mockDoc,
+			});
+
+			const client = createDocClient("", createMockAuth(checkUnauthorized));
+			await client.reorderDoc(1, "up");
+
+			expect(checkUnauthorized).toHaveBeenCalled();
+		});
+	});
+
+	describe("moveDoc", () => {
+		it("should move a document to another folder", async () => {
+			const mockDoc = {
+				id: 1,
+				jrn: "doc:test",
+				parentId: 2,
+				path: "/folder-b/doc",
+			};
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => mockDoc,
+			});
+			global.fetch = mockFetch;
+
+			const client = createDocClient("", createMockAuth());
+			const result = await client.moveDoc(1, 2);
+
+			expect(mockFetch).toHaveBeenCalledWith("/api/docs/by-id/1/move", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ parentId: 2 }),
+				credentials: "include",
+			});
+			expect(result).toEqual(mockDoc);
+		});
+
+		it("should move a document to root level (parentId null)", async () => {
+			const mockDoc = {
+				id: 1,
+				jrn: "doc:test",
+				parentId: undefined,
+				path: "/doc",
+			};
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => mockDoc,
+			});
+			global.fetch = mockFetch;
+
+			const client = createDocClient("", createMockAuth());
+			const result = await client.moveDoc(1, null);
+
+			expect(mockFetch).toHaveBeenCalledWith("/api/docs/by-id/1/move", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ parentId: null }),
+				credentials: "include",
+			});
+			expect(result).toEqual(mockDoc);
+		});
+
+		it("should move a document with referenceDocId and position for positioning", async () => {
+			const mockDoc = {
+				id: 1,
+				jrn: "doc:test",
+				parentId: 2,
+				path: "/folder-b/doc",
+			};
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => mockDoc,
+			});
+			global.fetch = mockFetch;
+
+			const client = createDocClient("", createMockAuth());
+			const result = await client.moveDoc(1, 2, 3, "after");
+
+			expect(mockFetch).toHaveBeenCalledWith("/api/docs/by-id/1/move", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ parentId: 2, referenceDocId: 3, position: "after" }),
+				credentials: "include",
+			});
+			expect(result).toEqual(mockDoc);
+		});
+
+		it("should move a document with referenceDocId null (end of folder)", async () => {
+			const mockDoc = {
+				id: 1,
+				jrn: "doc:test",
+				parentId: 2,
+				path: "/folder-b/doc",
+			};
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => mockDoc,
+			});
+			global.fetch = mockFetch;
+
+			const client = createDocClient("", createMockAuth());
+			const result = await client.moveDoc(1, 2, null);
+
+			expect(mockFetch).toHaveBeenCalledWith("/api/docs/by-id/1/move", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ parentId: 2, referenceDocId: null }),
+				credentials: "include",
+			});
+			expect(result).toEqual(mockDoc);
+		});
+
+		it("should throw error with message from server on validation failure", async () => {
+			global.fetch = vi.fn().mockResolvedValue({
+				ok: false,
+				status: 400,
+				statusText: "Bad Request",
+				json: async () => ({ error: "Cannot move folder to its descendant" }),
+			});
+
+			const client = createDocClient("", createMockAuth());
+
+			await expect(client.moveDoc(1, 2)).rejects.toThrow("Cannot move folder to its descendant");
+		});
+
+		it("should throw generic error when no error message in response", async () => {
+			global.fetch = vi.fn().mockResolvedValue({
+				ok: false,
+				status: 500,
+				statusText: "Internal Server Error",
+				json: async () => ({}),
+			});
+
+			const client = createDocClient("", createMockAuth());
+
+			await expect(client.moveDoc(1, 2)).rejects.toThrow("Failed to move document: Internal Server Error");
+		});
+
+		it("should call checkUnauthorized", async () => {
+			const checkUnauthorized = vi.fn();
+			const mockDoc = { id: 1, jrn: "doc:test", parentId: 2 };
+			global.fetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => mockDoc,
+			});
+
+			const client = createDocClient("", createMockAuth(checkUnauthorized));
+			await client.moveDoc(1, 2);
+
+			expect(checkUnauthorized).toHaveBeenCalled();
+		});
+	});
+
+	describe("reorderAt", () => {
+		it("should reorder document after another document", async () => {
+			const mockDoc = {
+				id: 1,
+				jrn: "doc:test",
+				sortOrder: 1.5,
+			};
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => mockDoc,
+			});
+			global.fetch = mockFetch;
+
+			const client = createDocClient("", createMockAuth());
+			const result = await client.reorderAt(1, 2, "after");
+
+			expect(mockFetch).toHaveBeenCalledWith("/api/docs/by-id/1/reorder-at", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ referenceDocId: 2, position: "after" }),
+				credentials: "include",
+			});
+			expect(result).toEqual(mockDoc);
+		});
+
+		it("should reorder document before another document", async () => {
+			const mockDoc = {
+				id: 1,
+				jrn: "doc:test",
+				sortOrder: 0.5,
+			};
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => mockDoc,
+			});
+			global.fetch = mockFetch;
+
+			const client = createDocClient("", createMockAuth());
+			const result = await client.reorderAt(1, 2, "before");
+
+			expect(mockFetch).toHaveBeenCalledWith("/api/docs/by-id/1/reorder-at", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ referenceDocId: 2, position: "before" }),
+				credentials: "include",
+			});
+			expect(result).toEqual(mockDoc);
+		});
+
+		it("should move to end of folder (referenceDocId null)", async () => {
+			const mockDoc = {
+				id: 1,
+				jrn: "doc:test",
+				sortOrder: 10,
+			};
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => mockDoc,
+			});
+			global.fetch = mockFetch;
+
+			const client = createDocClient("", createMockAuth());
+			const result = await client.reorderAt(1, null, "after");
+
+			expect(mockFetch).toHaveBeenCalledWith("/api/docs/by-id/1/reorder-at", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ referenceDocId: null, position: "after" }),
+				credentials: "include",
+			});
+			expect(result).toEqual(mockDoc);
+		});
+
+		it("should throw error when document not found (400 response)", async () => {
+			global.fetch = vi.fn().mockResolvedValue({
+				ok: false,
+				status: 400,
+				statusText: "Bad Request",
+				json: async () => ({ error: "Document not found" }),
+			});
+
+			const client = createDocClient("", createMockAuth());
+
+			await expect(client.reorderAt(999, 2, "after")).rejects.toThrow("Document not found");
+		});
+
+		it("should throw generic error when 400 response has no error message", async () => {
+			global.fetch = vi.fn().mockResolvedValue({
+				ok: false,
+				status: 400,
+				statusText: "Bad Request",
+				json: async () => ({}),
+			});
+
+			const client = createDocClient("", createMockAuth());
+
+			await expect(client.reorderAt(999, 2, "after")).rejects.toThrow("Failed to reorder document: Bad Request");
+		});
+
+		it("should throw error with message from server on other failures", async () => {
+			global.fetch = vi.fn().mockResolvedValue({
+				ok: false,
+				status: 500,
+				statusText: "Internal Server Error",
+				json: async () => ({ error: "Database error" }),
+			});
+
+			const client = createDocClient("", createMockAuth());
+
+			await expect(client.reorderAt(1, 2, "after")).rejects.toThrow("Database error");
+		});
+
+		it("should throw generic error when no error message in response", async () => {
+			global.fetch = vi.fn().mockResolvedValue({
+				ok: false,
+				status: 500,
+				statusText: "Internal Server Error",
+				json: async () => ({}),
+			});
+
+			const client = createDocClient("", createMockAuth());
+
+			await expect(client.reorderAt(1, 2, "after")).rejects.toThrow(
+				"Failed to reorder document: Internal Server Error",
+			);
+		});
+
+		it("should call checkUnauthorized", async () => {
+			const checkUnauthorized = vi.fn();
+			const mockDoc = { id: 1, jrn: "doc:test", sortOrder: 1.5 };
+			global.fetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => mockDoc,
+			});
+
+			const client = createDocClient("", createMockAuth(checkUnauthorized));
+			await client.reorderAt(1, 2, "after");
+
+			expect(checkUnauthorized).toHaveBeenCalled();
+		});
+
+		it("should send empty body when no parameters provided", async () => {
+			const mockDoc = { id: 1, jrn: "doc:test", sortOrder: 10 };
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => mockDoc,
+			});
+			global.fetch = mockFetch;
+
+			const client = createDocClient("", createMockAuth());
+			const result = await client.reorderAt(1);
+
+			expect(mockFetch).toHaveBeenCalledWith("/api/docs/by-id/1/reorder-at", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({}),
+				credentials: "include",
+			});
+			expect(result).toEqual(mockDoc);
+		});
+
+		it("should only send referenceDocId when position not provided", async () => {
+			const mockDoc = { id: 1, jrn: "doc:test", sortOrder: 1.5 };
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => mockDoc,
+			});
+			global.fetch = mockFetch;
+
+			const client = createDocClient("", createMockAuth());
+			const result = await client.reorderAt(1, 2);
+
+			expect(mockFetch).toHaveBeenCalledWith("/api/docs/by-id/1/reorder-at", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ referenceDocId: 2 }),
+				credentials: "include",
+			});
+			expect(result).toEqual(mockDoc);
+		});
+	});
+
 	describe("clearAll", () => {
 		it("should clear all documents", async () => {
 			const mockFetch = vi.fn().mockResolvedValue({
@@ -993,6 +1409,83 @@ describe("DocClient", () => {
 		});
 	});
 
+	describe("searchArticlesForLink", () => {
+		it("should search articles for link with title only", async () => {
+			const mockResults = [
+				{
+					id: 1,
+					jrn: "article:my-test-article-123",
+					slug: "my-test-article-123",
+					path: "",
+					updatedAt: "2024-01-01T00:00:00Z",
+					contentMetadata: undefined,
+					parentFolderName: "Folder A",
+				},
+			];
+
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => mockResults,
+			});
+			global.fetch = mockFetch;
+
+			const client = createDocClient("", createMockAuth());
+			const result = await client.searchArticlesForLink("test");
+
+			expect(mockFetch).toHaveBeenCalledWith("/api/docs/search-articles-for-link", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				credentials: "include",
+				body: JSON.stringify({ title: "test" }),
+			});
+			expect(result).toEqual(mockResults);
+		});
+
+		it("should search articles for link with title and spaceId", async () => {
+			const mockResults = [
+				{
+					id: 2,
+					jrn: "article:my-test-article-456",
+					slug: "my-test-article-456",
+					path: "",
+					updatedAt: "2024-01-02T00:00:00Z",
+					contentMetadata: undefined,
+					parentFolderName: null,
+				},
+			];
+
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => mockResults,
+			});
+			global.fetch = mockFetch;
+
+			const client = createDocClient("", createMockAuth());
+			const result = await client.searchArticlesForLink("test", 42);
+
+			expect(mockFetch).toHaveBeenCalledWith("/api/docs/search-articles-for-link", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				credentials: "include",
+				body: JSON.stringify({ title: "test", spaceId: 42 }),
+			});
+			expect(result).toEqual(mockResults);
+		});
+
+		it("should throw error when searchArticlesForLink fails", async () => {
+			global.fetch = vi.fn().mockResolvedValue({
+				ok: false,
+				statusText: "Internal Server Error",
+			});
+
+			const client = createDocClient("", createMockAuth());
+
+			await expect(client.searchArticlesForLink("test")).rejects.toThrow(
+				"Failed to search articles for link: Internal Server Error",
+			);
+		});
+	});
+
 	describe("createDraftFromArticle", () => {
 		it("should create a draft from an article", async () => {
 			const mockDraft = {
@@ -1123,6 +1616,11 @@ describe("DocClient", () => {
 			checkUnauthorized.mockClear();
 			global.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => [] });
 			await client.searchByTitle("test");
+			expect(checkUnauthorized).toHaveBeenCalled();
+
+			checkUnauthorized.mockClear();
+			global.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => [] });
+			await client.searchArticlesForLink("test");
 			expect(checkUnauthorized).toHaveBeenCalled();
 
 			checkUnauthorized.mockClear();

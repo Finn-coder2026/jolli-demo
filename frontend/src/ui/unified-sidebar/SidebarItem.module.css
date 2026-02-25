@@ -1,0 +1,20 @@
+/* Sidebar item hover and selected styles using sidebar-specific CSS variables */
+
+.item {
+	transition:
+		background-color 150ms,
+		color 150ms;
+}
+
+.item:hover {
+	background-color: var(--sidebar-hover-bg);
+}
+
+.selected {
+	background-color: var(--sidebar-selected-bg);
+	color: var(--sidebar-selected-text);
+}
+
+.selected:hover {
+	background-color: var(--sidebar-selected-bg);
+}

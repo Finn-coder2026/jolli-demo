@@ -16,7 +16,7 @@ describe("Client", () => {
 		}
 	});
 
-	it("should create a client with visit, status, and sync methods", () => {
+	it("should create a client with visit, status, sync, and syncChangesets methods", () => {
 		const client = createClient();
 
 		expect(client).toBeDefined();
@@ -26,6 +26,8 @@ describe("Client", () => {
 		expect(typeof client.status).toBe("function");
 		expect(client.sync).toBeDefined();
 		expect(typeof client.sync).toBe("function");
+		expect(client.syncChangesets).toBeDefined();
+		expect(typeof client.syncChangesets).toBe("function");
 	});
 
 	it("should call fetch with correct URL and method on visit", async () => {
@@ -123,7 +125,7 @@ describe("Client", () => {
 		global.fetch = mockFetch;
 
 		const client = createClient();
-		const userInfo = await client.login();
+		const loginResponse = await client.login();
 
 		expect(mockFetch).toHaveBeenCalledWith("/api/auth/login", {
 			method: "GET",
@@ -131,10 +133,12 @@ describe("Client", () => {
 			body: null,
 			credentials: "include",
 		});
-		expect(userInfo).toEqual({
-			email: "test@example.com",
-			name: "Test User",
-			userId: "123",
+		expect(loginResponse).toEqual({
+			user: {
+				email: "test@example.com",
+				name: "Test User",
+				userId: "123",
+			},
 		});
 	});
 
@@ -156,16 +160,16 @@ describe("Client", () => {
 		});
 	});
 
-	it("should return undefined when login fails", async () => {
+	it("should return empty response when login fails", async () => {
 		global.fetch = vi.fn().mockResolvedValue({
 			ok: false,
 			status: 401,
 		});
 
 		const client = createClient();
-		const userInfo = await client.login();
+		const loginResponse = await client.login();
 
-		expect(userInfo).toBeUndefined();
+		expect(loginResponse).toEqual({ user: undefined });
 	});
 
 	it("should include credentials in all requests", async () => {
@@ -281,28 +285,6 @@ describe("Client", () => {
 		await expect(client.sync("https://github.com/owner/repo")).rejects.toThrow("Failed to sync: Not authorized");
 	});
 
-	it("should return a ChatClient instance from chat() method", () => {
-		const client = createClient();
-		const chatClient = client.chat();
-
-		expect(chatClient).toBeDefined();
-		expect(chatClient.stream).toBeDefined();
-		expect(typeof chatClient.stream).toBe("function");
-	});
-
-	it("should return a ConvoClient instance from convos() method", () => {
-		const client = createClient();
-		const convoClient = client.convos();
-
-		expect(convoClient).toBeDefined();
-		expect(convoClient.createConvo).toBeDefined();
-		expect(convoClient.listConvos).toBeDefined();
-		expect(convoClient.findConvo).toBeDefined();
-		expect(convoClient.updateConvo).toBeDefined();
-		expect(convoClient.deleteConvo).toBeDefined();
-		expect(convoClient.addMessage).toBeDefined();
-	});
-
 	it("should return a DocClient instance from docs() method", () => {
 		const client = createClient();
 		const docClient = client.docs();
@@ -347,6 +329,104 @@ describe("Client", () => {
 			},
 			body: null,
 			credentials: "include",
+		});
+	});
+
+	describe("X-Tenant-Slug header for path-based multi-tenant", () => {
+		// Mock sessionStorage for Node.js environment
+		const mockStorage: Record<string, string> = {};
+		const mockSessionStorage = {
+			getItem: (key: string) => mockStorage[key] ?? null,
+			setItem: (key: string, value: string) => {
+				mockStorage[key] = value;
+			},
+			clear: () => {
+				for (const key of Object.keys(mockStorage)) {
+					delete mockStorage[key];
+				}
+			},
+			removeItem: (key: string) => {
+				delete mockStorage[key];
+			},
+			key: (_index: number) => null,
+			length: 0,
+		};
+
+		beforeEach(() => {
+			Object.defineProperty(globalThis, "sessionStorage", {
+				value: mockSessionStorage,
+				writable: true,
+				configurable: true,
+			});
+			mockSessionStorage.clear();
+		});
+
+		afterEach(() => {
+			mockSessionStorage.clear();
+		});
+
+		it("should include X-Tenant-Slug header when tenantSlug is in sessionStorage", async () => {
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => void 0,
+			});
+			global.fetch = mockFetch;
+
+			mockSessionStorage.setItem("tenantSlug", "flyer6");
+
+			const client = createClient();
+			await client.visit();
+
+			expect(mockFetch).toHaveBeenCalledWith("/api/visit/create", {
+				method: "POST",
+				headers: {
+					"X-Tenant-Slug": "flyer6",
+				},
+				body: null,
+				credentials: "include",
+			});
+		});
+
+		it("should not include X-Tenant-Slug header when tenantSlug is not set", async () => {
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => void 0,
+			});
+			global.fetch = mockFetch;
+
+			const client = createClient();
+			await client.visit();
+
+			expect(mockFetch).toHaveBeenCalledWith("/api/visit/create", {
+				method: "POST",
+				headers: {},
+				body: null,
+				credentials: "include",
+			});
+		});
+
+		it("should include both X-Tenant-Slug and X-Org-Slug when both are set", async () => {
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => void 0,
+			});
+			global.fetch = mockFetch;
+
+			mockSessionStorage.setItem("tenantSlug", "flyer6");
+			mockSessionStorage.setItem("selectedOrgSlug", "engineering");
+
+			const client = createClient();
+			await client.visit();
+
+			expect(mockFetch).toHaveBeenCalledWith("/api/visit/create", {
+				method: "POST",
+				headers: {
+					"X-Tenant-Slug": "flyer6",
+					"X-Org-Slug": "engineering",
+				},
+				body: null,
+				credentials: "include",
+			});
 		});
 	});
 
@@ -413,6 +493,31 @@ describe("Client", () => {
 				json: async () => void 0,
 			});
 			global.fetch = mockFetch;
+
+			const client = createClient();
+			await client.visit();
+
+			expect(mockFetch).toHaveBeenCalledWith("/api/visit/create", {
+				method: "POST",
+				headers: {},
+				body: null,
+				credentials: "include",
+			});
+		});
+
+		it("should not include X-Org-Slug header when sessionStorage is unavailable", async () => {
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => void 0,
+			});
+			global.fetch = mockFetch;
+
+			// Simulate non-browser/runtime contexts where sessionStorage does not exist.
+			Object.defineProperty(globalThis, "sessionStorage", {
+				value: undefined,
+				writable: true,
+				configurable: true,
+			});
 
 			const client = createClient();
 			await client.visit();
@@ -563,7 +668,7 @@ describe("Client", () => {
 			const client = createClient("", undefined, { onUnauthorized });
 			const result = await client.login();
 
-			expect(result).toBeUndefined();
+			expect(result).toEqual({ user: undefined });
 			// Login should NOT trigger onUnauthorized because 401 is expected when not logged in
 			expect(onUnauthorized).not.toHaveBeenCalled();
 		});

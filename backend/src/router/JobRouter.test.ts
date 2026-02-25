@@ -1,8 +1,9 @@
 import type { DaoProvider } from "../dao/DaoProvider";
 import type { JobDao } from "../dao/JobDao.js";
 import type { JobScheduler } from "../jobs/JobScheduler.js";
+import type { AuthenticatedRequest, PermissionMiddlewareFactory } from "../middleware/PermissionMiddleware";
 import { createJobRouter } from "./JobRouter.js";
-import express, { type Express } from "express";
+import express, { type Express, type NextFunction, type Response } from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -14,6 +15,7 @@ describe("JobRouter", () => {
 	let app: Express;
 	let mockScheduler: JobScheduler;
 	let mockJobDao: JobDao;
+	let mockPermissionMiddleware: PermissionMiddlewareFactory;
 
 	beforeEach(() => {
 		// Create a simple event emitter mock that actually stores and calls listeners
@@ -129,9 +131,30 @@ describe("JobRouter", () => {
 			decodePayload: vi.fn().mockReturnValue({ userId: 1 }),
 		};
 
+		mockPermissionMiddleware = {
+			requireAuth: vi.fn(() => (req: AuthenticatedRequest, _res: Response, next: NextFunction) => {
+				req.user = { userId: 1, email: "test@example.com", name: "Test User", picture: undefined };
+				next();
+			}),
+			requirePermission: vi.fn(() => (_req: AuthenticatedRequest, _res: Response, next: NextFunction) => next()),
+			requireAllPermissions: vi.fn(
+				() => (_req: AuthenticatedRequest, _res: Response, next: NextFunction) => next(),
+			),
+			requireRole: vi.fn(() => (_req: AuthenticatedRequest, _res: Response, next: NextFunction) => next()),
+			loadPermissions: vi.fn(() => (_req: AuthenticatedRequest, _res: Response, next: NextFunction) => next()),
+		};
+
 		app = express();
 		app.use(express.json());
-		app.use("/api/jobs", createJobRouter(mockScheduler, mockDaoProvider(mockJobDao), mockTokenUtil as never));
+		app.use(
+			"/api/jobs",
+			createJobRouter(
+				mockScheduler,
+				mockDaoProvider(mockJobDao),
+				mockTokenUtil as never,
+				mockPermissionMiddleware,
+			),
+		);
 	});
 
 	afterEach(() => {

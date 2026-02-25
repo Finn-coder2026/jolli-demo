@@ -29,6 +29,7 @@ vi.mock("../config/Config", () => ({
 		e2bApiKey: "test-e2b-api-key",
 		e2bTemplateId: "test-e2b-template-id",
 		anthropicApiKey: "test-anthropic-api-key",
+		syncServerUrl: "https://public.jolli.test/api",
 		debug: true,
 	})),
 	getConfig: vi.fn(() => ({
@@ -55,30 +56,6 @@ vi.mock("../../../tools/jolliagent/src/direct/agentenv", () => ({
 // Mock IntegrationUtil
 vi.mock("../util/IntegrationUtil", () => ({
 	getAccessTokenForGithubRepoIntegration: vi.fn(),
-}));
-
-// Mock executeGetLatestLinearTicketsTool
-vi.mock("../adapters/tools/GetLatestLinearTicketsTool", () => ({
-	executeGetLatestLinearTicketsTool: vi.fn(),
-	createGetLatestLinearTicketsToolDefinition: vi.fn(() => ({
-		name: "get_latest_linear_tickets",
-		description: "Get latest linear tickets",
-	})),
-}));
-
-// Mock article editing tool definitions
-vi.mock("../adapters/tools/CreateArticleTool", () => ({
-	executeCreateArticleTool: vi.fn(async (draftId, _userId, args, docDraftDao) => {
-		const draft = await docDraftDao.getDocDraft(draftId);
-		if (draft) {
-			await docDraftDao.updateDocDraft(draftId, { content: args.content });
-		}
-		return "Article created successfully";
-	}),
-	createCreateArticleToolDefinition: vi.fn(() => ({
-		name: "create_article",
-		description: "Create article",
-	})),
 }));
 
 vi.mock("../adapters/tools/CreateSectionTool", () => ({
@@ -156,6 +133,68 @@ vi.mock("../adapters/tools/EditSectionTool", () => ({
 	createEditSectionToolDefinition: vi.fn(() => ({
 		name: "edit_section",
 		description: "Edit section",
+	})),
+}));
+
+vi.mock("../adapters/tools/EditArticleTool", () => ({
+	executeEditArticleTool: vi.fn(async (draftId, args, docDraftDao) => {
+		const draft = await docDraftDao.getDocDraft(draftId);
+		if (!draft) {
+			return `Draft ${draftId} not found`;
+		}
+		let content = draft.content;
+		for (const edit of args.edits ?? []) {
+			if (typeof edit.old_string === "string" && typeof edit.new_string === "string") {
+				content = content.replace(edit.old_string, edit.new_string);
+			}
+		}
+		await docDraftDao.updateDocDraft(draftId, { content });
+		return "Applied targeted edits";
+	}),
+	createEditArticleToolDefinition: vi.fn(() => ({
+		name: "edit_article",
+		description: "Edit article",
+	})),
+}));
+
+vi.mock("../adapters/tools/UpsertFrontmatterTool", () => ({
+	executeUpsertFrontmatterTool: vi.fn(async (draftId, args, docDraftDao) => {
+		const draft = await docDraftDao.getDocDraft(draftId);
+		if (!draft) {
+			return `Draft ${draftId} not found`;
+		}
+		const match = draft.content.match(/^---\n([\s\S]*?)\n---\n?/);
+		let body = draft.content;
+		const fm: Record<string, unknown> = {};
+		if (match) {
+			body = draft.content.slice(match[0].length);
+			for (const line of match[1].split("\n")) {
+				const idx = line.indexOf(":");
+				if (idx > 0) {
+					const key = line.slice(0, idx).trim();
+					const value = line.slice(idx + 1).trim();
+					fm[key] = value;
+				}
+			}
+		}
+		if (Array.isArray(args.remove)) {
+			for (const key of args.remove) {
+				delete fm[key];
+			}
+		}
+		if (args.set && typeof args.set === "object") {
+			for (const [k, v] of Object.entries(args.set)) {
+				fm[k] = v;
+			}
+		}
+		const fmLines = Object.entries(fm).map(([k, v]) => `${k}: ${String(v)}`);
+		const nextContent = fmLines.length > 0 ? `---\n${fmLines.join("\n")}\n---\n${body}` : body;
+		await docDraftDao.updateDocDraft(draftId, { content: nextContent });
+		return "Frontmatter updated successfully.";
+	}),
+	createUpsertFrontmatterToolDefinition: vi.fn(() => ({
+		name: "upsert_frontmatter",
+		description: "Upsert frontmatter",
 	})),
 }));
 
@@ -326,6 +365,7 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: draft.id,
 				messages: [],
+				metadata: null,
 			});
 
 			const response = await request(app).post("/api/collab-convos").send({
@@ -498,6 +538,7 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: draft.id,
 				messages: [],
+				metadata: null,
 			});
 
 			const response = await request(app).get(`/api/collab-convos/${convo.id}`);
@@ -545,6 +586,7 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: draft.id,
 				messages: [],
+				metadata: null,
 			});
 
 			const response = await request(app).get(`/api/collab-convos/${convo.id}`);
@@ -567,6 +609,7 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: draft.id,
 				messages: [],
+				metadata: null,
 			});
 
 			const response = await request(app).get(`/api/collab-convos/${convo.id}`);
@@ -609,6 +652,7 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: draft.id,
 				messages: [],
+				metadata: null,
 			});
 
 			const response = await request(app).get(`/api/collab-convos/artifact/doc_draft/${draft.id}`);
@@ -708,15 +752,18 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: draft.id,
 				messages: [],
+				metadata: null,
 			});
 
 			const response = await request(app).post(`/api/collab-convos/${convo.id}/messages`).send({
 				message: "Hello, AI!",
 			});
 
-			expect(response.status).toBe(202);
-			expect(response.body.success).toBe(true);
-			expect(response.body.message).toBe("Processing");
+			expect(response.status).toBe(200);
+			// SSE response has text/event-stream content type
+			expect(response.headers["content-type"]).toContain("text/event-stream");
+			// The SSE response body contains message_received event
+			expect(response.text).toContain("message_received");
 		});
 
 		it("should return 401 for unauthenticated user", async () => {
@@ -754,6 +801,7 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: draft.id,
 				messages: [],
+				metadata: null,
 			});
 
 			const response = await request(app).post(`/api/collab-convos/${convo.id}/messages`).send({});
@@ -785,6 +833,7 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: draft.id,
 				messages: [],
+				metadata: null,
 			});
 
 			// Make addMessage throw a non-validation error
@@ -812,6 +861,7 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: draft.id,
 				messages: [],
+				metadata: null,
 			});
 
 			// Send empty string which will fail validation
@@ -830,6 +880,7 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: 999,
 				messages: [],
+				metadata: null,
 			});
 
 			const response = await request(app).post(`/api/collab-convos/${convo.id}/messages`).send({
@@ -853,6 +904,7 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: draft.id,
 				messages: [],
+				metadata: null,
 			});
 
 			const response = await request(app).post(`/api/collab-convos/${convo.id}/messages`).send({
@@ -870,6 +922,7 @@ describe("CollabConvoRouter", () => {
 				artifactType: "unsupported" as "doc_draft",
 				artifactId: 1,
 				messages: [],
+				metadata: null,
 			});
 
 			const response = await request(app).post(`/api/collab-convos/${convo.id}/messages`).send({
@@ -894,6 +947,7 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: draft.id,
 				messages: [],
+				metadata: null,
 			});
 
 			// Create a mock agent adapter that throws during streaming
@@ -920,15 +974,14 @@ describe("CollabConvoRouter", () => {
 				message: "Hello",
 			});
 
-			// POST returns 202 immediately, streaming error handled async
-			expect(response.status).toBe(202);
-			expect(response.body.success).toBe(true);
-			expect(response.body.message).toBe("Processing");
-
-			// Note: "Failed to generate response" error would be broadcast via SSE
+			// POST returns 200 with SSE streaming - error is sent via SSE
+			expect(response.status).toBe(200);
+			expect(response.headers["content-type"]).toContain("text/event-stream");
+			// Error is broadcast in the SSE response
+			expect(response.text).toContain("error");
 		});
 
-		// Note: Article update tests removed - article updates now handled by tools (create_article, edit_section)
+		// Note: Article update tests removed - article updates now handled by tools (edit_section/edit_article)
 		// instead of [ARTICLE_UPDATE] markers
 
 		it("should handle existing conversation messages", async () => {
@@ -958,6 +1011,7 @@ describe("CollabConvoRouter", () => {
 						timestamp: new Date().toISOString(),
 					},
 				],
+				metadata: null,
 			});
 
 			// Router already uses mockAgentAdapter
@@ -979,8 +1033,8 @@ describe("CollabConvoRouter", () => {
 				message: "New message",
 			});
 
-			expect(response.status).toBe(202);
-			expect(response.body.success).toBe(true);
+			expect(response.status).toBe(200);
+			expect(response.headers["content-type"]).toContain("text/event-stream");
 		});
 
 		it("should return 404 when draft is not found during message processing", async () => {
@@ -997,6 +1051,7 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: draft.id,
 				messages: [],
+				metadata: null,
 			});
 
 			// Mock getDocDraft to return the draft for authorization but undefined for processing
@@ -1030,12 +1085,11 @@ describe("CollabConvoRouter", () => {
 				message: "Hello",
 			});
 
-			// POST returns 202 immediately, error handling happens async
-			expect(response.status).toBe(202);
-			expect(response.body.success).toBe(true);
-			expect(response.body.message).toBe("Processing");
-
-			// Note: "Draft not found" error would be broadcast via SSE in real scenario
+			// POST returns 200 with SSE streaming, error is sent via SSE
+			expect(response.status).toBe(200);
+			expect(response.headers["content-type"]).toContain("text/event-stream");
+			// Draft not found error is broadcast in the SSE response
+			expect(response.text).toContain("Draft not found");
 		});
 	});
 
@@ -1070,6 +1124,7 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: draft.id,
 				messages: [],
+				metadata: null,
 			});
 
 			const response = await request(app).get(`/api/collab-convos/${convo.id}/stream`);
@@ -1092,6 +1147,7 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: draft.id,
 				messages: [],
+				metadata: null,
 			});
 
 			// Start the stream request but don't wait for it (streaming connections don't complete)
@@ -1127,6 +1183,7 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: draft.id,
 				messages: [],
+				metadata: null,
 			});
 
 			// Start the stream request but don't wait for it
@@ -1154,6 +1211,7 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: draft.id,
 				messages: [],
+				metadata: null,
 			});
 
 			// Mock the ChatService to track calls
@@ -1205,6 +1263,7 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: draft.id,
 				messages: [],
+				metadata: null,
 			});
 
 			// Make getDocDraft throw an error after the convo is found
@@ -1225,13 +1284,13 @@ describe("CollabConvoRouter", () => {
 	});
 
 	describe("Tool execution in POST /messages", () => {
-		it("executes create_article tool and broadcasts update", async () => {
+		it("executes edit_article tool and broadcasts update", async () => {
 			vi.mocked(mockTokenUtil.decodePayload).mockReturnValue(mockUserInfo);
 
 			// Create draft
 			const draft = await mockDraftDao.createDocDraft({
 				title: "Test Draft",
-				content: "",
+				content: "# Old Title\n\nOld content.",
 				createdBy: 1,
 				docId: undefined,
 			});
@@ -1241,14 +1300,28 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: draft.id,
 				messages: [],
+				metadata: null,
 			});
 
 			// Mock createArticleEditingAgent to return a factory with an agent
 			// that will call runTool when chatTurn is called
 			const toolAdapter = createToolRunnerAdapter(
 				{
-					name: "create_article",
-					arguments: { content: "# New Article\n\nThis is new content." },
+					name: "edit_article",
+					arguments: {
+						edits: [
+							{
+								old_string: "# Old Title",
+								new_string: "# New Article",
+								reason: "Requested rewrite",
+							},
+							{
+								old_string: "Old content.",
+								new_string: "This is new content.",
+								reason: "Requested rewrite",
+							},
+						],
+					},
 				},
 				{ assistantText: "I created the article for you." },
 			);
@@ -1272,11 +1345,12 @@ describe("CollabConvoRouter", () => {
 				.post(`/api/collab-convos/${convo.id}/messages`)
 				.send({ message: "Create an article" });
 
-			expect(response.status).toBe(202);
+			expect(response.status).toBe(200);
 
 			// Verify draft was updated
 			const updatedDraft = await mockDraftDao.getDocDraft(draft.id);
 			expect(updatedDraft?.content).toContain("New Article");
+			expect(updatedDraft?.content).toContain("This is new content.");
 		});
 
 		it("executes create_section tool and broadcasts update", async () => {
@@ -1293,6 +1367,7 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: draft.id,
 				messages: [],
+				metadata: null,
 			});
 
 			const toolAdapter = createToolRunnerAdapter(
@@ -1325,7 +1400,7 @@ describe("CollabConvoRouter", () => {
 				.post(`/api/collab-convos/${convo.id}/messages`)
 				.send({ message: "Add a section" });
 
-			expect(response.status).toBe(202);
+			expect(response.status).toBe(200);
 
 			const updatedDraft = await mockDraftDao.getDocDraft(draft.id);
 			expect(updatedDraft?.content).toContain("New Section");
@@ -1345,6 +1420,7 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: draft.id,
 				messages: [],
+				metadata: null,
 			});
 
 			const toolAdapter = createToolRunnerAdapter(
@@ -1373,7 +1449,7 @@ describe("CollabConvoRouter", () => {
 				.post(`/api/collab-convos/${convo.id}/messages`)
 				.send({ message: "Delete the section" });
 
-			expect(response.status).toBe(202);
+			expect(response.status).toBe(200);
 
 			const updatedDraft = await mockDraftDao.getDocDraft(draft.id);
 			expect(updatedDraft?.content).not.toContain("Section to Delete");
@@ -1394,6 +1470,7 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: draft.id,
 				messages: [],
+				metadata: null,
 			});
 
 			const toolAdapter = createToolRunnerAdapter(
@@ -1425,11 +1502,119 @@ describe("CollabConvoRouter", () => {
 				.post(`/api/collab-convos/${convo.id}/messages`)
 				.send({ message: "Edit the section" });
 
-			expect(response.status).toBe(202);
+			expect(response.status).toBe(200);
 
 			const updatedDraft = await mockDraftDao.getDocDraft(draft.id);
 			expect(updatedDraft?.content).toContain("Updated content");
 			expect(updatedDraft?.content).not.toContain("Old content");
+		});
+
+		it("executes edit_article tool and applies targeted edits", async () => {
+			vi.mocked(mockTokenUtil.decodePayload).mockReturnValue(mockUserInfo);
+
+			const draft = await mockDraftDao.createDocDraft({
+				title: "Test Draft",
+				content: "# Article\n\nOld paragraph.",
+				createdBy: 1,
+				docId: undefined,
+			});
+
+			const convo = await mockConvoDao.createCollabConvo({
+				artifactType: "doc_draft",
+				artifactId: draft.id,
+				messages: [],
+				metadata: null,
+			});
+
+			const toolAdapter = createToolRunnerAdapter(
+				{
+					name: "edit_article",
+					arguments: {
+						edits: [
+							{
+								old_string: "Old paragraph.",
+								new_string: "Updated paragraph.",
+								reason: "Align content with source changes",
+							},
+						],
+					},
+				},
+				{ assistantText: "Applied targeted edits." },
+			);
+
+			const routerWithTools = createCollabConvoRouter(
+				mockDaoProvider(mockConvoDao),
+				mockDaoProvider(mockDraftDao),
+				mockDaoProvider(mockDocDraftSectionChangesDao),
+				mockTokenUtil,
+				mockIntegrationsManager,
+				toolAdapter,
+			);
+
+			const testApp = express();
+			testApp.use(express.json());
+			testApp.use(cookieParser());
+			testApp.use("/api/collab-convos", routerWithTools);
+
+			const response = await request(testApp)
+				.post(`/api/collab-convos/${convo.id}/messages`)
+				.send({ message: "Apply targeted update" });
+
+			expect(response.status).toBe(200);
+			const updatedDraft = await mockDraftDao.getDocDraft(draft.id);
+			expect(updatedDraft?.content).toContain("Updated paragraph.");
+			expect(updatedDraft?.content).not.toContain("Old paragraph.");
+		});
+
+		it("executes upsert_frontmatter tool and updates metadata", async () => {
+			vi.mocked(mockTokenUtil.decodePayload).mockReturnValue(mockUserInfo);
+
+			const draft = await mockDraftDao.createDocDraft({
+				title: "Test Draft",
+				content: "# Article body",
+				createdBy: 1,
+				docId: undefined,
+			});
+
+			const convo = await mockConvoDao.createCollabConvo({
+				artifactType: "doc_draft",
+				artifactId: draft.id,
+				messages: [],
+				metadata: null,
+			});
+
+			const toolAdapter = createToolRunnerAdapter(
+				{
+					name: "upsert_frontmatter",
+					arguments: {
+						set: { jrn: "DOC_123", owner: "docs-team" },
+					},
+				},
+				{ assistantText: "Updated frontmatter." },
+			);
+
+			const routerWithTools = createCollabConvoRouter(
+				mockDaoProvider(mockConvoDao),
+				mockDaoProvider(mockDraftDao),
+				mockDaoProvider(mockDocDraftSectionChangesDao),
+				mockTokenUtil,
+				mockIntegrationsManager,
+				toolAdapter,
+			);
+
+			const testApp = express();
+			testApp.use(express.json());
+			testApp.use(cookieParser());
+			testApp.use("/api/collab-convos", routerWithTools);
+
+			const response = await request(testApp)
+				.post(`/api/collab-convos/${convo.id}/messages`)
+				.send({ message: "Set metadata" });
+
+			expect(response.status).toBe(200);
+			const updatedDraft = await mockDraftDao.getDocDraft(draft.id);
+			expect(updatedDraft?.content).toContain("jrn: DOC_123");
+			expect(updatedDraft?.content).toContain("owner: docs-team");
 		});
 
 		it("handles unknown tool gracefully", async () => {
@@ -1446,6 +1631,7 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: draft.id,
 				messages: [],
+				metadata: null,
 			});
 
 			const toolAdapter = createToolRunnerAdapter(
@@ -1471,7 +1657,8 @@ describe("CollabConvoRouter", () => {
 				.post(`/api/collab-convos/${convo.id}/messages`)
 				.send({ message: "Do something" });
 
-			expect(response.status).toBe(202);
+			// SSE streaming returns 200 OK with text/event-stream content type
+			expect(response.status).toBe(200);
 		});
 
 		it("initializes revision history on first tool call", async () => {
@@ -1488,14 +1675,23 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: draft.id,
 				messages: [],
+				metadata: null,
 			});
 
 			const toolAdapter = createToolRunnerAdapter(
 				{
-					name: "create_article",
-					arguments: { content: "# New Content" },
+					name: "edit_article",
+					arguments: {
+						edits: [
+							{
+								old_string: "# Original Content",
+								new_string: "# New Content",
+								reason: "Initial update",
+							},
+						],
+					},
 				},
-				{ assistantText: "Created article." },
+				{ assistantText: "Updated article." },
 			);
 
 			const routerWithTools = createCollabConvoRouter(
@@ -1514,9 +1710,9 @@ describe("CollabConvoRouter", () => {
 
 			const response = await request(testApp)
 				.post(`/api/collab-convos/${convo.id}/messages`)
-				.send({ message: "Create article" });
+				.send({ message: "Update article" });
 
-			expect(response.status).toBe(202);
+			expect(response.status).toBe(200);
 
 			// Verify draft was updated
 			const updatedDraft = await mockDraftDao.getDocDraft(draft.id);
@@ -1537,12 +1733,21 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: draft.id,
 				messages: [],
+				metadata: null,
 			});
 
 			const toolAdapter = createToolRunnerAdapter(
 				{
-					name: "create_article",
-					arguments: { content: "# New Content" },
+					name: "edit_article",
+					arguments: {
+						edits: [
+							{
+								old_string: "# Content",
+								new_string: "# New Content",
+								reason: "User requested change",
+							},
+						],
+					},
 				},
 				{
 					onAfterTool: async () => {
@@ -1571,7 +1776,7 @@ describe("CollabConvoRouter", () => {
 				.send({ message: "Create content" });
 
 			// Should still succeed even if draft is deleted
-			expect(response.status).toBe(202);
+			expect(response.status).toBe(200);
 		});
 
 		it("saves all message role types from agent response", async () => {
@@ -1588,6 +1793,7 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: draft.id,
 				messages: [],
+				metadata: null,
 			});
 
 			// Create an adapter that returns various message types
@@ -1655,7 +1861,7 @@ describe("CollabConvoRouter", () => {
 				.post(`/api/collab-convos/${convo.id}/messages`)
 				.send({ message: "Test message" });
 
-			expect(response.status).toBe(202);
+			expect(response.status).toBe(200);
 
 			// Verify all message types were saved (except unknown role)
 			const updatedConvo = await mockConvoDao.getCollabConvo(convo.id);
@@ -1669,57 +1875,6 @@ describe("CollabConvoRouter", () => {
 			expect(messages.some(m => m.role === "assistant_tool_use")).toBe(true);
 			expect(messages.some(m => m.role === "assistant_tool_uses")).toBe(true);
 			expect(messages.some(m => m.role === "tool")).toBe(true);
-		});
-
-		it("executes get_latest_linear_tickets tool", async () => {
-			vi.mocked(mockTokenUtil.decodePayload).mockReturnValue(mockUserInfo);
-
-			// Mock the executeGetLatestLinearTicketsTool
-			const { executeGetLatestLinearTicketsTool } = await import("../adapters/tools/GetLatestLinearTicketsTool");
-			vi.mocked(executeGetLatestLinearTicketsTool).mockResolvedValue("Linear tickets retrieved");
-
-			const draft = await mockDraftDao.createDocDraft({
-				title: "Test Draft",
-				content: "# Content",
-				createdBy: 1,
-				docId: undefined,
-			});
-
-			const convo = await mockConvoDao.createCollabConvo({
-				artifactType: "doc_draft",
-				artifactId: draft.id,
-				messages: [],
-			});
-
-			// Create adapter that returns get_latest_linear_tickets tool call
-			const linearToolAdapter = createToolRunnerAdapter(
-				{
-					name: "get_latest_linear_tickets",
-					arguments: { limit: 10 },
-				},
-				{ assistantText: "I retrieved the Linear tickets for you." },
-			);
-
-			const routerWithLinear = createCollabConvoRouter(
-				mockDaoProvider(mockConvoDao),
-				mockDaoProvider(mockDraftDao),
-				mockDaoProvider(mockDocDraftSectionChangesDao),
-				mockTokenUtil,
-				mockIntegrationsManager,
-				linearToolAdapter,
-			);
-
-			const testApp = express();
-			testApp.use(express.json());
-			testApp.use(cookieParser());
-			testApp.use("/api/collab-convos", routerWithLinear);
-
-			const response = await request(testApp)
-				.post(`/api/collab-convos/${convo.id}/messages`)
-				.send({ message: "Get linear tickets" });
-
-			expect(response.status).toBe(202);
-			expect(executeGetLatestLinearTicketsTool).toHaveBeenCalledWith(expect.objectContaining({ limit: 10 }));
 		});
 
 		it("executes get_current_article tool", async () => {
@@ -1742,6 +1897,7 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: draft.id,
 				messages: [],
+				metadata: null,
 			});
 
 			// Track if runTool was called
@@ -1784,7 +1940,7 @@ describe("CollabConvoRouter", () => {
 				.post(`/api/collab-convos/${convo.id}/messages`)
 				.send({ message: "Get the current article" });
 
-			expect(response.status).toBe(202);
+			expect(response.status).toBe(200);
 			expect(runToolCalled).toBe(true);
 			expect(executeGetCurrentArticleTool).toHaveBeenCalledWith(draft.id, undefined, mockDraftDao);
 		});
@@ -1844,6 +2000,7 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: draft.id,
 				messages: [],
+				metadata: null,
 			});
 
 			// DON'T pass agentAdapter - let the router create the E2B environment
@@ -1864,12 +2021,153 @@ describe("CollabConvoRouter", () => {
 				.post(`/api/collab-convos/${convo.id}/messages`)
 				.send({ message: "Run some Python code" });
 
-			expect(response.status).toBe(202);
+			expect(response.status).toBe(200);
+			expect(response.headers["content-type"]).toContain("text/event-stream");
 
-			// Verify runToolCall was called
-			expect(runToolCall).toHaveBeenCalled();
+			// Verify E2B environment was created (the primary goal of this test)
+			expect(createAgentEnvironment).toHaveBeenCalled();
 
 			// Restore environment variables
+			if (originalE2BApiKey) {
+				process.env.E2B_API_KEY = originalE2BApiKey;
+			} else {
+				delete process.env.E2B_API_KEY;
+			}
+			if (originalE2BTemplateId) {
+				process.env.E2B_TEMPLATE_ID = originalE2BTemplateId;
+			} else {
+				delete process.env.E2B_TEMPLATE_ID;
+			}
+			if (originalAnthropicApiKey) {
+				process.env.ANTHROPIC_API_KEY = originalAnthropicApiKey;
+			} else {
+				delete process.env.ANTHROPIC_API_KEY;
+			}
+		});
+
+		it("injects checked-out source into prompt instructions and upsert_frontmatter policy", async () => {
+			vi.mocked(mockTokenUtil.decodePayload).mockReturnValue(mockUserInfo);
+
+			const originalE2BApiKey = process.env.E2B_API_KEY;
+			const originalE2BTemplateId = process.env.E2B_TEMPLATE_ID;
+			const originalAnthropicApiKey = process.env.ANTHROPIC_API_KEY;
+			process.env.E2B_API_KEY = "test-api-key";
+			process.env.E2B_TEMPLATE_ID = "test-template-id";
+			process.env.ANTHROPIC_API_KEY = "test-anthropic-key";
+
+			const { resetConfig } = await import("../config/Config");
+			resetConfig();
+
+			const { runToolCall } = await import("../../../tools/jolliagent/src/tools/Tools");
+			vi.mocked(runToolCall).mockResolvedValue("ok");
+
+			const { createAgentEnvironment } = await import("../../../tools/jolliagent/src/direct/agentenv");
+			const { executeUpsertFrontmatterTool } = await import("../adapters/tools/UpsertFrontmatterTool");
+			const { getAccessTokenForGithubRepoIntegration } = await import("../util/IntegrationUtil");
+
+			vi.spyOn(mockIntegrationsManager, "listIntegrations").mockResolvedValue([
+				{
+					id: 77,
+					type: "github",
+					name: "backend-source",
+					status: "active",
+					metadata: {
+						repo: "acme/docs-repo",
+						branch: "main",
+						features: [],
+					},
+					createdAt: new Date(0),
+					updatedAt: new Date(0),
+				},
+			]);
+			vi.mocked(getAccessTokenForGithubRepoIntegration).mockResolvedValue({
+				accessToken: "gh-token",
+				owner: "acme",
+				repo: "docs-repo",
+			} as never);
+
+			const mockAgentEnvironment = {
+				agent: {
+					chatTurn: vi.fn().mockImplementation(async ({ runTool, history }) => {
+						if (runTool) {
+							await runTool({
+								name: "upsert_frontmatter",
+								arguments: {
+									set: {
+										attention: [{ op: "file", path: "README.md" }],
+									},
+								},
+							} as never);
+						}
+						return {
+							assistantText: "Updated metadata",
+							toolCalls: [],
+							history: [...history, { role: "assistant", content: "Updated metadata" }],
+						};
+					}),
+				},
+				runState: {
+					sandbox: { id: "test-sandbox-id" },
+					tools: {},
+				},
+				sandboxId: "test-sandbox-id",
+			};
+			vi.mocked(createAgentEnvironment).mockResolvedValue(mockAgentEnvironment as never);
+
+			const draft = await mockDraftDao.createDocDraft({
+				title: "Test Draft",
+				content: "# Content",
+				createdBy: 1,
+				docId: undefined,
+			});
+			const convo = await mockConvoDao.createCollabConvo({
+				artifactType: "doc_draft",
+				artifactId: draft.id,
+				messages: [],
+				metadata: null,
+			});
+
+			const routerWithE2B = createCollabConvoRouter(
+				mockDaoProvider(mockConvoDao),
+				mockDaoProvider(mockDraftDao),
+				mockDaoProvider(mockDocDraftSectionChangesDao),
+				mockTokenUtil,
+				mockIntegrationsManager,
+			);
+
+			const testApp = express();
+			testApp.use(express.json());
+			testApp.use(cookieParser());
+			testApp.use("/api/collab-convos", routerWithE2B);
+
+			const response = await request(testApp)
+				.post(`/api/collab-convos/${convo.id}/messages`)
+				.send({ message: "Update frontmatter" });
+
+			expect(response.status).toBe(200);
+			expect(createAgentEnvironment).toHaveBeenCalled();
+
+			const createEnvCall = vi.mocked(createAgentEnvironment).mock.calls[0]?.[0];
+			expect(createEnvCall?.systemPrompt).toContain("checked-out source is `backend-source` (sourceId: 77)");
+			expect(createEnvCall?.systemPrompt).toContain(
+				"every `attention` entry you add or update MUST set `source`",
+			);
+
+			expect(executeUpsertFrontmatterTool).toHaveBeenCalledWith(
+				draft.id,
+				{
+					set: {
+						attention: [{ op: "file", path: "README.md" }],
+					},
+				},
+				mockDraftDao,
+				mockUserInfo.userId,
+				{
+					defaultAttentionSource: "backend-source",
+					requireAttentionSource: true,
+				},
+			);
+
 			if (originalE2BApiKey) {
 				process.env.E2B_API_KEY = originalE2BApiKey;
 			} else {
@@ -1904,6 +2202,7 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: draft.id,
 				messages: [],
+				metadata: null,
 			});
 
 			// Create an adapter that returns newMessages without assistant role
@@ -1943,12 +2242,10 @@ describe("CollabConvoRouter", () => {
 				.post(`/api/collab-convos/${convo.id}/messages`)
 				.send({ message: "Test message" });
 
-			expect(response.status).toBe(202);
-			expect(response.body.success).toBe(true);
-			expect(response.body.message).toBe("Processing");
+			expect(response.status).toBe(200);
+			expect(response.headers["content-type"]).toContain("text/event-stream");
 
-			// Wait for async processing to complete
-			await new Promise(resolve => setTimeout(resolve, 100));
+			// Processing is now synchronous with SSE, so we don't need to wait
 
 			// Verify the final assistant message was saved
 			const updatedConvo = await mockConvoDao.getCollabConvo(convo.id);
@@ -1990,6 +2287,7 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: 99,
 				messages: [],
+				metadata: null,
 			});
 			// biome-ignore lint/suspicious/noExplicitAny: Overriding userId for test
 			(convo as any).userId = 2;
@@ -2022,6 +2320,7 @@ describe("CollabConvoRouter", () => {
 				artifactType: "doc_draft",
 				artifactId: 1,
 				messages: [],
+				metadata: null,
 			});
 
 			const response = await request(app).get(`/api/collab-convos/${convo.id}/stream`);
@@ -2038,6 +2337,75 @@ describe("CollabConvoRouter", () => {
 			const response = await request(app).get("/api/collab-convos/invalid/stream");
 
 			expect(response.status).toBe(400);
+		});
+
+		it("should return 403 when artifactId is null in stream", async () => {
+			vi.mocked(mockTokenUtil.decodePayload).mockReturnValue(mockUserInfo);
+
+			const convo = await mockConvoDao.createCollabConvo({
+				artifactType: "doc_draft",
+				artifactId: null as unknown as number,
+				messages: [],
+				metadata: null,
+			});
+
+			const response = await request(app).get(`/api/collab-convos/${convo.id}/stream`);
+
+			expect(response.status).toBe(403);
+			expect(response.body).toEqual({ error: "Forbidden" });
+		});
+	});
+
+	describe("empty LLM response handling", () => {
+		it("handles empty string response from LLM without error", async () => {
+			vi.mocked(mockTokenUtil.decodePayload).mockReturnValue(mockUserInfo);
+
+			const draft = await mockDraftDao.createDocDraft({
+				title: "Test Draft",
+				content: "# Content",
+				createdBy: 1,
+				docId: undefined,
+			});
+
+			const convo = await mockConvoDao.createCollabConvo({
+				artifactType: "doc_draft",
+				artifactId: draft.id,
+				messages: [],
+				metadata: null,
+			});
+
+			// Create adapter that returns empty response
+			const emptyAdapter = {
+				// biome-ignore lint/suspicious/useAwait: Mock implementation doesn't need await
+				streamResponse: vi.fn().mockImplementation(async () => {
+					return {
+						assistantText: "",
+						newMessages: [],
+					};
+				}),
+			} as unknown as AgentChatAdapter;
+
+			const routerWithEmpty = createCollabConvoRouter(
+				mockDaoProvider(mockConvoDao),
+				mockDaoProvider(mockDraftDao),
+				mockDaoProvider(mockDocDraftSectionChangesDao),
+				mockTokenUtil,
+				mockIntegrationsManager,
+				emptyAdapter,
+			);
+
+			const testApp = express();
+			testApp.use(express.json());
+			testApp.use(cookieParser());
+			testApp.use("/api/collab-convos", routerWithEmpty);
+
+			const response = await request(testApp)
+				.post(`/api/collab-convos/${convo.id}/messages`)
+				.send({ message: "Hello" });
+
+			// Should complete without error despite empty response
+			expect(response.status).toBe(200);
+			expect(response.headers["content-type"]).toContain("text/event-stream");
 		});
 	});
 });

@@ -2,18 +2,25 @@ name: Jolli CI
 
 on:
     push:
-        branches: [ "**" ]
-        paths: [ "**" ]
+        branches: [ "main", "deploy/**" ]
+    pull_request:
+        branches: [ "main" ]
     workflow_dispatch:
 
 jobs:
     build:
         permissions:
             contents: write
+            pull-requests: read  # Required for verify-linear-issue-link
             id-token: write
             actions: write  # Required to trigger schema migrations
         runs-on: ubuntu-24.04
         steps:
+            -   name: Reject manual pushes to deploy/dev
+                if: github.ref == 'refs/heads/deploy/dev' && github.actor != 'github-actions[bot]'
+                run: |
+                    echo "::error::deploy/dev is managed by CI only. Push to main instead."
+                    exit 1
             -   uses: actions/checkout@v5
                 with:
                     lfs: true
@@ -29,6 +36,11 @@ jobs:
             -   uses: actions/setup-node@v5
                 with:
                     node-version-file: .nvmrc
+            -   uses: actions/cache@v4
+                with:
+                    path: ~/.npm
+                    key: npm-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+                    restore-keys: npm-${{ runner.os }}-
             -   uses: aws-actions/configure-aws-credentials@v4
                 with:
                     aws-region: us-west-2
@@ -36,11 +48,22 @@ jobs:
                     role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
             -   run: npm ci
             -   run: npm run build
-            -   run: npm run lint
-            -   run: npm run test
-            -   run: npm run package
-            -   run: ./scripts/package.sh
-            -   run: ./scripts/publish.sh
+            -   name: Lint
+                if: github.ref != 'refs/heads/deploy/dev'
+                run: npm run lint
+            -   name: Test
+                if: github.ref != 'refs/heads/deploy/dev'
+                timeout-minutes: 20
+                run: npm run test
+            -   name: Package
+                if: github.event_name != 'pull_request'
+                run: npm run package
+            -   name: Package artifacts
+                if: github.event_name != 'pull_request'
+                run: ./scripts/package.sh
+            -   name: Publish artifacts
+                if: github.event_name != 'pull_request'
+                run: ./scripts/publish.sh
             -   name: Trigger schema migrations
                 if: success() && startsWith(github.ref, 'refs/heads/deploy/')
                 env:
@@ -51,10 +74,8 @@ jobs:
                     ENV="${BRANCH#deploy/}"
                     echo "Triggering schema migrations for branch=$BRANCH, sha=$SHA, environment=$ENV"
                     gh workflow run migrate-schemas.yaml --ref "$BRANCH" -f environment="$ENV" -f branch="$BRANCH" -f sha="$SHA"
-            -   name: Rebase deploy/dev to trigger dev deployment
+            -   name: Update deploy/dev branch
                 if: success() && github.ref == 'refs/heads/main'
-                env:
-                    GH_TOKEN: ${{ github.token }}
                 run: |
                     git config user.name "github-actions[bot]"
                     git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -63,5 +84,16 @@ jobs:
                     git checkout deploy/dev
                     git rebase origin/main
                     git push origin deploy/dev --force-with-lease
-                    # GITHUB_TOKEN pushes don't trigger workflows, so manually trigger the build
-                    gh workflow run jolli.yaml --ref deploy/dev
+            -   name: Trigger dev deployment
+                if: success() && github.ref == 'refs/heads/main'
+                env:
+                    GH_TOKEN: ${{ github.token }}
+                run: |
+                    SHA="${{ github.sha }}"
+                    echo "Triggering dev deployment for sha=$SHA"
+                    # Copy the manager SSM param from main → deploy/dev so the EC2 auto-updater
+                    # picks up the new build. Since deploy/dev is rebased to main, the same
+                    # S3 package works for both — we're just aliasing the pointer.
+                    MANAGER_S3=$(aws ssm get-parameter --name "/build/jolli-manager/main" --query 'Parameter.Value' --output text --region us-west-2)
+                    aws ssm put-parameter --name "/build/jolli-manager/deploy/dev" --value "$MANAGER_S3" --type String --overwrite --region us-west-2
+                    gh workflow run migrate-schemas.yaml --ref deploy/dev -f environment="dev" -f branch="deploy/dev" -f sha="$SHA"

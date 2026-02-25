@@ -58,13 +58,6 @@ export function shouldRunDevMigrations(): boolean {
 		return false;
 	}
 
-	// Never run on Vercel (even dev/preview deployments)
-	// Vercel deployments use the GitHub Actions migration step
-	// Note: VERCEL is a platform env var set by Vercel, not part of our app config
-	if (process.env.VERCEL === "1") {
-		return false;
-	}
-
 	// Skip if explicitly disabled
 	if (config.SKIP_DEV_MIGRATIONS) {
 		return false;

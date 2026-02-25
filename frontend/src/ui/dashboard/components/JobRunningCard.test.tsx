@@ -1,6 +1,7 @@
 import { ClientProvider } from "../../../contexts/ClientContext";
 import { DevToolsProvider } from "../../../contexts/DevToolsContext";
 import { NavigationProvider } from "../../../contexts/NavigationContext";
+import { PermissionProvider } from "../../../contexts/PermissionContext";
 import { RouterProvider } from "../../../contexts/RouterContext";
 import { JobRunningCard } from "./JobRunningCard";
 import { fireEvent, render, screen } from "@testing-library/preact";
@@ -14,7 +15,9 @@ function TestWrapper({ children }: { children: ReactElement }): ReactElement {
 		<ClientProvider>
 			<RouterProvider initialPath="/">
 				<DevToolsProvider>
-					<NavigationProvider pathname="/">{children}</NavigationProvider>
+					<PermissionProvider>
+						<NavigationProvider pathname="/">{children}</NavigationProvider>
+					</PermissionProvider>
 				</DevToolsProvider>
 			</RouterProvider>
 		</ClientProvider>

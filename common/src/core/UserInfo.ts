@@ -3,4 +3,6 @@ export interface UserInfo {
 	readonly name: string;
 	readonly picture: string | undefined;
 	readonly userId: number;
+	readonly tenantId?: string | undefined;
+	readonly orgId?: string | undefined;
 }

@@ -1,5 +1,8 @@
 import { auditLog } from "../audit";
+import { getConfig } from "../config/Config";
 import type { Database } from "../core/Database";
+import type { ActiveUserDao } from "../dao/ActiveUserDao";
+import type { AssetDao } from "../dao/AssetDao";
 import type { CollabConvoDao } from "../dao/CollabConvoDao";
 import type { DaoProvider } from "../dao/DaoProvider";
 import type { DocDao } from "../dao/DocDao";
@@ -8,7 +11,6 @@ import type { DocDraftEditHistoryDao } from "../dao/DocDraftEditHistoryDao";
 import type { DocDraftSectionChangesDao } from "../dao/DocDraftSectionChangesDao";
 import type { DocHistoryDao } from "../dao/DocHistoryDao";
 import type { SyncArticleDao } from "../dao/SyncArticleDao";
-import type { UserDao } from "../dao/UserDao";
 import type { Doc } from "../model/Doc";
 import type { DocDraft } from "../model/DocDraft";
 import { ChatService } from "../services/ChatService";
@@ -23,8 +25,17 @@ import { validateMdxContent } from "../util/MdxValidation";
 import { getUserId, handleLookupError, isLookupError, lookupDraft } from "../util/RouterUtil";
 import type { TokenUtil } from "../util/TokenUtil";
 import express, { type Request, type Response, type Router } from "express";
-import { type DraftListFilter, jrnParser, type UserInfo, validateOpenApiSpec } from "jolli-common";
-import { generateSlug } from "jolli-common/server";
+import {
+	createImageNotFoundError,
+	type DraftListFilter,
+	extractImageReferences,
+	type ImageReferenceError,
+	jrnParser,
+	type UserInfo,
+	validateImageReferences,
+	validateOpenApiSpec,
+} from "jolli-common";
+import { convertEmojiShortcodes, generateSlug } from "jolli-common/server";
 import type { Sequelize } from "sequelize";
 
 const log = getLog(import.meta);
@@ -57,6 +68,9 @@ const mercureService = createMercureService();
  * @param excludeUserId Optional user ID to exclude from the broadcast (typically the sender)
  */
 function broadcastToDraft(chatService: ChatService, draftId: number, event: unknown, excludeUserId?: number): void {
+	const eventData = event as { type?: string };
+	const eventType = eventData.type ?? "unknown";
+
 	// Broadcast to in-memory SSE connections (existing behavior)
 	const connections = draftConnections.get(draftId) || [];
 	for (const conn of connections) {
@@ -74,8 +88,6 @@ function broadcastToDraft(chatService: ChatService, draftId: number, event: unkn
 	}
 
 	// Also publish to Mercure Hub for distributed SSE (fire and forget)
-	const eventData = event as { type?: string };
-	const eventType = eventData.type ?? "unknown";
 	mercureService.publishDraftEvent(draftId, eventType, event).catch(err => {
 		/* v8 ignore next - Mercure publish failures are non-blocking */
 		log.warn(err, "Failed to publish draft event to Mercure: %s", eventType);
@@ -169,8 +181,131 @@ async function recordEditHistory(
 	}
 }
 
-/** JRN prefix for sync articles */
-const SYNC_ARTICLE_PREFIX = "jrn:/global:docs:article/sync-";
+/**
+ * Validation error response structure for draft content validation.
+ */
+interface ValidationErrorResponse {
+	error: string;
+	validationErrors: Array<{ message: string; line: number; column: number; severity: "error" | "warning" }>;
+}
+
+/**
+ * Validates draft content before saving based on content type.
+ * - For MDX/Markdown: validates syntax and image references (including space access)
+ * - For JSON/YAML: validates OpenAPI specification
+ *
+ * @param content - The content to validate
+ * @param contentType - The content type
+ * @param getAssetDao - Function to get the AssetDao
+ * @param allowedSpaceIds - Set of space IDs the article has access to. Null for org-wide access.
+ * @returns Error response object if validation fails, null if valid
+ */
+async function validateDraftContent(
+	content: string,
+	contentType: string | undefined,
+	getAssetDao: () => AssetDao | undefined,
+	allowedSpaceIds: Set<number> | null,
+): Promise<ValidationErrorResponse | null> {
+	// MDX/Markdown validation
+	if (contentType === "text/markdown" || contentType === "text/mdx" || !contentType) {
+		const mdxResult = await validateMdxContent(content, undefined, contentType);
+		if (!mdxResult.isValid) {
+			return {
+				error: "Invalid content",
+				validationErrors: mdxResult.errors.map(err => ({
+					message: err.message,
+					line: err.line ?? 1,
+					column: err.column ?? 1,
+					severity: err.severity,
+				})),
+			};
+		}
+		// Also validate image references for markdown content (including space access)
+		return validateDraftImageReferences(content, getAssetDao, allowedSpaceIds);
+	}
+
+	// OpenAPI (JSON/YAML) validation
+	if (contentType === "application/json" || contentType === "application/yaml") {
+		const openApiResult = validateOpenApiSpec(content, contentType);
+		if (!openApiResult.isValid) {
+			return {
+				error: "Invalid OpenAPI specification",
+				validationErrors: openApiResult.errors.map(err => ({
+					message: err.message,
+					line: err.line ?? 1,
+					column: err.column ?? 1,
+					severity: err.severity,
+				})),
+			};
+		}
+	}
+
+	return null;
+}
+
+/**
+ * Validates image references in draft content.
+ * Checks for:
+ * 1. Invalid/relative paths (no ./img, ../img, etc.)
+ * 2. Missing uploaded images (verifies /api/images/* URLs exist in database)
+ * 3. Space access (images must belong to the article's space or be org-wide)
+ *
+ * @param content - The content to validate
+ * @param getAssetDao - Function to get the AssetDao
+ * @param allowedSpaceIds - Set of space IDs the article has access to. Null for org-wide access.
+ * @returns Error response object if validation fails, null if valid
+ */
+async function validateDraftImageReferences(
+	content: string,
+	getAssetDao: () => AssetDao | undefined,
+	allowedSpaceIds: Set<number> | null,
+): Promise<ValidationErrorResponse | null> {
+	// Validate image reference paths (no relative paths allowed)
+	const imageValidation = validateImageReferences(content);
+	if (!imageValidation.isValid) {
+		return {
+			error: "Invalid image references",
+			validationErrors: imageValidation.errors.map(err => ({
+				message: err.message,
+				line: err.line,
+				column: err.column,
+				severity: "error" as const,
+			})),
+		};
+	}
+
+	// If AssetDao is available, verify that /api/images/* URLs actually exist AND are accessible
+	const assetDao = getAssetDao();
+	if (assetDao && imageValidation.imageIdsToVerify.length > 0) {
+		const imageErrors: Array<ImageReferenceError> = [];
+		const imageRefs = extractImageReferences(content);
+		const imageRefMap = new Map(imageRefs.map(ref => [ref.src, ref]));
+
+		for (const imageId of imageValidation.imageIdsToVerify) {
+			// Use space-aware lookup: returns undefined if image doesn't exist OR isn't accessible
+			const asset = await assetDao.findByS3KeyWithSpaceAccess(imageId, allowedSpaceIds);
+			if (!asset) {
+				const src = `/api/images/${imageId}`;
+				const ref = imageRefMap.get(src);
+				imageErrors.push(createImageNotFoundError(src, ref?.line ?? 1, ref?.column ?? 1));
+			}
+		}
+
+		if (imageErrors.length > 0) {
+			return {
+				error: "Missing images",
+				validationErrors: imageErrors.map(err => ({
+					message: err.message,
+					line: err.line,
+					column: err.column,
+					severity: "error" as const,
+				})),
+			};
+		}
+	}
+
+	return null;
+}
 
 export function createDocDraftRouter(
 	docDraftDaoProvider: DaoProvider<DocDraftDao>,
@@ -178,11 +313,12 @@ export function createDocDraftRouter(
 	docDraftSectionChangesDaoProvider: DaoProvider<DocDraftSectionChangesDao>,
 	tokenUtil: TokenUtil<UserInfo>,
 	collabConvoDaoProvider?: DaoProvider<CollabConvoDao>,
-	userDaoProvider?: DaoProvider<UserDao>,
+	activeUserDaoProvider?: DaoProvider<ActiveUserDao>,
 	docDraftEditHistoryDaoProvider?: DaoProvider<DocDraftEditHistoryDao>,
 	docHistoryDaoProvider?: DaoProvider<DocHistoryDao>,
 	sequelize?: Sequelize,
 	syncArticleDaoProvider?: DaoProvider<SyncArticleDao>,
+	assetDaoProvider?: DaoProvider<AssetDao>,
 ): Router {
 	const router = express.Router();
 	const diffService = new DiffService();
@@ -202,8 +338,8 @@ export function createDocDraftRouter(
 	function getCollabConvoDao(): CollabConvoDao | undefined {
 		return collabConvoDaoProvider?.getDao(getTenantContext());
 	}
-	function getUserDao(): UserDao | undefined {
-		return userDaoProvider?.getDao(getTenantContext());
+	function getActiveUserDao(): ActiveUserDao | undefined {
+		return activeUserDaoProvider?.getDao(getTenantContext());
 	}
 	function getDocDraftEditHistoryDao(): DocDraftEditHistoryDao | undefined {
 		return docDraftEditHistoryDaoProvider?.getDao(getTenantContext());
@@ -214,6 +350,9 @@ export function createDocDraftRouter(
 	}
 	function getDocHistoryDao(): DocHistoryDao | undefined {
 		return docHistoryDaoProvider?.getDao(getTenantContext());
+	}
+	function getAssetDao(): AssetDao | undefined {
+		return assetDaoProvider?.getDao(getTenantContext());
 	}
 	/* v8 ignore stop */
 
@@ -358,9 +497,9 @@ export function createDocDraftRouter(
 
 			// Check if creator is an agent
 			let isAgent = false;
-			/* v8 ignore next 4 - userDao is optional and only used to check agent status */
-			if (userDaoProvider) {
-				const user = await getUserDao()?.findUserById(userId);
+			/* v8 ignore next 4 - activeUserDao is optional and only used to check agent status */
+			if (activeUserDaoProvider) {
+				const user = await getActiveUserDao()?.findById(userId);
 				isAgent = user?.isAgent ?? false;
 			}
 
@@ -465,10 +604,28 @@ export function createDocDraftRouter(
 				return res.status(400).json({ error: "Content is required" });
 			}
 
-			// Validate MDX for markdown content
-			if (contentType === "text/markdown" || !contentType) {
-				const validationResult = await validateMdxContent(content);
-				return res.json(validationResult);
+			// Validate MDX/Markdown content
+			if (contentType === "text/markdown" || contentType === "text/mdx" || !contentType) {
+				const mdxValidation = await validateMdxContent(content, undefined, contentType);
+				const imageValidation = validateImageReferences(content);
+
+				// Merge image validation errors into MDX validation result
+				const mergedErrors = [
+					...mdxValidation.errors,
+					...imageValidation.errors.map(err => ({
+						message: err.message,
+						line: err.line,
+						column: err.column,
+						severity: "error" as const,
+					})),
+				];
+
+				return res.json({
+					isValid: mdxValidation.isValid && imageValidation.isValid,
+					errors: mergedErrors,
+					// Include image IDs that need existence verification (for future use by save endpoint)
+					imageIdsToVerify: imageValidation.imageIdsToVerify,
+				});
 			}
 
 			// Validate OpenAPI for JSON/YAML content
@@ -677,6 +834,103 @@ export function createDocDraftRouter(
 		}
 	});
 
+	// POST /api/doc-drafts/:id/beacon-save - Save draft on page exit (for navigator.sendBeacon)
+	// This is a fire-and-forget endpoint designed for beforeunload/visibilitychange scenarios.
+	// sendBeacon only supports POST, so we need this separate endpoint.
+	// Logic is similar to PATCH /:id but simplified and non-blocking.
+	router.post("/:id/beacon-save", async (req: Request, res: Response) => {
+		const draftId = req.params.id;
+
+		try {
+			const draftInfo = await lookupDraft(getDocDraftDao(), tokenUtil, req);
+			if (isLookupError(draftInfo)) {
+				// Log error but return 200 to not block the page unload
+				log.warn("Beacon save failed - lookup error for draft %s: %s", draftId, draftInfo.message);
+				return res.status(200).json({ saved: false, reason: draftInfo.message });
+			}
+			const { draft, userId } = draftInfo;
+			const { id } = draft;
+
+			const { title, content } = req.body;
+
+			// Require at least title or content
+			if (title === undefined && content === undefined) {
+				log.warn("Beacon save failed - no title or content provided for draft %s", draftId);
+				return res.status(200).json({ saved: false, reason: "No title or content provided" });
+			}
+
+			// If title is provided, it must be non-empty
+			if (title !== undefined && (!title || typeof title !== "string" || title.trim() === "")) {
+				log.warn("Beacon save failed - empty title provided for draft %s", draftId);
+				return res.status(200).json({ saved: false, reason: "Title cannot be empty" });
+			}
+
+			const updates: {
+				title?: string;
+				content?: string;
+				contentLastEditedAt?: Date;
+				contentLastEditedBy?: number;
+			} = {};
+
+			if (title !== undefined) {
+				updates.title = title;
+			}
+			if (content !== undefined) {
+				updates.content = content;
+
+				// Initialize revision history with current content if this is the first edit
+				if (revisionManager.getRevisionCount(id) === 0) {
+					revisionManager.addRevision(id, draft.content, userId, "Initial content");
+				}
+
+				// Add revision for undo/redo
+				revisionManager.addRevision(id, content, userId, "Beacon save on page exit");
+
+				// Generate diff and broadcast to connected users (excluding sender to prevent echo)
+				const diffResult = diffService.generateDiff(draft.content, content);
+				broadcastToDraft(
+					chatService,
+					id,
+					{
+						type: "content_update",
+						diffs: diffResult.diffs,
+						userId,
+						timestamp: new Date().toISOString(),
+					},
+					userId,
+				);
+			}
+
+			// Update tracking fields only if content or title actually changed
+			const titleChanged = title !== undefined && title !== draft.title;
+			const contentChanged = content !== undefined && content !== draft.content;
+
+			if (titleChanged || contentChanged) {
+				updates.contentLastEditedAt = new Date();
+				updates.contentLastEditedBy = userId;
+			}
+
+			const updatedDraft = await getDocDraftDao().updateDocDraft(id, updates);
+
+			// Record edit history for content and title changes
+			await recordEditHistory(
+				getDocDraftEditHistoryDao(),
+				id,
+				userId,
+				contentChanged,
+				titleChanged,
+				updatedDraft?.title,
+			);
+
+			log.debug("Beacon save successful for draft %s, userId %s", draftId, userId);
+			res.status(200).json({ saved: true });
+		} catch (error) {
+			// Log detailed error but return 200 to not block page unload
+			log.error(error, "Beacon save failed - unexpected error for draft %s", draftId);
+			res.status(200).json({ saved: false, reason: "Internal error" });
+		}
+	});
+
 	// POST /api/doc-drafts/:id/validate - Validate draft content (for OpenAPI specs)
 	router.post("/:id/validate", async (req: Request, res: Response) => {
 		try {
@@ -710,43 +964,40 @@ export function createDocDraftRouter(
 			const { draft, userId } = draftInfo;
 			const { id } = draft;
 
-			// Validate MDX content for markdown articles before saving
-			if (draft.contentType === "text/markdown" || !draft.contentType) {
-				const validationResult = await validateMdxContent(draft.content);
-				if (!validationResult.isValid) {
-					return res.status(400).json({
-						error: "Invalid MDX content",
-						validationErrors: validationResult.errors,
-					});
-				}
-			}
-
-			// Validate that JSON/YAML content is a valid OpenAPI spec before saving
-			if (draft.contentType === "application/json" || draft.contentType === "application/yaml") {
-				const validationResult = validateOpenApiSpec(draft.content, draft.contentType);
-				if (!validationResult.isValid) {
-					return res.status(400).json({
-						error: "Invalid OpenAPI specification",
-						validationErrors: validationResult.errors,
-					});
-				}
-			}
-
-			let doc: Doc | undefined;
+			// Look up existing doc first to determine space context for image validation
+			let existingDoc: Doc | undefined;
 			if (draft.docId != null) {
-				// Update existing article - find by ID (include /root docs in case the article is in /root space)
 				const allDocs = await getDocDao().listDocs({ includeRoot: true });
-				const existingDoc = allDocs.find(d => d.id === draft.docId);
-
+				existingDoc = allDocs.find(d => d.id === draft.docId);
 				if (!existingDoc) {
 					return res.status(404).json({ error: "Article not found" });
 				}
+			}
 
+			// Determine allowed space IDs for image validation:
+			// - For existing articles with spaceId: restrict to that space
+			// - For new drafts or articles without spaceId: allow all org images (null = org-wide)
+			const allowedSpaceIds = existingDoc?.spaceId != null ? new Set([existingDoc.spaceId]) : null;
+
+			// Validate content before saving (MDX/Markdown syntax + images + space access)
+			const contentError = await validateDraftContent(
+				draft.content,
+				draft.contentType,
+				getAssetDao,
+				allowedSpaceIds,
+			);
+			if (contentError) {
+				return res.status(400).json(contentError);
+			}
+
+			let doc: Doc | undefined;
+			if (existingDoc) {
 				// Save version history and update the doc in a transaction
+				// Convert emoji shortcodes to unicode before saving (e.g., :rocket: → 🚀)
 				const updatedDoc = await saveVersionHistoryAndUpdateDoc(
 					existingDoc,
 					{
-						content: draft.content,
+						content: convertEmojiShortcodes(draft.content),
 						contentType: draft.contentType,
 						contentMetadata: {
 							...existingDoc.contentMetadata,
@@ -764,7 +1015,8 @@ export function createDocDraftRouter(
 
 				// If this is a sync article, advance cursor so CLI sees the change
 				/* v8 ignore start - optional feature requiring syncArticleDaoProvider configuration */
-				if (updatedDoc.jrn.startsWith(SYNC_ARTICLE_PREFIX)) {
+				const syncJrnPrefix = getConfig().SYNC_JRN_PREFIX;
+				if (updatedDoc.jrn.startsWith(syncJrnPrefix)) {
 					const syncArticleDao = getSyncArticleDao();
 					if (syncArticleDao) {
 						await syncArticleDao.advanceCursor(updatedDoc.jrn);
@@ -780,6 +1032,7 @@ export function createDocDraftRouter(
 				// Generate a slug from the title using SlugUtils
 				const slug = generateSlug(draft.title);
 
+				// Convert emoji shortcodes to unicode before saving (e.g., :rocket: → 🚀)
 				doc = await getDocDao().createDoc({
 					jrn,
 					slug,
@@ -787,7 +1040,7 @@ export function createDocDraftRouter(
 					updatedBy: userId.toString(),
 					source: undefined,
 					sourceMetadata: undefined,
-					content: draft.content,
+					content: convertEmojiShortcodes(draft.content),
 					contentType: draft.contentType,
 					contentMetadata: {
 						title: draft.title,
@@ -796,7 +1049,6 @@ export function createDocDraftRouter(
 					spaceId: undefined,
 					parentId: undefined,
 					docType: "document",
-					sortOrder: 0,
 					createdBy: userId.toString(),
 				});
 			}
@@ -1179,10 +1431,13 @@ export function createDocDraftRouter(
 			const { id, content } = draft;
 
 			// Get all section changes for this draft
-			const changes = await getDocDraftSectionChangesDao().findByDraftId(id);
+			const rawChanges = await getDocDraftSectionChangesDao().findByDraftId(id);
 
 			// Annotate the draft content with section boundaries
 			const sections = await getSectionMarkupService().annotateDocDraft(id, content);
+
+			// Re-extract section content from draft markdown to ensure proper formatting
+			const changes = await getSectionMarkupService().enrichSectionChangeContent(content, id, rawChanges);
 
 			return res.json({
 				sections,
@@ -1259,7 +1514,12 @@ export function createDocDraftRouter(
 
 			// Re-annotate with updated content
 			const sections = await getSectionMarkupService().annotateDocDraft(id, updatedContent);
-			const allChanges = await getDocDraftSectionChangesDao().findByDraftId(id);
+			const rawChanges = await getDocDraftSectionChangesDao().findByDraftId(id);
+			const allChanges = await getSectionMarkupService().enrichSectionChangeContent(
+				updatedContent,
+				id,
+				rawChanges,
+			);
 
 			// Broadcast the change to other connected users
 			broadcastToDraft(chatService, id, {
@@ -1354,7 +1614,12 @@ export function createDocDraftRouter(
 
 			// Re-annotate with current content (dismissed change will be filtered out)
 			const sections = await getSectionMarkupService().annotateDocDraft(id, draft.content);
-			const allChanges = await getDocDraftSectionChangesDao().findByDraftId(id);
+			const rawChanges = await getDocDraftSectionChangesDao().findByDraftId(id);
+			const allChanges = await getSectionMarkupService().enrichSectionChangeContent(
+				draft.content,
+				id,
+				rawChanges,
+			);
 
 			// Broadcast the change to other connected users
 			broadcastToDraft(chatService, id, {
@@ -1425,7 +1690,8 @@ export function createDocDraftRouter(
 
 			// Re-annotate with updated change list
 			const sections = await getSectionMarkupService().annotateDocDraft(id, content);
-			const allChanges = await getDocDraftSectionChangesDao().findByDraftId(id);
+			const rawChanges = await getDocDraftSectionChangesDao().findByDraftId(id);
+			const allChanges = await getSectionMarkupService().enrichSectionChangeContent(content, id, rawChanges);
 
 			// Broadcast the dismissal to other connected users
 			broadcastToDraft(chatService, id, {

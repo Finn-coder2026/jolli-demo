@@ -34,7 +34,7 @@ export function DuplicateTitleDialog({
 			data-testid="duplicate-title-dialog-backdrop"
 		>
 			<div
-				className="bg-background border border-border rounded-lg p-6 max-w-2xl w-full m-4 max-h-[80vh] overflow-y-auto"
+				className="bg-background border border-border rounded-lg p-6 max-w-2xl w-full m-4 max-h-[80vh] overflow-y-auto scrollbar-thin"
 				onClick={e => e.stopPropagation()}
 				data-testid="duplicate-title-dialog-content"
 			>

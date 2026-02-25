@@ -1,16 +1,17 @@
+import { getConfig } from "../config/Config";
 import type { DaoProvider } from "../dao/DaoProvider";
 import type { DocDao } from "../dao/DocDao";
 import { mockDocDao } from "../dao/DocDao.mock";
 import type { DocDraftDao } from "../dao/DocDraftDao";
 import { mockDocDraftDao } from "../dao/DocDraftDao.mock";
 import { mockSyncArticleDao } from "../dao/SyncArticleDao.mock";
-import type { NewDoc } from "../model/Doc";
+import type { AuthenticatedRequest, PermissionMiddlewareFactory } from "../middleware/PermissionMiddleware";
 import { mockDoc } from "../model/Doc.mock";
 import { createAuthHandler } from "../util/AuthHandler";
 import { createTokenUtil } from "../util/TokenUtil";
 import { createDocRouter } from "./DocRouter";
 import cookieParser from "cookie-parser";
-import express, { type Express } from "express";
+import express, { type Express, type NextFunction, type Response } from "express";
 import { jrnParser, ROOT_WORKSPACE, type UserInfo } from "jolli-common";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -24,6 +25,8 @@ describe("DocRouter", () => {
 	let app: Express;
 	let mockDao: DocDao;
 	let mockDocDraftDaoInstance: DocDraftDao;
+	let mockSyncArticleDaoInstance: ReturnType<typeof mockSyncArticleDao>;
+	let mockPermissionMiddleware: PermissionMiddlewareFactory;
 	let authToken: string;
 
 	const tokenUtil = createTokenUtil<UserInfo>("test-secret", {
@@ -34,13 +37,29 @@ describe("DocRouter", () => {
 	beforeEach(() => {
 		mockDao = mockDocDao();
 		mockDocDraftDaoInstance = mockDocDraftDao();
+		mockSyncArticleDaoInstance = mockSyncArticleDao();
+		mockPermissionMiddleware = {
+			requireAuth: vi.fn(() => (_req: AuthenticatedRequest, _res: Response, next: NextFunction) => next()),
+			requirePermission: vi.fn(() => (_req: AuthenticatedRequest, _res: Response, next: NextFunction) => next()),
+			requireAllPermissions: vi.fn(
+				() => (_req: AuthenticatedRequest, _res: Response, next: NextFunction) => next(),
+			),
+			requireRole: vi.fn(() => (_req: AuthenticatedRequest, _res: Response, next: NextFunction) => next()),
+			loadPermissions: vi.fn(() => (_req: AuthenticatedRequest, _res: Response, next: NextFunction) => next()),
+		};
 		app = express();
 		app.use(cookieParser());
 		app.use(express.json());
 		app.use(
 			"/docs",
 			createAuthHandler(tokenUtil),
-			createDocRouter(mockDaoProvider(mockDao), mockDaoProvider(mockDocDraftDaoInstance), tokenUtil),
+			createDocRouter(
+				mockDaoProvider(mockDao),
+				mockDaoProvider(mockDocDraftDaoInstance),
+				tokenUtil,
+				mockPermissionMiddleware,
+				mockDaoProvider(mockSyncArticleDaoInstance),
+			),
 		);
 
 		// Generate valid auth token for tests
@@ -64,12 +83,11 @@ describe("DocRouter", () => {
 			expect(response.body).toEqual({ error: "Not authorized" });
 		});
 
-		it("should create a doc and return 201", async () => {
-			const newDoc: NewDoc = {
+		it("should create a doc and return 201 with createdBy and updatedBy set from userId", async () => {
+			const newDoc = {
 				jrn: "test-arn",
 				slug: "test-slug",
 				path: "",
-				updatedBy: "user@example.com",
 				source: undefined,
 				sourceMetadata: undefined,
 				content: "test content",
@@ -77,12 +95,12 @@ describe("DocRouter", () => {
 				contentMetadata: undefined,
 				spaceId: undefined,
 				parentId: undefined,
-				docType: "document",
+				docType: "document" as const,
 				sortOrder: 0,
-				createdBy: "test",
+				// createdBy and updatedBy are not sent by frontend - they are set by backend from userId
 			};
 
-			const createdDoc = mockDoc({ ...newDoc, id: 1, version: 1 });
+			const createdDoc = mockDoc({ ...newDoc, id: 1, version: 1, createdBy: "1", updatedBy: "1" });
 			mockDao.createDoc = vi.fn().mockResolvedValue(createdDoc);
 
 			const response = await request(app).post("/docs").set("Cookie", `authToken=${authToken}`).send(newDoc);
@@ -91,12 +109,21 @@ describe("DocRouter", () => {
 			expect(response.body).toMatchObject({
 				id: 1,
 				jrn: "test-arn",
-				updatedBy: "user@example.com",
+				updatedBy: "1",
 				content: "test content",
 				contentType: "text/plain",
 				version: 1,
 			});
-			expect(mockDao.createDoc).toHaveBeenCalledWith(newDoc);
+			// Verify backend sets createdBy and updatedBy from userId
+			expect(mockDao.createDoc).toHaveBeenCalledWith(
+				expect.objectContaining({
+					jrn: "test-arn",
+					content: "test content",
+					docType: "document",
+					createdBy: "1",
+					updatedBy: "1",
+				}),
+			);
 		});
 
 		it("should return 400 on creation error", async () => {
@@ -395,6 +422,7 @@ describe("DocRouter", () => {
 					mockDaoProvider(mockDao),
 					mockDaoProvider(mockDocDraftDaoInstance),
 					tokenUtil,
+					mockPermissionMiddleware,
 					mockDaoProvider(mockSyncArticleDaoInstance),
 				),
 			);
@@ -416,6 +444,245 @@ describe("DocRouter", () => {
 
 			expect(response.status).toBe(200);
 			expect(advanceCursorSpy).toHaveBeenCalledWith(syncArticleJrn);
+		});
+
+		it("should update serverPath when parentId changes for a sync article", async () => {
+			// Create mock DAOs
+			const mockSyncArticleDaoInstance = mockSyncArticleDao();
+			vi.spyOn(mockSyncArticleDaoInstance, "advanceCursor").mockResolvedValue(1);
+
+			// Create a new app with syncArticleDaoProvider
+			const appWithSyncDao = express();
+			appWithSyncDao.use(cookieParser());
+			appWithSyncDao.use(express.json());
+			appWithSyncDao.use(
+				"/docs",
+				createAuthHandler(tokenUtil),
+				createDocRouter(
+					mockDaoProvider(mockDao),
+					mockDaoProvider(mockDocDraftDaoInstance),
+					tokenUtil,
+					mockPermissionMiddleware,
+					mockDaoProvider(mockSyncArticleDaoInstance),
+				),
+			);
+
+			const syncArticleJrn = "jrn:/global:docs:article/sync-test-article";
+
+			// Existing doc in "notes" folder (parentId: 10)
+			const existingDoc = mockDoc({
+				id: 1,
+				jrn: syncArticleJrn,
+				content: "# Test",
+				parentId: 10,
+				contentMetadata: {
+					sync: {
+						fileId: "test-article",
+						serverPath: "notes/test.md",
+					},
+				},
+			});
+
+			// New folder "docs" (parentId: 20)
+			const docsFolder = mockDoc({
+				id: 20,
+				docType: "folder",
+				parentId: undefined,
+				contentMetadata: { title: "docs" },
+			});
+
+			mockDao.readDoc = vi.fn().mockResolvedValue(existingDoc);
+			mockDao.readDocById = vi.fn().mockResolvedValue(docsFolder);
+			mockDao.updateDoc = vi.fn().mockImplementation(data => {
+				return mockDoc({ ...existingDoc, ...data });
+			});
+
+			// Update with new parentId
+			const response = await request(appWithSyncDao)
+				.put(`/docs/${encodeURIComponent(syncArticleJrn)}`)
+				.set("Cookie", `authToken=${authToken}`)
+				.send({
+					jrn: syncArticleJrn,
+					content: "# Test",
+					parentId: 20, // Moving to "docs" folder
+					version: 2,
+				});
+
+			expect(response.status).toBe(200);
+
+			// Verify updateDoc was called with updated serverPath
+			expect(mockDao.updateDoc).toHaveBeenCalledWith(
+				expect.objectContaining({
+					contentMetadata: expect.objectContaining({
+						sync: expect.objectContaining({
+							fileId: "test-article",
+							serverPath: "docs/test.md", // New path
+						}),
+					}),
+				}),
+			);
+		});
+
+		it("should update serverPath to root when moving sync article to root", async () => {
+			// Create mock DAOs
+			const mockSyncArticleDaoInstance = mockSyncArticleDao();
+			vi.spyOn(mockSyncArticleDaoInstance, "advanceCursor").mockResolvedValue(1);
+
+			// Create a new app with syncArticleDaoProvider
+			const appWithSyncDao = express();
+			appWithSyncDao.use(cookieParser());
+			appWithSyncDao.use(express.json());
+			appWithSyncDao.use(
+				"/docs",
+				createAuthHandler(tokenUtil),
+				createDocRouter(
+					mockDaoProvider(mockDao),
+					mockDaoProvider(mockDocDraftDaoInstance),
+					tokenUtil,
+					mockPermissionMiddleware,
+					mockDaoProvider(mockSyncArticleDaoInstance),
+				),
+			);
+
+			const syncArticleJrn = "jrn:/global:docs:article/sync-test-article";
+
+			// Existing doc in "notes" folder (parentId: 10)
+			const existingDoc = mockDoc({
+				id: 1,
+				jrn: syncArticleJrn,
+				content: "# Test",
+				parentId: 10,
+				contentMetadata: {
+					sync: {
+						fileId: "test-article",
+						serverPath: "notes/test.md",
+					},
+				},
+			});
+
+			mockDao.readDoc = vi.fn().mockResolvedValue(existingDoc);
+			mockDao.updateDoc = vi.fn().mockImplementation(data => {
+				return mockDoc({ ...existingDoc, ...data });
+			});
+
+			// Update with undefined parentId (move to root)
+			const response = await request(appWithSyncDao)
+				.put(`/docs/${encodeURIComponent(syncArticleJrn)}`)
+				.set("Cookie", `authToken=${authToken}`)
+				.send({
+					jrn: syncArticleJrn,
+					content: "# Test",
+					parentId: undefined, // Moving to root
+					version: 2,
+				});
+
+			expect(response.status).toBe(200);
+
+			// Verify updateDoc was called with updated serverPath (root level)
+			expect(mockDao.updateDoc).toHaveBeenCalledWith(
+				expect.objectContaining({
+					contentMetadata: expect.objectContaining({
+						sync: expect.objectContaining({
+							fileId: "test-article",
+							serverPath: "test.md", // Root level path
+						}),
+					}),
+				}),
+			);
+		});
+
+		it("should not update serverPath for non-sync articles", async () => {
+			const regularDocJrn = "jrn:docs:article/regular-article";
+
+			const existingDoc = mockDoc({
+				id: 1,
+				jrn: regularDocJrn,
+				content: "# Test",
+				parentId: 10,
+			});
+
+			mockDao.readDoc = vi.fn().mockResolvedValue(existingDoc);
+			mockDao.updateDoc = vi.fn().mockImplementation(data => {
+				return mockDoc({ ...existingDoc, ...data });
+			});
+
+			// Update with new parentId
+			const response = await request(app)
+				.put(`/docs/${encodeURIComponent(regularDocJrn)}`)
+				.set("Cookie", `authToken=${authToken}`)
+				.send({
+					jrn: regularDocJrn,
+					content: "# Test",
+					parentId: 20, // Moving to different folder
+					version: 2,
+				});
+
+			expect(response.status).toBe(200);
+
+			// Verify updateDoc was called without contentMetadata.sync changes
+			expect(mockDao.updateDoc).toHaveBeenCalledWith(
+				expect.objectContaining({
+					parentId: 20,
+				}),
+			);
+			// readDocById should not be called for non-sync articles
+			expect(mockDao.readDocById).not.toHaveBeenCalled();
+		});
+
+		it("should not update serverPath when parentId does not change", async () => {
+			const mockSyncArticleDaoInstance = mockSyncArticleDao();
+			vi.spyOn(mockSyncArticleDaoInstance, "advanceCursor").mockResolvedValue(1);
+
+			const appWithSyncDao = express();
+			appWithSyncDao.use(cookieParser());
+			appWithSyncDao.use(express.json());
+			appWithSyncDao.use(
+				"/docs",
+				createAuthHandler(tokenUtil),
+				createDocRouter(
+					mockDaoProvider(mockDao),
+					mockDaoProvider(mockDocDraftDaoInstance),
+					tokenUtil,
+					mockPermissionMiddleware,
+					mockDaoProvider(mockSyncArticleDaoInstance),
+				),
+			);
+
+			const syncArticleJrn = "jrn:/global:docs:article/sync-test-article";
+
+			const existingDoc = mockDoc({
+				id: 1,
+				jrn: syncArticleJrn,
+				content: "# Test",
+				parentId: 10,
+				contentMetadata: {
+					sync: {
+						fileId: "test-article",
+						serverPath: "notes/test.md",
+					},
+				},
+			});
+
+			mockDao.readDoc = vi.fn().mockResolvedValue(existingDoc);
+			mockDao.updateDoc = vi.fn().mockImplementation(data => {
+				return mockDoc({ ...existingDoc, ...data });
+			});
+
+			// Update content only, same parentId
+			const response = await request(appWithSyncDao)
+				.put(`/docs/${encodeURIComponent(syncArticleJrn)}`)
+				.set("Cookie", `authToken=${authToken}`)
+				.send({
+					jrn: syncArticleJrn,
+					content: "# Updated",
+					parentId: 10, // Same parentId
+					version: 2,
+				});
+
+			expect(response.status).toBe(200);
+
+			// readDocById should not be called since parentId didn't change
+			expect(mockDao.readDocById).not.toHaveBeenCalled();
 		});
 	});
 
@@ -474,6 +741,61 @@ describe("DocRouter", () => {
 			expect(mockDao.deleteDoc).toHaveBeenCalledWith("test-arn");
 		});
 
+		it("should soft delete sync doc and advance cursor", async () => {
+			const syncJrnPrefix = getConfig().SYNC_JRN_PREFIX;
+			const syncDoc = mockDoc({
+				id: 1,
+				jrn: `${syncJrnPrefix}test-file-id`,
+				version: 1,
+				contentMetadata: {
+					sync: {
+						fileId: "test-file-id",
+						serverPath: "notes/test.md",
+					},
+				},
+			});
+			mockDao.readDoc = vi.fn().mockResolvedValue(syncDoc);
+			mockDao.softDelete = vi.fn().mockResolvedValue(undefined);
+			mockDao.updateDoc = vi.fn().mockResolvedValue(
+				mockDoc({
+					...syncDoc,
+					version: 2,
+					deletedAt: new Date(),
+					explicitlyDeleted: true,
+					contentMetadata: {
+						sync: {
+							fileId: "test-file-id",
+							serverPath: "notes/test.md",
+							deleted: true,
+							deletedAt: Date.now(),
+						},
+					},
+				}),
+			);
+			mockSyncArticleDaoInstance.advanceCursor = vi.fn().mockResolvedValue(2);
+
+			const response = await request(app)
+				.delete(`/docs/${encodeURIComponent(syncDoc.jrn)}`)
+				.set("Cookie", `authToken=${authToken}`);
+
+			expect(response.status).toBe(204);
+			expect(mockDao.softDelete).toHaveBeenCalledWith(1);
+			expect(mockDao.deleteDoc).not.toHaveBeenCalled();
+			expect(mockDao.updateDoc).toHaveBeenCalledWith(
+				expect.objectContaining({
+					version: 2,
+					deletedAt: expect.any(Date),
+					explicitlyDeleted: true,
+					contentMetadata: expect.objectContaining({
+						sync: expect.objectContaining({
+							deleted: true,
+						}),
+					}),
+				}),
+			);
+			expect(mockSyncArticleDaoInstance.advanceCursor).toHaveBeenCalledWith(syncDoc.jrn);
+		});
+
 		it("should return 400 on deletion error", async () => {
 			mockDao.deleteDoc = vi.fn().mockRejectedValue(new Error("Database error"));
 
@@ -504,7 +826,7 @@ describe("DocRouter", () => {
 				});
 
 			expect(response.status).toBe(200);
-			expect(mockDao.searchDocsByTitle).toHaveBeenCalledWith("test");
+			expect(mockDao.searchDocsByTitle).toHaveBeenCalledWith("test", 1);
 			expect(response.body).toHaveLength(1);
 		});
 
@@ -571,6 +893,7 @@ describe("DocRouter", () => {
 					mockDaoProvider(mockDao),
 					mockDaoProvider(mockDocDraftDaoInstance),
 					mockTokenUtil as unknown as typeof tokenUtil,
+					mockPermissionMiddleware,
 				),
 			);
 
@@ -1077,6 +1400,60 @@ describe("DocRouter", () => {
 			expect(mockDao.softDelete).toHaveBeenCalledWith(1);
 		});
 
+		it("should mark sync doc deleted and advance cursor", async () => {
+			const syncJrnPrefix = getConfig().SYNC_JRN_PREFIX;
+			const doc = mockDoc({
+				id: 1,
+				jrn: `${syncJrnPrefix}sync-soft-delete`,
+				version: 3,
+				contentMetadata: {
+					sync: {
+						fileId: "sync-soft-delete",
+						serverPath: "notes/sync-soft-delete.md",
+					},
+				},
+			});
+			mockDao.readDocById = vi.fn().mockResolvedValue(doc);
+			mockDao.softDelete = vi.fn().mockResolvedValue(undefined);
+			mockDao.updateDoc = vi.fn().mockResolvedValue(
+				mockDoc({
+					...doc,
+					version: 4,
+					deletedAt: new Date(),
+					explicitlyDeleted: true,
+					contentMetadata: {
+						sync: {
+							fileId: "sync-soft-delete",
+							serverPath: "notes/sync-soft-delete.md",
+							deleted: true,
+							deletedAt: Date.now(),
+						},
+					},
+				}),
+			);
+			mockSyncArticleDaoInstance.advanceCursor = vi.fn().mockResolvedValue(4);
+
+			const response = await request(app)
+				.post("/docs/by-id/1/soft-delete")
+				.set("Cookie", `authToken=${authToken}`);
+
+			expect(response.status).toBe(204);
+			expect(mockDao.softDelete).toHaveBeenCalledWith(1);
+			expect(mockDao.updateDoc).toHaveBeenCalledWith(
+				expect.objectContaining({
+					version: 4,
+					deletedAt: expect.any(Date),
+					explicitlyDeleted: true,
+					contentMetadata: expect.objectContaining({
+						sync: expect.objectContaining({
+							deleted: true,
+						}),
+					}),
+				}),
+			);
+			expect(mockSyncArticleDaoInstance.advanceCursor).toHaveBeenCalledWith(doc.jrn);
+		});
+
 		it("should return 400 when id is not a valid number", async () => {
 			const response = await request(app)
 				.post("/docs/by-id/invalid/soft-delete")
@@ -1164,7 +1541,22 @@ describe("DocRouter", () => {
 			mockDao.readDocById = vi.fn().mockResolvedValue(doc);
 			mockDao.restore = vi.fn().mockRejectedValue(new Error("Database error"));
 
-			const response = await request(app).post("/docs/by-id/1/restore").set("Cookie", `authToken=${authToken}`);
+			// Use a local app without auth middleware to isolate restore error handling.
+			const tempApp = express();
+			tempApp.use(cookieParser());
+			tempApp.use(express.json());
+			tempApp.use(
+				"/docs",
+				createDocRouter(
+					mockDaoProvider(mockDao),
+					mockDaoProvider(mockDocDraftDaoInstance),
+					tokenUtil,
+					mockPermissionMiddleware,
+					mockDaoProvider(mockSyncArticleDaoInstance),
+				),
+			);
+
+			const response = await request(tempApp).post("/docs/by-id/1/restore");
 
 			expect(response.status).toBe(500);
 			expect(response.body).toEqual({ error: "Failed to restore document" });
@@ -1278,6 +1670,493 @@ describe("DocRouter", () => {
 
 			expect(response.status).toBe(200);
 			expect(mockDao.renameDoc).toHaveBeenCalledWith(1, "New Title");
+		});
+	});
+
+	describe("POST /by-id/:id/reorder", () => {
+		it("should return 401 when not authenticated", async () => {
+			const response = await request(app).post("/docs/by-id/1/reorder").send({ direction: "up" });
+
+			expect(response.status).toBe(401);
+			expect(response.body).toEqual({ error: "Not authorized" });
+		});
+
+		it("should reorder document up successfully", async () => {
+			const updatedDoc = mockDoc({ id: 1, sortOrder: 0 });
+			mockDao.reorderDoc = vi.fn().mockResolvedValue(updatedDoc);
+
+			const response = await request(app)
+				.post("/docs/by-id/1/reorder")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ direction: "up" });
+
+			expect(response.status).toBe(200);
+			expect(response.body).toMatchObject({ id: 1, sortOrder: 0 });
+			expect(mockDao.reorderDoc).toHaveBeenCalledWith(1, "up");
+		});
+
+		it("should reorder document down successfully", async () => {
+			const updatedDoc = mockDoc({ id: 1, sortOrder: 2 });
+			mockDao.reorderDoc = vi.fn().mockResolvedValue(updatedDoc);
+
+			const response = await request(app)
+				.post("/docs/by-id/1/reorder")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ direction: "down" });
+
+			expect(response.status).toBe(200);
+			expect(response.body).toMatchObject({ id: 1, sortOrder: 2 });
+			expect(mockDao.reorderDoc).toHaveBeenCalledWith(1, "down");
+		});
+
+		it("should return 400 for invalid document ID", async () => {
+			const response = await request(app)
+				.post("/docs/by-id/invalid/reorder")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ direction: "up" });
+
+			expect(response.status).toBe(400);
+			expect(response.body).toEqual({ error: "Invalid document ID" });
+		});
+
+		it("should return 400 when direction is not provided", async () => {
+			const response = await request(app)
+				.post("/docs/by-id/1/reorder")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({});
+
+			expect(response.status).toBe(400);
+			expect(response.body).toEqual({ error: "Direction must be 'up' or 'down'" });
+		});
+
+		it("should return 400 when direction is invalid", async () => {
+			const response = await request(app)
+				.post("/docs/by-id/1/reorder")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ direction: "left" });
+
+			expect(response.status).toBe(400);
+			expect(response.body).toEqual({ error: "Direction must be 'up' or 'down'" });
+		});
+
+		it("should return 400 when document is not found or at boundary", async () => {
+			mockDao.reorderDoc = vi.fn().mockResolvedValue(undefined);
+
+			const response = await request(app)
+				.post("/docs/by-id/999/reorder")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ direction: "up" });
+
+			expect(response.status).toBe(400);
+			expect(response.body).toEqual({ error: "Cannot reorder: document not found or at boundary" });
+		});
+
+		it("should return 500 on reorder error", async () => {
+			mockDao.reorderDoc = vi.fn().mockRejectedValue(new Error("Database error"));
+
+			const response = await request(app)
+				.post("/docs/by-id/1/reorder")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ direction: "up" });
+
+			expect(response.status).toBe(500);
+			expect(response.body).toEqual({ error: "Failed to reorder document" });
+		});
+	});
+
+	describe("POST /by-id/:id/reorder-at", () => {
+		it("should return 401 when not authenticated", async () => {
+			const response = await request(app)
+				.post("/docs/by-id/1/reorder-at")
+				.send({ referenceDocId: 2, position: "after" });
+
+			expect(response.status).toBe(401);
+			expect(response.body).toEqual({ error: "Not authorized" });
+		});
+
+		it("should reorder document after another document", async () => {
+			const updatedDoc = mockDoc({ id: 1, sortOrder: 1.5 });
+			mockDao.reorderAt = vi.fn().mockResolvedValue(updatedDoc);
+
+			const response = await request(app)
+				.post("/docs/by-id/1/reorder-at")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ referenceDocId: 2, position: "after" });
+
+			expect(response.status).toBe(200);
+			expect(response.body).toMatchObject({ id: 1, sortOrder: 1.5 });
+			expect(mockDao.reorderAt).toHaveBeenCalledWith(1, 2, "after");
+		});
+
+		it("should reorder document before another document", async () => {
+			const updatedDoc = mockDoc({ id: 1, sortOrder: 0.5 });
+			mockDao.reorderAt = vi.fn().mockResolvedValue(updatedDoc);
+
+			const response = await request(app)
+				.post("/docs/by-id/1/reorder-at")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ referenceDocId: 2, position: "before" });
+
+			expect(response.status).toBe(200);
+			expect(response.body).toMatchObject({ id: 1, sortOrder: 0.5 });
+			expect(mockDao.reorderAt).toHaveBeenCalledWith(1, 2, "before");
+		});
+
+		it("should move to end of folder (referenceDocId null)", async () => {
+			const updatedDoc = mockDoc({ id: 1, sortOrder: 10 });
+			mockDao.reorderAt = vi.fn().mockResolvedValue(updatedDoc);
+
+			const response = await request(app)
+				.post("/docs/by-id/1/reorder-at")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ referenceDocId: null, position: "after" });
+
+			expect(response.status).toBe(200);
+			expect(response.body).toMatchObject({ id: 1, sortOrder: 10 });
+			expect(mockDao.reorderAt).toHaveBeenCalledWith(1, null, "after");
+		});
+
+		it("should return 400 for invalid document ID", async () => {
+			const response = await request(app)
+				.post("/docs/by-id/invalid/reorder-at")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ referenceDocId: 2, position: "after" });
+
+			expect(response.status).toBe(400);
+			expect(response.body).toEqual({ error: "Invalid document ID" });
+		});
+
+		it("should use default position (after) when position is not provided", async () => {
+			const updatedDoc = mockDoc({ id: 1, sortOrder: 1.5 });
+			mockDao.reorderAt = vi.fn().mockResolvedValue(updatedDoc);
+
+			const response = await request(app)
+				.post("/docs/by-id/1/reorder-at")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ referenceDocId: 2 });
+
+			expect(response.status).toBe(200);
+			expect(response.body).toMatchObject({ id: 1, sortOrder: 1.5 });
+			expect(mockDao.reorderAt).toHaveBeenCalledWith(1, 2, undefined);
+		});
+
+		it("should move to end when no referenceDocId provided", async () => {
+			const updatedDoc = mockDoc({ id: 1, sortOrder: 10 });
+			mockDao.reorderAt = vi.fn().mockResolvedValue(updatedDoc);
+
+			const response = await request(app)
+				.post("/docs/by-id/1/reorder-at")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({});
+
+			expect(response.status).toBe(200);
+			expect(response.body).toMatchObject({ id: 1, sortOrder: 10 });
+			expect(mockDao.reorderAt).toHaveBeenCalledWith(1, undefined, undefined);
+		});
+
+		it("should return 400 when position is invalid", async () => {
+			const response = await request(app)
+				.post("/docs/by-id/1/reorder-at")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ referenceDocId: 2, position: "invalid" });
+
+			expect(response.status).toBe(400);
+			expect(response.body).toEqual({ error: "Invalid position: must be 'before' or 'after'" });
+		});
+
+		it("should return 400 when referenceDocId is invalid type", async () => {
+			const response = await request(app)
+				.post("/docs/by-id/1/reorder-at")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ referenceDocId: "invalid", position: "after" });
+
+			expect(response.status).toBe(400);
+			expect(response.body).toEqual({ error: "Invalid referenceDocId: must be a number or null" });
+		});
+
+		it("should return 400 when referenceDocId is not a positive integer", async () => {
+			const response = await request(app)
+				.post("/docs/by-id/1/reorder-at")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ referenceDocId: -1, position: "after" });
+
+			expect(response.status).toBe(400);
+			expect(response.body).toEqual({ error: "Invalid referenceDocId: must be a positive integer" });
+		});
+
+		it("should return 400 when document not found", async () => {
+			mockDao.reorderAt = vi.fn().mockResolvedValue(undefined);
+
+			const response = await request(app)
+				.post("/docs/by-id/999/reorder-at")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ referenceDocId: 2, position: "after" });
+
+			expect(response.status).toBe(400);
+			expect(response.body).toEqual({ error: "Cannot reorder: document not found" });
+		});
+
+		it("should return 400 when referenceDocId is not a sibling", async () => {
+			mockDao.reorderAt = vi.fn().mockRejectedValue(new Error("referenceDocId must be in the target folder"));
+
+			const response = await request(app)
+				.post("/docs/by-id/1/reorder-at")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ referenceDocId: 2, position: "after" });
+
+			expect(response.status).toBe(400);
+			expect(response.body).toEqual({ error: "referenceDocId must be in the target folder" });
+		});
+
+		it("should return 500 on database error", async () => {
+			mockDao.reorderAt = vi.fn().mockRejectedValue(new Error("Database error"));
+
+			const response = await request(app)
+				.post("/docs/by-id/1/reorder-at")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ referenceDocId: 2, position: "after" });
+
+			expect(response.status).toBe(500);
+			expect(response.body).toEqual({ error: "Failed to reorder document" });
+		});
+	});
+
+	describe("POST /by-id/:id/move", () => {
+		it("should return 401 when not authenticated", async () => {
+			const response = await request(app).post("/docs/by-id/1/move").send({ parentId: 2 });
+
+			expect(response.status).toBe(401);
+			expect(response.body).toEqual({ error: "Not authorized" });
+		});
+
+		it("should move document successfully to another folder", async () => {
+			const existingDoc = mockDoc({ id: 1, parentId: 1, path: "/folder-a/doc" });
+			const movedDoc = mockDoc({ id: 1, parentId: 2, path: "/folder-b/doc", version: existingDoc.version + 1 });
+
+			mockDao.readDocById = vi.fn().mockResolvedValue(existingDoc);
+			mockDao.moveDoc = vi.fn().mockResolvedValue(movedDoc);
+
+			const response = await request(app)
+				.post("/docs/by-id/1/move")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ parentId: 2 });
+
+			expect(response.status).toBe(200);
+			expect(response.body).toMatchObject({ id: 1, parentId: 2, path: "/folder-b/doc" });
+			expect(mockDao.moveDoc).toHaveBeenCalledWith(1, 2, undefined, undefined);
+		});
+
+		it("should move document to root level (parentId null)", async () => {
+			const existingDoc = mockDoc({ id: 1, parentId: 1, path: "/folder/doc" });
+			const movedDoc = mockDoc({ id: 1, parentId: undefined, path: "/doc", version: existingDoc.version + 1 });
+
+			mockDao.readDocById = vi.fn().mockResolvedValue(existingDoc);
+			mockDao.moveDoc = vi.fn().mockResolvedValue(movedDoc);
+
+			const response = await request(app)
+				.post("/docs/by-id/1/move")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ parentId: null });
+
+			expect(response.status).toBe(200);
+			expect(response.body).toMatchObject({ id: 1, path: "/doc" });
+			expect(mockDao.moveDoc).toHaveBeenCalledWith(1, undefined, undefined, undefined);
+		});
+
+		it("should move document to specific position with referenceDocId and position=after", async () => {
+			const existingDoc = mockDoc({ id: 1, parentId: 1, path: "/folder-a/doc" });
+			const movedDoc = mockDoc({ id: 1, parentId: 2, path: "/folder-b/doc", sortOrder: 1.5 });
+
+			mockDao.readDocById = vi.fn().mockResolvedValue(existingDoc);
+			mockDao.moveDoc = vi.fn().mockResolvedValue(movedDoc);
+
+			const response = await request(app)
+				.post("/docs/by-id/1/move")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ parentId: 2, referenceDocId: 3, position: "after" });
+
+			expect(response.status).toBe(200);
+			expect(response.body).toMatchObject({ id: 1, parentId: 2, sortOrder: 1.5 });
+			expect(mockDao.moveDoc).toHaveBeenCalledWith(1, 2, 3, "after");
+		});
+
+		it("should move document to specific position with referenceDocId and position=before", async () => {
+			const existingDoc = mockDoc({ id: 1, parentId: 1, path: "/folder-a/doc" });
+			const movedDoc = mockDoc({ id: 1, parentId: 2, path: "/folder-b/doc", sortOrder: 0.5 });
+
+			mockDao.readDocById = vi.fn().mockResolvedValue(existingDoc);
+			mockDao.moveDoc = vi.fn().mockResolvedValue(movedDoc);
+
+			const response = await request(app)
+				.post("/docs/by-id/1/move")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ parentId: 2, referenceDocId: 3, position: "before" });
+
+			expect(response.status).toBe(200);
+			expect(response.body).toMatchObject({ id: 1, parentId: 2, sortOrder: 0.5 });
+			expect(mockDao.moveDoc).toHaveBeenCalledWith(1, 2, 3, "before");
+		});
+
+		it("should move document to end with referenceDocId null", async () => {
+			const existingDoc = mockDoc({ id: 1, parentId: 1, path: "/folder-a/doc" });
+			const movedDoc = mockDoc({ id: 1, parentId: 2, path: "/folder-b/doc", sortOrder: 2.0 });
+
+			mockDao.readDocById = vi.fn().mockResolvedValue(existingDoc);
+			mockDao.moveDoc = vi.fn().mockResolvedValue(movedDoc);
+
+			const response = await request(app)
+				.post("/docs/by-id/1/move")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ parentId: 2, referenceDocId: null });
+
+			expect(response.status).toBe(200);
+			expect(response.body).toMatchObject({ id: 1, parentId: 2, sortOrder: 2.0 });
+			expect(mockDao.moveDoc).toHaveBeenCalledWith(1, 2, null, undefined);
+		});
+
+		it("should return 400 for invalid referenceDocId type", async () => {
+			const existingDoc = mockDoc({ id: 1 });
+			mockDao.readDocById = vi.fn().mockResolvedValue(existingDoc);
+
+			const response = await request(app)
+				.post("/docs/by-id/1/move")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ parentId: 2, referenceDocId: "invalid" });
+
+			expect(response.status).toBe(400);
+			expect(response.body).toEqual({ error: "Invalid referenceDocId: must be a number or null" });
+		});
+
+		it("should return 400 for negative referenceDocId", async () => {
+			const existingDoc = mockDoc({ id: 1 });
+			mockDao.readDocById = vi.fn().mockResolvedValue(existingDoc);
+
+			const response = await request(app)
+				.post("/docs/by-id/1/move")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ parentId: 2, referenceDocId: -1 });
+
+			expect(response.status).toBe(400);
+			expect(response.body).toEqual({ error: "Invalid referenceDocId: must be a positive integer" });
+		});
+
+		it("should return 400 for invalid position value", async () => {
+			const existingDoc = mockDoc({ id: 1 });
+			mockDao.readDocById = vi.fn().mockResolvedValue(existingDoc);
+
+			const response = await request(app)
+				.post("/docs/by-id/1/move")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ parentId: 2, referenceDocId: 3, position: "invalid" });
+
+			expect(response.status).toBe(400);
+			expect(response.body).toEqual({ error: "Invalid position: must be 'before' or 'after'" });
+		});
+
+		it("should return 400 for invalid document ID", async () => {
+			const response = await request(app)
+				.post("/docs/by-id/invalid/move")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ parentId: 2 });
+
+			expect(response.status).toBe(400);
+			expect(response.body).toEqual({ error: "Invalid document ID" });
+		});
+
+		it("should return 404 when document not found", async () => {
+			mockDao.readDocById = vi.fn().mockResolvedValue(undefined);
+
+			const response = await request(app)
+				.post("/docs/by-id/999/move")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ parentId: 2 });
+
+			expect(response.status).toBe(404);
+			expect(response.body).toEqual({ error: "Document not found" });
+		});
+
+		it("should return 400 for circular reference error", async () => {
+			const existingDoc = mockDoc({ id: 1, docType: "folder" });
+			mockDao.readDocById = vi.fn().mockResolvedValue(existingDoc);
+			mockDao.moveDoc = vi.fn().mockRejectedValue(new Error("Cannot move folder to its descendant"));
+
+			const response = await request(app)
+				.post("/docs/by-id/1/move")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ parentId: 2 });
+
+			expect(response.status).toBe(400);
+			expect(response.body).toEqual({ error: "Cannot move folder to its descendant" });
+		});
+
+		it("should return 400 for moving to itself error", async () => {
+			const existingDoc = mockDoc({ id: 1 });
+			mockDao.readDocById = vi.fn().mockResolvedValue(existingDoc);
+			mockDao.moveDoc = vi.fn().mockRejectedValue(new Error("Cannot move item to itself"));
+
+			const response = await request(app)
+				.post("/docs/by-id/1/move")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ parentId: 1 });
+
+			expect(response.status).toBe(400);
+			expect(response.body).toEqual({ error: "Cannot move item to itself" });
+		});
+
+		it("should return 400 for deleted parent error", async () => {
+			const existingDoc = mockDoc({ id: 1 });
+			mockDao.readDocById = vi.fn().mockResolvedValue(existingDoc);
+			mockDao.moveDoc = vi.fn().mockRejectedValue(new Error("Target folder not found or has been deleted"));
+
+			const response = await request(app)
+				.post("/docs/by-id/1/move")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ parentId: 2 });
+
+			expect(response.status).toBe(400);
+			expect(response.body).toEqual({ error: "Target folder not found or has been deleted" });
+		});
+
+		it("should return 400 for non-folder parent error", async () => {
+			const existingDoc = mockDoc({ id: 1 });
+			mockDao.readDocById = vi.fn().mockResolvedValue(existingDoc);
+			mockDao.moveDoc = vi.fn().mockRejectedValue(new Error("Target must be a folder"));
+
+			const response = await request(app)
+				.post("/docs/by-id/1/move")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ parentId: 2 });
+
+			expect(response.status).toBe(400);
+			expect(response.body).toEqual({ error: "Target must be a folder" });
+		});
+
+		it("should return 500 when moveDoc returns undefined", async () => {
+			const existingDoc = mockDoc({ id: 1 });
+			mockDao.readDocById = vi.fn().mockResolvedValue(existingDoc);
+			mockDao.moveDoc = vi.fn().mockResolvedValue(undefined);
+
+			const response = await request(app)
+				.post("/docs/by-id/1/move")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ parentId: 2 });
+
+			expect(response.status).toBe(500);
+			expect(response.body).toEqual({ error: "Failed to move document" });
+		});
+
+		it("should return 500 on database error", async () => {
+			const existingDoc = mockDoc({ id: 1 });
+			mockDao.readDocById = vi.fn().mockResolvedValue(existingDoc);
+			mockDao.moveDoc = vi.fn().mockRejectedValue(new Error("Database connection failed"));
+
+			const response = await request(app)
+				.post("/docs/by-id/1/move")
+				.set("Cookie", `authToken=${authToken}`)
+				.send({ parentId: 2 });
+
+			expect(response.status).toBe(500);
+			expect(response.body).toEqual({ error: "Failed to move document" });
 		});
 	});
 });

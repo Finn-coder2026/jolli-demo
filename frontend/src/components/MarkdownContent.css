@@ -3,6 +3,7 @@
 	color: inherit;
 	font-size: 14px;
 	line-height: 1.6;
+	overflow-wrap: break-word;
 }
 
 /* Headings */
@@ -19,15 +20,11 @@
 }
 
 .markdownContent h1 {
-	border-bottom: 1px solid var(--color-border);
 	font-size: 2em;
-	padding-bottom: 0.3em;
 }
 
 .markdownContent h2 {
-	border-bottom: 1px solid var(--color-border);
 	font-size: 1.5em;
-	padding-bottom: 0.3em;
 }
 
 .markdownContent h3 {
@@ -53,11 +50,19 @@
 	margin-top: 0;
 }
 
+.markdownContent--compact p {
+	margin-bottom: 8px;
+}
+
 .markdownContent li > p {
 	margin-bottom: 8px;
 }
 
 .markdownContent p:last-child {
+	margin-bottom: 0;
+}
+
+.markdownContent--compact p:last-child {
 	margin-bottom: 0;
 }
 
@@ -81,6 +86,12 @@
 	list-style-type: decimal;
 }
 
+.markdownContent--compact ul,
+.markdownContent--compact ol {
+	margin-bottom: 8px;
+	padding-left: 1.5em;
+}
+
 .markdownContent ul ul {
 	list-style-type: circle;
 }
@@ -96,6 +107,7 @@
 	border-radius: 3px;
 	font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
 	font-size: 0.9em;
+	overflow-wrap: break-word;
 	padding: 2px 6px;
 }
 
@@ -213,4 +225,53 @@
 /* Last element margin */
 .markdownContent > :last-child {
 	margin-bottom: 0;
+}
+
+/* Compact variant for chat messages */
+.markdownContent--compact {
+	font-size: 14px;
+	line-height: 1.5;
+}
+
+.markdownContent--compact li {
+	margin-bottom: 2px;
+}
+
+.markdownContent--compact h1,
+.markdownContent--compact h2,
+.markdownContent--compact h3,
+.markdownContent--compact h4,
+.markdownContent--compact h5,
+.markdownContent--compact h6 {
+	margin-bottom: 8px;
+	margin-top: 12px;
+}
+
+.markdownContent--compact h1 {
+	border-bottom: none;
+	font-size: 1.25em;
+	padding-bottom: 0;
+}
+
+.markdownContent--compact h2 {
+	border-bottom: none;
+	font-size: 1.125em;
+	padding-bottom: 0;
+}
+
+.markdownContent--compact h3 {
+	font-size: 1em;
+}
+
+.markdownContent--compact blockquote {
+	margin: 8px 0;
+}
+
+.markdownContent--compact pre {
+	margin: 8px 0;
+	padding: 12px;
+}
+
+.markdownContent--compact img {
+	margin: 8px 0;
 }

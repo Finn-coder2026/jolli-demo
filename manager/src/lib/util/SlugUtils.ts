@@ -33,3 +33,21 @@ export function generateProviderSlug(name: string, maxLength = DEFAULT_MAX_LENGT
 export function isValidProviderSlug(slug: string): boolean {
 	return /^[a-z0-9_]+$/.test(slug) && slug.length > 0 && slug.length <= DEFAULT_MAX_LENGTH;
 }
+
+/**
+ * Convert a slug to a valid PostgreSQL identifier.
+ *
+ * PostgreSQL identifiers and tools like pg-boss only allow alphanumeric
+ * characters and underscores. This function replaces hyphens with underscores
+ * to ensure compatibility.
+ *
+ * Note: Since tenant/org slugs only allow lowercase alphanumeric and hyphens
+ * (underscores are not allowed in slugs), this conversion is collision-safe.
+ * Two different slugs cannot produce the same PostgreSQL identifier.
+ *
+ * @param slug - The slug to convert (e.g., "pie-project")
+ * @returns A PostgreSQL-safe identifier (e.g., "pie_project")
+ */
+export function slugToPostgresIdentifier(slug: string): string {
+	return slug.replace(/-/g, "_");
+}

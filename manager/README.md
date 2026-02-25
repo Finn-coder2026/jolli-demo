@@ -1,3 +1,6 @@
+---
+jrn: MKKIR4V42QPGQD09
+---
 # Jolli Manager
 
 Next.js management application for multi-tenant Jolli deployments.

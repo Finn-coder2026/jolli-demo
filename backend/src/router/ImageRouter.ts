@@ -3,9 +3,11 @@
  * Handles image uploads to S3 and provides signed URL access.
  */
 
+import { auditLog, computeAuditChanges } from "../audit";
 import { getConfig } from "../config/Config";
 import type { AssetDao } from "../dao/AssetDao";
 import type { DaoProvider } from "../dao/DaoProvider";
+import type { SpaceDao } from "../dao/SpaceDao";
 import type { ImageStorageService } from "../services/ImageStorageService";
 import { getTenantContext } from "../tenant/TenantContext";
 import { validateImage } from "../util/ImageValidator";
@@ -42,22 +44,34 @@ export function createPayloadTooLargeHandler(maxSizeBytes: number) {
  *
  * @param imageStorageService - Service for S3 image operations
  * @param assetDaoProvider - Provider for asset metadata DAO
+ * @param spaceDaoProvider - Provider for space DAO (for space lookup on upload)
  * @param tokenUtil - Token utility for authentication
  * @returns Express router for image endpoints
  */
 export function createImageRouter(
 	imageStorageService: ImageStorageService,
 	assetDaoProvider: DaoProvider<AssetDao>,
+	spaceDaoProvider: DaoProvider<SpaceDao>,
 	tokenUtil: TokenUtil<UserInfo>,
 ): Router {
 	const router = express.Router();
+
+	function getSpaceDao(): SpaceDao {
+		const tenantContext = getTenantContext();
+		return spaceDaoProvider.getDao(tenantContext);
+	}
 
 	/**
 	 * POST /api/images
 	 * Upload a new image.
 	 *
 	 * Expects raw binary body with Content-Type header set to image MIME type.
-	 * Optionally accepts X-Original-Filename header for metadata.
+	 * Optionally accepts:
+	 * - X-Original-Filename header for metadata
+	 * - X-Space-Id header for space scoping (numeric space ID)
+	 *
+	 * If X-Space-Id is provided, the image will be scoped to that space.
+	 * Otherwise, the image will be org-wide (legacy behavior).
 	 *
 	 * Returns: { imageId: string, url: string }
 	 */
@@ -113,7 +127,30 @@ export function createImageRouter(
 				const rawFilename = req.get("X-Original-Filename");
 				const originalFilename = rawFilename ? rawFilename.slice(0, 255) : undefined;
 
-				// Upload to S3 with tenant/org/_default prefix
+				// Get space ID from header (optional) for space scoping
+				const spaceIdHeader = req.get("X-Space-Id");
+				let spaceId: number | undefined;
+				let spaceSlug: string | undefined;
+
+				if (spaceIdHeader) {
+					const parsedSpaceId = Number.parseInt(spaceIdHeader, 10);
+					if (!Number.isNaN(parsedSpaceId) && parsedSpaceId > 0) {
+						// Look up space to get slug for S3 key and validate it exists
+						const space = await getSpaceDao().getSpace(parsedSpaceId, userIdResult);
+						if (space) {
+							spaceId = space.id;
+							spaceSlug = space.slug;
+						} else {
+							log.warn(
+								{ tenantId, orgId, spaceId: parsedSpaceId },
+								"Invalid space ID %d in X-Space-Id header, uploading as org-wide",
+								parsedSpaceId,
+							);
+						}
+					}
+				}
+
+				// Upload to S3 with tenant/org/space prefix
 				const result = await imageStorageService.uploadImage(
 					tenantId,
 					orgId,
@@ -121,6 +158,7 @@ export function createImageRouter(
 					validationResult.mimeType,
 					validationResult.extension,
 					originalFilename,
+					spaceSlug,
 				);
 
 				// Save asset metadata to database (org isolation is handled by schema-scoped DAO)
@@ -132,14 +170,25 @@ export function createImageRouter(
 					size: result.size,
 					originalFilename: originalFilename ?? null,
 					uploadedBy: userIdResult,
+					spaceId: spaceId ?? null,
 				});
 
 				log.info(
-					{ tenantId, orgId, userId: userIdResult, imageId: result.imageId, size: result.size },
-					"Image uploaded: %s (%d bytes)",
+					{ tenantId, orgId, userId: userIdResult, imageId: result.imageId, size: result.size, spaceId },
+					"Image uploaded: %s (%d bytes)%s",
 					result.imageId,
 					result.size,
+					spaceId ? ` [space: ${spaceId}]` : " [org-wide]",
 				);
+
+				// Audit log image upload
+				auditLog({
+					action: "create",
+					resourceType: "image",
+					resourceId: result.imageId,
+					resourceName: originalFilename ?? result.imageId,
+					metadata: { mimeType: validationResult.mimeType, size: result.size, spaceId: spaceId ?? null },
+				});
 
 				// Return the image ID and API URL
 				return res.status(201).json({
@@ -156,7 +205,12 @@ export function createImageRouter(
 	/**
 	 * GET /api/images/*imageId
 	 * Get a signed URL for an image and redirect to it.
-	 * Uses wildcard to capture paths with slashes (e.g., tenant/org/_default/uuid.png)
+	 * Uses wildcard to capture paths with slashes (e.g., tenant/org/space-slug/uuid.png)
+	 *
+	 * Space access validation:
+	 * - If spaceId query param or X-Space-Id header is provided, validates the image belongs to that space
+	 * - Query param takes precedence (for <img> tags that can't send headers)
+	 * - If neither is provided, returns 404 for space-scoped images (only org-wide images accessible)
 	 *
 	 * Returns: 302 redirect to signed S3 URL
 	 */
@@ -182,7 +236,24 @@ export function createImageRouter(
 			// Check if asset exists in database (not deleted)
 			// Note: Org isolation is handled by schema-scoped DAO - each org has its own DB schema
 			const assetDao = assetDaoProvider.getDao(tenantContext);
-			const asset = await assetDao.findByS3Key(imageId);
+
+			// Build allowed space IDs set from query param (preferred) or header
+			// Query param takes precedence since <img> tags can't send headers
+			// Default to empty set (deny space-scoped assets) when no spaceId provided
+			// This prevents cross-space access when a caller knows an imageId but omits space context
+			const spaceIdQuery = req.query.spaceId as string | undefined;
+			const spaceIdHeader = req.get("X-Space-Id");
+			const spaceIdStr = spaceIdQuery ?? spaceIdHeader;
+			const allowedSpaceIds = new Set<number>();
+
+			if (spaceIdStr) {
+				const parsedSpaceId = Number.parseInt(spaceIdStr, 10);
+				if (!Number.isNaN(parsedSpaceId) && parsedSpaceId > 0) {
+					allowedSpaceIds.add(parsedSpaceId);
+				}
+			}
+
+			const asset = await assetDao.findByS3KeyWithSpaceAccess(imageId, allowedSpaceIds);
 			if (!asset) {
 				return res.status(404).json({ error: "Image not found" });
 			}
@@ -255,6 +326,15 @@ export function createImageRouter(
 			// Then soft delete in database (if this fails, we have an orphaned S3 deletion,
 			// but that's safer than the reverse - the image is truly gone from storage)
 			await assetDao.softDelete(imageId);
+
+			// Audit log image deletion
+			auditLog({
+				action: "delete",
+				resourceType: "image",
+				resourceId: imageId,
+				resourceName: asset.originalFilename ?? imageId,
+				changes: computeAuditChanges(asset as unknown as Record<string, unknown>, null, "image"),
+			});
 
 			log.info({ userId: userIdResult, imageId }, "Image deleted: %s", imageId);
 

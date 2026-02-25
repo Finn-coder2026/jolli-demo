@@ -31,6 +31,10 @@ export interface DocDraftEditHistory {
 export type NewDocDraftEditHistory = Omit<DocDraftEditHistory, "id" | "createdAt">;
 
 export function defineDocDraftEditHistory(sequelize: Sequelize): ModelDef<DocDraftEditHistory> {
+	const existing = sequelize.models?.doc_draft_edit_history;
+	if (existing) {
+		return existing as ModelDef<DocDraftEditHistory>;
+	}
 	return sequelize.define("doc_draft_edit_history", schema, { timestamps: true, updatedAt: false });
 }
 
@@ -52,10 +56,6 @@ const schema = {
 	userId: {
 		type: DataTypes.INTEGER,
 		allowNull: false,
-		references: {
-			model: "users",
-			key: "id",
-		},
 	},
 	editType: {
 		type: DataTypes.STRING,

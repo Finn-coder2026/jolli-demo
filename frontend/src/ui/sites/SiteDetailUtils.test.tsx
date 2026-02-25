@@ -1,4 +1,5 @@
-import { getChangeTypeStyle, getStatusBadge, getVisibilityBadge } from "./SiteDetailUtils";
+import { getChangeCount, getChangeTypeStyle, getStatusBadge, needsRebuild } from "./SiteDetailUtils";
+import type { SiteWithUpdate } from "jolli-common";
 import { describe, expect, it, vi } from "vitest";
 
 // Mock lucide-react icons
@@ -41,31 +42,84 @@ describe("SiteDetailUtils", () => {
 			expect(result).not.toBeNull();
 		});
 
-		it("should return null for unknown status", () => {
-			const result = getStatusBadge("unknown", statusLabels);
+		it("should return null for archived status", () => {
+			const result = getStatusBadge("archived", statusLabels);
 			expect(result).toBeNull();
 		});
 	});
 
-	describe("getVisibilityBadge", () => {
-		const visibilityLabels = {
-			internal: "Internal",
-			external: "External",
-		};
+	describe("getChangeCount", () => {
+		function makeSite(overrides: Partial<SiteWithUpdate> = {}): SiteWithUpdate {
+			return {
+				id: 1,
+				name: "test",
+				displayName: "Test",
+				userId: 1,
+				visibility: "external",
+				needsUpdate: false,
+				...overrides,
+			} as SiteWithUpdate;
+		}
 
-		it("should return badge element for internal visibility", () => {
-			const result = getVisibilityBadge("internal", visibilityLabels);
-			expect(result).not.toBeNull();
+		it("should return 0 when no changes exist", () => {
+			expect(getChangeCount(makeSite())).toBe(0);
 		});
 
-		it("should return badge element for external visibility", () => {
-			const result = getVisibilityBadge("external", visibilityLabels);
-			expect(result).not.toBeNull();
+		it("should count changed articles", () => {
+			const site = makeSite({
+				changedArticles: [
+					{ id: 1, jrn: "a", title: "A", changeType: "new", updatedAt: "2024-01-01", contentType: "mdx" },
+				],
+			});
+			expect(getChangeCount(site)).toBe(1);
 		});
 
-		it("should return null for unknown visibility", () => {
-			const result = getVisibilityBadge("unknown", visibilityLabels);
-			expect(result).toBeNull();
+		it("should count all change types together", () => {
+			const site = makeSite({
+				changedArticles: [
+					{ id: 1, jrn: "a", title: "A", changeType: "new", updatedAt: "2024-01-01", contentType: "mdx" },
+				],
+				changedConfigFiles: [{ path: "_meta.ts", displayName: "Meta" }],
+				authChange: { from: false, to: true },
+				brandingChanged: true,
+			});
+			expect(getChangeCount(site)).toBe(4);
+		});
+	});
+
+	describe("needsRebuild", () => {
+		function makeSite(overrides: Partial<SiteWithUpdate> = {}): SiteWithUpdate {
+			return {
+				id: 1,
+				name: "test",
+				displayName: "Test",
+				userId: 1,
+				visibility: "external",
+				needsUpdate: false,
+				...overrides,
+			} as SiteWithUpdate;
+		}
+
+		it("should return false when no changes", () => {
+			expect(needsRebuild(makeSite())).toBe(false);
+		});
+
+		it("should return true when needsUpdate is true", () => {
+			expect(needsRebuild(makeSite({ needsUpdate: true }))).toBe(true);
+		});
+
+		it("should return true when authChange exists", () => {
+			expect(needsRebuild(makeSite({ authChange: { from: false, to: true } }))).toBe(true);
+		});
+
+		it("should return true when brandingChanged is true", () => {
+			expect(needsRebuild(makeSite({ brandingChanged: true }))).toBe(true);
+		});
+
+		it("should return true when changedConfigFiles is non-empty", () => {
+			expect(needsRebuild(makeSite({ changedConfigFiles: [{ path: "_meta.ts", displayName: "Meta" }] }))).toBe(
+				true,
+			);
 		});
 	});
 

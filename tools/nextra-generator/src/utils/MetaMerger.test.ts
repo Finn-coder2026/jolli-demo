@@ -1,5 +1,5 @@
 import { MetaMerger } from "./MetaMerger";
-import type { FolderMetaInfo, VirtualGroupMeta } from "jolli-common";
+import type { ExistingNavMeta, FolderMetaInfo, VirtualGroupMeta } from "jolli-common";
 import { describe, expect, test } from "vitest";
 
 describe("MetaMerger", () => {
@@ -902,9 +902,11 @@ describe("MetaMerger", () => {
 		});
 
 		test("preserves complex entry with type:page when matching file exists", () => {
+			// These tests use entries that don't strictly match ExistingNavMetaEntry types
+			// but are valid in Nextra's _meta.ts - use type assertion via unknown
 			const existingMeta = {
 				api: { title: "API", type: "page" as const },
-			};
+			} as unknown as ExistingNavMeta;
 
 			const result = merger.mergeFromParsed({
 				existingMeta,
@@ -919,9 +921,11 @@ describe("MetaMerger", () => {
 		});
 
 		test("removes complex entry when no matching file exists", () => {
+			// These tests use entries that don't strictly match ExistingNavMetaEntry types
+			// but are valid in Nextra's _meta.ts - use type assertion via unknown
 			const existingMeta = {
 				orphan: { title: "Orphan", type: "page" as const },
-			};
+			} as unknown as ExistingNavMeta;
 
 			const result = merger.mergeFromParsed({
 				existingMeta,
@@ -936,9 +940,11 @@ describe("MetaMerger", () => {
 		});
 
 		test("preserves deeply nested objects like theme: {layout: 'full'}", () => {
+			// These tests use entries that don't strictly match ExistingNavMetaEntry types
+			// but are valid in Nextra's _meta.ts - use type assertion via unknown
 			const existingMeta = {
 				tag: { theme: { layout: "full" } },
-			};
+			} as unknown as ExistingNavMeta;
 
 			const result = merger.mergeFromParsed({
 				existingMeta,
@@ -1309,6 +1315,80 @@ describe("MetaMerger", () => {
 			expect(result.success).toBe(true);
 			const folderResult = result.results[0];
 			expect(folderResult?.metaContent).toBeDefined();
+
+			// Verify the generated content is valid TypeScript
+			const syntaxResult = merger.validateSyntax(folderResult?.metaContent ?? "");
+			expect(syntaxResult.valid).toBe(true);
+		});
+
+		test("removes menu items with href when they don't match article slugs", () => {
+			// Virtual groups filter their items against article slugs.
+			// Items with href (MenuItemWithHref) are removed because they don't match any article.
+			// This is expected behavior - use top-level external links for external hrefs.
+			const folders: Array<FolderMetaInfo> = [
+				{
+					folderPath: "",
+					metaContent: `export default {
+  'index': 'Home',
+  'links': {
+    title: 'External Links',
+    type: 'menu',
+    items: {
+      'github': { title: 'GitHub', href: 'https://github.com/example' },
+      'docs': { title: 'Documentation', href: 'https://docs.example.com' }
+    }
+  }
+}`,
+					slugs: ["index"],
+				},
+			];
+
+			const result = merger.mergeAllMetaFiles({
+				folders,
+				articleTitles: new Map([["index", "Home"]]),
+			});
+
+			expect(result.success).toBe(true);
+			const folderResult = result.results[0];
+			expect(folderResult?.metaContent).toBeDefined();
+
+			// The 'links' menu entry should be REMOVED because all its items were filtered out
+			// (items don't match article slugs)
+			expect(folderResult?.metaContent).not.toContain("links");
+			expect(folderResult?.metaContent).not.toContain("github");
+			expect(folderResult?.metaContent).not.toContain("External Links");
+
+			// Verify the generated content is valid TypeScript
+			const syntaxResult = merger.validateSyntax(folderResult?.metaContent ?? "");
+			expect(syntaxResult.valid).toBe(true);
+		});
+
+		test("preserves top-level external links", () => {
+			// External links at the top level (not inside virtual groups) are preserved
+			const folders: Array<FolderMetaInfo> = [
+				{
+					folderPath: "",
+					metaContent: `export default {
+  'index': 'Home',
+  'github': { title: 'GitHub', href: 'https://github.com/example' }
+}`,
+					slugs: ["index"],
+				},
+			];
+
+			const result = merger.mergeAllMetaFiles({
+				folders,
+				articleTitles: new Map([["index", "Home"]]),
+			});
+
+			expect(result.success).toBe(true);
+			const folderResult = result.results[0];
+			expect(folderResult?.metaContent).toBeDefined();
+
+			// Top-level external links are preserved
+			expect(folderResult?.metaContent).toContain("github");
+			expect(folderResult?.metaContent).toContain("GitHub");
+			expect(folderResult?.metaContent).toContain("https://github.com/example");
 
 			// Verify the generated content is valid TypeScript
 			const syntaxResult = merger.validateSyntax(folderResult?.metaContent ?? "");

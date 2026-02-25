@@ -5,6 +5,7 @@ interface SimpleDropdownProps {
 	trigger: ReactNode;
 	children: ReactNode;
 	align?: "start" | "end";
+	position?: "above" | "below";
 	className?: string;
 }
 
@@ -15,7 +16,20 @@ function getAlignmentClass(align?: "start" | "end"): string {
 	return align === "end" ? "right-0" : "left-0";
 }
 
-export function SimpleDropdown({ trigger, children, align = "end", className }: SimpleDropdownProps): ReactElement {
+/**
+ * Gets the position class for the dropdown content
+ */
+function getPositionClass(position?: "above" | "below"): string {
+	return position === "above" ? "bottom-full mb-2" : "top-full mt-2";
+}
+
+export function SimpleDropdown({
+	trigger,
+	children,
+	align = "end",
+	position = "below",
+	className,
+}: SimpleDropdownProps): ReactElement {
 	const [isOpen, setIsOpen] = useState(false);
 	const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -41,8 +55,9 @@ export function SimpleDropdown({ trigger, children, align = "end", className }: 
 			{isOpen && (
 				<div
 					className={cn(
-						"absolute top-full mt-2 min-w-[12rem] rounded-md border bg-popover p-1 text-popover-foreground shadow-md z-50",
+						"absolute min-w-[12rem] rounded-md border bg-popover p-1 text-popover-foreground shadow-md z-50",
 						getAlignmentClass(align),
+						getPositionClass(position),
 						className,
 					)}
 				>
@@ -57,9 +72,15 @@ interface SimpleDropdownItemProps {
 	children: ReactNode;
 	onClick?: () => void;
 	className?: string;
+	"data-testid"?: string;
 }
 
-export function SimpleDropdownItem({ children, onClick, className }: SimpleDropdownItemProps): ReactElement {
+export function SimpleDropdownItem({
+	children,
+	onClick,
+	className,
+	"data-testid": dataTestId,
+}: SimpleDropdownItemProps): ReactElement {
 	return (
 		<div
 			className={cn(
@@ -67,6 +88,7 @@ export function SimpleDropdownItem({ children, onClick, className }: SimpleDropd
 				className,
 			)}
 			onClick={onClick}
+			data-testid={dataTestId}
 		>
 			{children}
 		</div>

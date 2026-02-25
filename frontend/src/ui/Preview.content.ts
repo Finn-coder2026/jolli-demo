@@ -51,6 +51,20 @@ const previewContent = {
 			en: "Source",
 			es: "Código fuente",
 		}),
+
+		// Edit button
+		edit: t({
+			en: "Edit",
+			es: "Editar",
+		}),
+		suggestion: t({
+			en: "suggestion",
+			es: "sugerencia",
+		}),
+		suggestions: t({
+			en: "suggestions",
+			es: "sugerencias",
+		}),
 	},
 } satisfies Dictionary;
 

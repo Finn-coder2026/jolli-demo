@@ -70,6 +70,11 @@ update_environment() {
     local BOOTSTRAP_SECRET=$(aws ssm get-parameter --name "${PSTORE_PREFIX}/bootstrap/secret" --with-decryption --query 'Parameter.Value' --output text --region "$AWS_REGION" 2>/dev/null || echo "")
     local VERCEL_BYPASS_SECRET=$(aws ssm get-parameter --name "${PSTORE_PREFIX}/vercel/bypass/secret" --with-decryption --query 'Parameter.Value' --output text --region "$AWS_REGION" 2>/dev/null || echo "")
     local DISABLE_DEFAULT_PROVIDER=$(aws ssm get-parameter --name "${PSTORE_PREFIX}/disable/default/provider" --with-decryption --query 'Parameter.Value' --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+	local GOOGLE_CLIENT_ID=$(aws ssm get-parameter --name "${PSTORE_PREFIX}/google/client/id" --with-decryption --query 'Parameter.Value' --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+	local GOOGLE_CLIENT_SECRET=$(aws ssm get-parameter --name "${PSTORE_PREFIX}/google/client/secret" --with-decryption --query 'Parameter.Value' --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+	local TOKEN_SECRET=$(aws ssm get-parameter --name "${PSTORE_PREFIX}/token/secret" --with-decryption --query 'Parameter.Value' --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+	local INITIAL_SUPER_ADMIN_EMAIL=$(aws ssm get-parameter --name "${PSTORE_PREFIX}/initial/super/admin/email" --with-decryption --query 'Parameter.Value' --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+	local ADMIN_DOMAIN=$(aws ssm get-parameter --name "${PSTORE_PREFIX}/admin/domain" --with-decryption --query 'Parameter.Value' --output text --region "$AWS_REGION" 2>/dev/null || echo "")
 
     cat > "${APP_DIR}/manager/.env" << ENVEOF
 PORT=${PORT}
@@ -83,6 +88,11 @@ BACKEND_INTERNAL_URL=${BACKEND_INTERNAL_URL}
 BOOTSTRAP_SECRET=${BOOTSTRAP_SECRET}
 VERCEL_BYPASS_SECRET=${VERCEL_BYPASS_SECRET}
 DISABLE_DEFAULT_PROVIDER=${DISABLE_DEFAULT_PROVIDER}
+GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+TOKEN_SECRET=${TOKEN_SECRET}
+INITIAL_SUPER_ADMIN_EMAIL=${INITIAL_SUPER_ADMIN_EMAIL}
+ADMIN_DOMAIN=${ADMIN_DOMAIN}
 ENVEOF
 
     # Save installed version

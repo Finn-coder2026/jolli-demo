@@ -1,7 +1,10 @@
 import { mockGitHubApp } from "../model/GitHubApp.mock";
 import {
+	CLEANUP_GRACE_PERIOD_MS,
 	checkGitHubAppExistsOnGitHub,
+	cleanupOrphanedGitHubAppInstallations,
 	createGitHubAppJWT,
+	fetchGithubCompare,
 	fetchInstallationRepositories,
 	findExistingInstallation,
 	findInstallationForOwner,
@@ -1895,6 +1898,304 @@ CsPGsHjRQP31pfVTFrZp5ywg
 				installationId: 123,
 				repos: ["test-org/repo1"],
 			});
+		});
+	});
+
+	describe("cleanupOrphanedGitHubAppInstallations", () => {
+		function createMockDao(localInstallations: Array<{ installationId: number }> = []) {
+			return {
+				listInstallations: vi.fn().mockResolvedValue(localInstallations),
+			} as never;
+		}
+
+		it("should return zeros when no GitHub installations exist", async () => {
+			global.fetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: vi.fn().mockResolvedValue([]),
+			});
+
+			const result = await cleanupOrphanedGitHubAppInstallations(createMockDao());
+
+			expect(result).toEqual({ uninstalledCount: 0, failedCount: 0 });
+		});
+
+		it("should return zeros when getInstallations returns undefined", async () => {
+			global.fetch = vi.fn().mockResolvedValue({
+				ok: false,
+				status: 500,
+			});
+
+			const result = await cleanupOrphanedGitHubAppInstallations(createMockDao());
+
+			expect(result).toEqual({ uninstalledCount: 0, failedCount: 0 });
+		});
+
+		it("should return zeros when all GitHub installations are tracked locally", async () => {
+			// First call: getInstallations
+			global.fetch = vi.fn().mockResolvedValueOnce({
+				ok: true,
+				json: vi.fn().mockResolvedValue([
+					{ id: 100, account: { login: "org-a" } },
+					{ id: 200, account: { login: "org-b" } },
+				]),
+			});
+
+			const dao = createMockDao([{ installationId: 100 }, { installationId: 200 }]);
+			const result = await cleanupOrphanedGitHubAppInstallations(dao);
+
+			expect(result).toEqual({ uninstalledCount: 0, failedCount: 0 });
+		});
+
+		it("should uninstall orphaned installation in single-tenant mode", async () => {
+			global.fetch = vi
+				.fn()
+				// getInstallations
+				.mockResolvedValueOnce({
+					ok: true,
+					json: vi.fn().mockResolvedValue([
+						{ id: 100, account: { login: "org-a" } },
+						{ id: 200, account: { login: "orphan-org" } },
+					]),
+				})
+				// uninstallGitHubApp for id 200 — DELETE succeeds
+				.mockResolvedValueOnce({ ok: true, status: 204 });
+
+			const dao = createMockDao([{ installationId: 100 }]);
+			const result = await cleanupOrphanedGitHubAppInstallations(dao);
+
+			expect(result).toEqual({ uninstalledCount: 1, failedCount: 0 });
+			// Verify the DELETE was called for the orphaned installation
+			expect(global.fetch).toHaveBeenCalledWith(
+				"https://api.github.com/app/installations/200",
+				expect.objectContaining({ method: "DELETE" }),
+			);
+		});
+
+		it("should count failed uninstallation attempts", async () => {
+			global.fetch = vi
+				.fn()
+				// getInstallations
+				.mockResolvedValueOnce({
+					ok: true,
+					json: vi.fn().mockResolvedValue([{ id: 300, account: { login: "orphan-org" } }]),
+				})
+				// uninstallGitHubApp for id 300 — DELETE fails
+				.mockResolvedValueOnce({ ok: false, status: 500 });
+
+			const dao = createMockDao([]);
+			const result = await cleanupOrphanedGitHubAppInstallations(dao);
+
+			expect(result).toEqual({ uninstalledCount: 0, failedCount: 1 });
+		});
+
+		it("should skip installation that belongs to another tenant in multi-tenant mode", async () => {
+			global.fetch = vi.fn().mockResolvedValueOnce({
+				ok: true,
+				json: vi.fn().mockResolvedValue([{ id: 400, account: { login: "other-tenant-org" } }]),
+			});
+
+			const dao = createMockDao([]);
+			const mockRegistryClient = {
+				getTenantOrgByInstallationId: vi.fn().mockResolvedValue({ tenant: { slug: "other" }, org: {} }),
+			};
+
+			const result = await cleanupOrphanedGitHubAppInstallations(dao, mockRegistryClient as never);
+
+			expect(result).toEqual({ uninstalledCount: 0, failedCount: 0 });
+			expect(mockRegistryClient.getTenantOrgByInstallationId).toHaveBeenCalledWith(400);
+			// No DELETE call should have been made
+			expect(global.fetch).toHaveBeenCalledTimes(1); // Only the getInstallations call
+		});
+
+		it("should uninstall installation with no registry mapping in multi-tenant mode", async () => {
+			global.fetch = vi
+				.fn()
+				// getInstallations
+				.mockResolvedValueOnce({
+					ok: true,
+					json: vi.fn().mockResolvedValue([{ id: 500, account: { login: "truly-orphaned" } }]),
+				})
+				// uninstallGitHubApp for id 500 — DELETE succeeds
+				.mockResolvedValueOnce({ ok: true, status: 204 });
+
+			const dao = createMockDao([]);
+			const mockRegistryClient = {
+				getTenantOrgByInstallationId: vi.fn().mockResolvedValue(undefined),
+			};
+
+			const result = await cleanupOrphanedGitHubAppInstallations(dao, mockRegistryClient as never);
+
+			expect(result).toEqual({ uninstalledCount: 1, failedCount: 0 });
+		});
+
+		it("should skip installation when registry lookup throws an error", async () => {
+			global.fetch = vi.fn().mockResolvedValueOnce({
+				ok: true,
+				json: vi.fn().mockResolvedValue([{ id: 600, account: { login: "error-org" } }]),
+			});
+
+			const dao = createMockDao([]);
+			const mockRegistryClient = {
+				getTenantOrgByInstallationId: vi.fn().mockRejectedValue(new Error("Registry error")),
+			};
+
+			const result = await cleanupOrphanedGitHubAppInstallations(dao, mockRegistryClient as never);
+
+			expect(result).toEqual({ uninstalledCount: 0, failedCount: 0 });
+		});
+
+		it("should return zeros without throwing when API error occurs", async () => {
+			global.fetch = vi.fn().mockRejectedValue(new Error("Network failure"));
+
+			const result = await cleanupOrphanedGitHubAppInstallations(createMockDao());
+
+			expect(result).toEqual({ uninstalledCount: 0, failedCount: 0 });
+		});
+
+		it("should skip installation created within the grace period", async () => {
+			const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+
+			global.fetch = vi.fn().mockResolvedValueOnce({
+				ok: true,
+				json: vi
+					.fn()
+					.mockResolvedValue([{ id: 700, account: { login: "recent-org" }, created_at: twoMinutesAgo }]),
+			});
+
+			const dao = createMockDao([]);
+			const result = await cleanupOrphanedGitHubAppInstallations(dao);
+
+			expect(result).toEqual({ uninstalledCount: 0, failedCount: 0 });
+			// Only the getInstallations call — no DELETE
+			expect(global.fetch).toHaveBeenCalledTimes(1);
+		});
+
+		it("should uninstall installation created outside the grace period", async () => {
+			const twentyMinutesAgo = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+
+			global.fetch = vi
+				.fn()
+				// getInstallations
+				.mockResolvedValueOnce({
+					ok: true,
+					json: vi
+						.fn()
+						.mockResolvedValue([
+							{ id: 800, account: { login: "old-orphan-org" }, created_at: twentyMinutesAgo },
+						]),
+				})
+				// uninstallGitHubApp — DELETE succeeds
+				.mockResolvedValueOnce({ ok: true, status: 204 });
+
+			const dao = createMockDao([]);
+			const result = await cleanupOrphanedGitHubAppInstallations(dao);
+
+			expect(result).toEqual({ uninstalledCount: 1, failedCount: 0 });
+			expect(global.fetch).toHaveBeenCalledWith(
+				"https://api.github.com/app/installations/800",
+				expect.objectContaining({ method: "DELETE" }),
+			);
+		});
+
+		it("should treat installation with missing created_at as orphaned", async () => {
+			global.fetch = vi
+				.fn()
+				// getInstallations — no created_at field
+				.mockResolvedValueOnce({
+					ok: true,
+					json: vi.fn().mockResolvedValue([{ id: 900, account: { login: "no-timestamp-org" } }]),
+				})
+				// uninstallGitHubApp — DELETE succeeds
+				.mockResolvedValueOnce({ ok: true, status: 204 });
+
+			const dao = createMockDao([]);
+			const result = await cleanupOrphanedGitHubAppInstallations(dao);
+
+			expect(result).toEqual({ uninstalledCount: 1, failedCount: 0 });
+		});
+
+		it("should have a grace period of 10 minutes", () => {
+			expect(CLEANUP_GRACE_PERIOD_MS).toBe(10 * 60 * 1000);
+		});
+	});
+
+	describe("fetchGithubCompare", () => {
+		it("returns diff and files on success", async () => {
+			global.fetch = vi
+				.fn()
+				// First call: diff response
+				.mockResolvedValueOnce({
+					ok: true,
+					text: () => Promise.resolve("diff --git a/file.ts b/file.ts\n+added line"),
+				})
+				// Second call: JSON response
+				.mockResolvedValueOnce({
+					ok: true,
+					json: () =>
+						Promise.resolve({
+							files: [{ filename: "file.ts", status: "modified", patch: "+added line" }],
+						}),
+				}) as unknown as typeof fetch;
+
+			const result = await fetchGithubCompare("token", "owner", "repo", "abc123", "def456");
+			expect(result).toBeDefined();
+			expect(result?.diff).toContain("diff --git");
+			expect(result?.files).toHaveLength(1);
+			expect(result?.files[0].filename).toBe("file.ts");
+		});
+
+		it("returns undefined when diff fetch fails", async () => {
+			global.fetch = vi.fn().mockResolvedValueOnce({
+				ok: false,
+				status: 404,
+			}) as unknown as typeof fetch;
+
+			const result = await fetchGithubCompare("token", "owner", "repo", "abc123", "def456");
+			expect(result).toBeUndefined();
+		});
+
+		it("returns diff with empty files when JSON fetch fails", async () => {
+			global.fetch = vi
+				.fn()
+				// Diff succeeds
+				.mockResolvedValueOnce({
+					ok: true,
+					text: () => Promise.resolve("diff content"),
+				})
+				// JSON fails
+				.mockResolvedValueOnce({
+					ok: false,
+					status: 500,
+				}) as unknown as typeof fetch;
+
+			const result = await fetchGithubCompare("token", "owner", "repo", "abc123", "def456");
+			expect(result).toBeDefined();
+			expect(result?.diff).toBe("diff content");
+			expect(result?.files).toHaveLength(0);
+		});
+
+		it("returns undefined on network error", async () => {
+			global.fetch = vi.fn().mockRejectedValueOnce(new Error("Network error")) as unknown as typeof fetch;
+
+			const result = await fetchGithubCompare("token", "owner", "repo", "abc123", "def456");
+			expect(result).toBeUndefined();
+		});
+
+		it("handles missing files array in JSON response", async () => {
+			global.fetch = vi
+				.fn()
+				.mockResolvedValueOnce({
+					ok: true,
+					text: () => Promise.resolve("diff content"),
+				})
+				.mockResolvedValueOnce({
+					ok: true,
+					json: () => Promise.resolve({}), // No files field
+				}) as unknown as typeof fetch;
+
+			const result = await fetchGithubCompare("token", "owner", "repo", "abc123", "def456");
+			expect(result).toBeDefined();
+			expect(result?.files).toHaveLength(0);
 		});
 	});
 });

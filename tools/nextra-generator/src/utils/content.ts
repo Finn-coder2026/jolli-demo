@@ -1,7 +1,8 @@
 import type { NavMeta } from "../templates/app-router/index.js";
 import type { ArticleInput, ArticleMetadata, DeletedArticle, OpenApiSpec, OpenApiSpecInfo } from "../types.js";
-import { isReservedSlug } from "./reserved-words.js";
-import { extractApiInfo, isOpenApiContent, validateOpenApiSpec } from "jolli-common";
+import { sanitizeUrl } from "./sanitize.js";
+import { extractApiInfo, extractBrainContent, isOpenApiContent, validateOpenApiSpec } from "jolli-common";
+import { sanitizeMdToMdx } from "jolli-common/server";
 
 /**
  * Validates if a URL is well-formed and safe for use in markdown links.
@@ -21,20 +22,7 @@ export function isValidUrl(url: string): boolean {
 }
 
 /**
- * Result of slugifying text with redirect tracking.
- */
-export interface SlugResult {
-	/** Safe slug for file naming */
-	slug: string;
-	/** What the slug would be without sanitization */
-	originalSlug: string;
-	/** True if slug was modified and needs a redirect */
-	needsRedirect: boolean;
-}
-
-/**
  * Generates a base slug from text (without safety checks).
- * Used internally by slugify() and slugifyWithRedirect().
  */
 function generateBaseSlug(text: string): string {
 	return text
@@ -47,32 +35,11 @@ function generateBaseSlug(text: string): string {
 
 /**
  * Converts a title to a URL-safe slug.
- * If the slug is a reserved word, starts with a digit, or is empty,
- * appends "-doc" suffix to make it safe.
+ * Returns "untitled" for empty strings.
  */
 export function slugify(text: string): string {
 	const base = generateBaseSlug(text);
-
-	// Check if unsafe (reserved word, starts with digit, or empty)
-	if (isReservedSlug(base) || /^[0-9]/.test(base) || base === "") {
-		return `${base || "untitled"}-doc`;
-	}
-	return base;
-}
-
-/**
- * Converts a title to a URL-safe slug and tracks whether a redirect is needed.
- * Returns both the safe slug and the original slug for redirect generation.
- */
-export function slugifyWithRedirect(text: string): SlugResult {
-	const originalSlug = generateBaseSlug(text);
-	const safeSlug = slugify(text);
-
-	return {
-		slug: safeSlug,
-		originalSlug,
-		needsRedirect: safeSlug !== originalSlug,
-	};
+	return base || "untitled";
 }
 
 /**
@@ -188,16 +155,6 @@ export function escapeYaml(str: string): string {
 }
 
 /**
- * Sanitizes content to be MDX-compatible by converting HTML syntax to MDX format.
- */
-export function sanitizeContentForMdx(content: string): string {
-	// Convert HTML comments to MDX comments
-	// HTML: <!-- comment -->
-	// MDX: {/* comment */}
-	return content.replace(/<!--([\s\S]*?)-->/g, "{/*$1*/}");
-}
-
-/**
  * Generates an API overview MDX page from an OpenAPI spec.
  */
 export function generateApiOverviewContent(spec: OpenApiSpec, title: string): string {
@@ -230,7 +187,7 @@ ${endpointTable}
 
 View the full OpenAPI specification below or use an interactive API tool.
 
-{/* Build timestamp: ${Date.now()} - Forces cache invalidation */}
+<!-- Build timestamp: ${Date.now()} - Forces cache invalidation -->
 `;
 }
 
@@ -251,13 +208,27 @@ Explore and test the API endpoints directly in your browser.
 }
 
 /**
- * Converts an article to MDX content with frontmatter and metadata.
+ * Options for generating article content.
  */
-export function generateArticleContent(article: ArticleInput): string {
+export interface GenerateArticleContentOptions {
+	/**
+	 * Skip adding asIndexPage: true for folder documents.
+	 * Used in tabs mode where folder content becomes an overview article instead of index.md.
+	 */
+	skipAsIndexPage?: boolean;
+}
+
+/**
+ * Converts an article to markdown/MDX content with frontmatter and metadata.
+ * For text/mdx contentType, sanitizes content for strict MDX compatibility.
+ * For text/markdown (default), preserves content as-is for lenient MD parsing.
+ */
+export function generateArticleContent(article: ArticleInput, options?: GenerateArticleContentOptions): string {
 	const metadata = article.contentMetadata as ArticleMetadata | undefined;
 	const title = metadata?.title || "Untitled Article";
 	const sourceName = metadata?.sourceName || "";
 	const sourceUrl = metadata?.sourceUrl || "";
+	const isMdx = article.contentType === "text/mdx";
 
 	// Build frontmatter
 	const frontmatter: Array<string> = ["---", `title: ${escapeYaml(title)}`];
@@ -266,9 +237,21 @@ export function generateArticleContent(article: ArticleInput): string {
 		frontmatter.push(`description: From ${escapeYaml(sourceName)}`);
 	}
 
+	// For folder documents (index pages), add asIndexPage to make the folder clickable
+	// while still showing children in the sidebar navigation
+	// Skip this in tabs mode where folder content becomes an overview article
+	if (article.isFolder && !options?.skipAsIndexPage) {
+		frontmatter.push("asIndexPage: true");
+	}
+
 	frontmatter.push("---");
 	frontmatter.push("");
-	frontmatter.push(`{/* Build timestamp: ${Date.now()} - Forces cache invalidation */}`);
+	// Use appropriate comment syntax based on format
+	if (isMdx) {
+		frontmatter.push(`{/* Build timestamp: ${Date.now()} - Forces cache invalidation */}`);
+	} else {
+		frontmatter.push(`<!-- Build timestamp: ${Date.now()} - Forces cache invalidation -->`);
+	}
 	frontmatter.push("");
 
 	// Add metadata if available
@@ -288,11 +271,17 @@ export function generateArticleContent(article: ArticleInput): string {
 		metadataSection.push("");
 	}
 
-	// Sanitize content for MDX compatibility
-	const sanitizedContent = sanitizeContentForMdx(article.content);
+	// Extract article body, discarding the brain frontmatter block entirely.
+	// The generator builds its own Nextra frontmatter, so the brain block is
+	// redundant and must not appear as visible text on the deployed site (JOLLI-574).
+	const { articleContent } = extractBrainContent(article.content);
+
+	// Only sanitize content for strict MDX compatibility when using .mdx extension
+	// For .md files, preserve content as-is (lenient parsing handles HTML comments, etc.)
+	const finalContent = isMdx ? sanitizeMdToMdx(articleContent) : articleContent;
 
 	// Combine frontmatter, metadata, and content
-	return [...frontmatter, ...metadataSection, sanitizedContent].join("\n");
+	return [...frontmatter, ...metadataSection, finalContent].join("\n");
 }
 
 /**
@@ -319,22 +308,33 @@ Use the navigation menu to explore the available documentation.
 
 *Last generated: ${new Date().toISOString()}*
 
-{/* Build ID: ${Date.now()} - Forces cache invalidation on rebuild */}
+<!-- Build ID: ${Date.now()} - Forces cache invalidation on rebuild -->
 `;
 }
 
 /**
  * Generates navigation meta entries from articles.
- * OpenAPI specs are added as page entries with href pointing to the API docs page (within Nextra layout).
+ * OpenAPI specs are added as page entries with href pointing to the API docs page (internal, uses type: 'page').
+ * Header links are added as external link entries for navbar navigation (JOLLI-382).
+ *
+ * Per Nextra docs:
+ * - type: 'page' with href is for internal pages that map to files
+ * - External links just need title/href/newWindow (no type field)
  *
  * @param articles - Array of article inputs
  * @param openApiSpecs - Optional array of OpenAPI spec info for generating API page entries
+ * @param headerLinks - Header links config to add as navbar page entries
  * @returns Navigation meta with hidden index, article entries, and API page entries
  */
-export function generateNavMeta(articles: Array<ArticleInput>, openApiSpecs?: Array<OpenApiSpecInfo>): NavMeta {
+export function generateNavMeta(
+	articles: Array<ArticleInput>,
+	openApiSpecs?: Array<OpenApiSpecInfo>,
+	headerLinks?: import("jolli-common").HeaderLinksConfig,
+): NavMeta {
 	const meta: NavMeta = {};
 
-	// JOLLI-191: Hide index from nav (root redirects to first article via app/page.tsx)
+	// Hidden index entry ensures Nextra doesn't auto-generate an "Index" nav item
+	// The actual root redirect is handled by app/page.tsx (JOLLI-191)
 	meta.index = { display: "hidden" };
 
 	for (const article of articles) {
@@ -345,7 +345,8 @@ export function generateNavMeta(articles: Array<ArticleInput>, openApiSpecs?: Ar
 
 		const metadata = article.contentMetadata as ArticleMetadata | undefined;
 		const title = metadata?.title || "Untitled Article";
-		const slug = slugify(title);
+		// Use actual slug from database if provided, preserves unique suffixes
+		const slug = article.slug || slugify(title);
 		meta[slug] = title;
 	}
 
@@ -377,246 +378,44 @@ export function generateNavMeta(articles: Array<ArticleInput>, openApiSpecs?: Ar
 		}
 	}
 
-	return meta;
-}
+	// JOLLI-382: Add header links as page entries in _meta.ts
+	// Per Nextra docs: type: 'page' displays in navbar, href adds external link
+	// Format: { title: '...', type: 'page', href: 'https://...' }
+	// Note: Visual separation in navbar is handled by CSS (margin-left: auto)
+	// Nextra separators only work in sidebar, not navbar
+	if (headerLinks?.items && headerLinks.items.length > 0) {
+		for (let i = 0; i < headerLinks.items.length; i++) {
+			const item = headerLinks.items[i];
+			const key = `nav-${i}`;
 
-/**
- * Generates the _meta.global.js content for site-wide curated navigation.
- * This file allows users to customize the global navigation structure.
- *
- * The _meta.global.js file is used by Nextra 3.x for site-wide navigation
- * that appears across all pages (e.g., header navigation, footer links).
- *
- * @param displayName - The display name of the site
- * @returns The content of the _meta.global.js file
- */
-export function generateMetaGlobal(displayName: string): string {
-	return `/**
- * Global navigation configuration for ${displayName}
- *
- * This file controls site-wide navigation elements.
- * Users can customize this file to add header links, external references, etc.
- *
- * See: https://nextra.site/docs/docs-theme/page-configuration#_metaglobaljs
- */
-export default {
-  // Add global navigation items here
-  // Example:
-  // docs: {
-  //   title: "Documentation",
-  //   type: "page"
-  // },
-  // github: {
-  //   title: "GitHub",
-  //   type: "page",
-  //   href: "https://github.com/your-org/your-repo",
-  //   newWindow: true
-  // }
-}
-`;
-}
-
-/**
- * Represents a grouped API endpoint
- */
-export interface ApiEndpointInfo {
-	method: string;
-	path: string;
-	summary: string;
-	description: string;
-	operationId?: string;
-	tags: Array<string>;
-}
-
-/**
- * Represents a group of API endpoints by tag
- */
-export interface ApiGroup {
-	tag: string;
-	slug: string;
-	endpoints: Array<ApiEndpointInfo>;
-}
-
-/**
- * Extracts and groups API endpoints by their tags from an OpenAPI spec.
- * If no tags are defined, groups by the first path segment.
- */
-export function groupEndpointsByTag(spec: OpenApiSpec): Array<ApiGroup> {
-	const groups = new Map<string, Array<ApiEndpointInfo>>();
-
-	if (!spec.paths) {
-		return [];
-	}
-
-	for (const [path, methods] of Object.entries(spec.paths)) {
-		if (!methods) {
-			continue;
-		}
-
-		for (const [method, operation] of Object.entries(methods)) {
-			if (!operation || typeof operation !== "object") {
-				continue;
-			}
-
-			const op = operation as {
-				summary?: string;
-				description?: string;
-				operationId?: string;
-				tags?: Array<string>;
-			};
-
-			// Get tags from operation, or derive from path
-			let tags = op.tags || [];
-			if (tags.length === 0) {
-				// Extract first meaningful segment from path
-				const segments = path.split("/").filter(Boolean);
-				// Skip path params like :id or {id}
-				const firstSegment = segments.find(s => !s.startsWith(":") && !s.startsWith("{"));
-				if (firstSegment) {
-					// Convert to title case (e.g., "api" -> "API", "tenants" -> "Tenants")
-					const tagName = firstSegment.charAt(0).toUpperCase() + firstSegment.slice(1);
-					tags = [tagName];
-				} else {
-					tags = ["General"];
+			if (item.items && item.items.length > 0) {
+				// Dropdown menu with sub-items
+				const menuItems: Record<string, { title: string; href: string }> = {};
+				for (const subItem of item.items) {
+					const subKey = subItem.label.toLowerCase().replace(/\s+/g, "-");
+					menuItems[subKey] = {
+						title: subItem.label,
+						href: sanitizeUrl(subItem.url),
+					};
 				}
-			}
-
-			const endpoint: ApiEndpointInfo = {
-				method: method.toUpperCase(),
-				path,
-				summary: op.summary || "",
-				description: op.description || "",
-				tags,
-			};
-			// Only include operationId if it's defined (for exactOptionalPropertyTypes)
-			if (op.operationId !== undefined) {
-				endpoint.operationId = op.operationId;
-			}
-
-			// Add to each tag group
-			for (const tag of tags) {
-				const existing = groups.get(tag) || [];
-				existing.push(endpoint);
-				groups.set(tag, existing);
+				meta[key] = {
+					title: item.label,
+					type: "menu",
+					items: menuItems,
+				};
+			} else if (item.url) {
+				// External link needs type: 'page' to appear in navbar (not sidebar)
+				// Per Nextra 4 docs: { title: '...', type: 'page', href: 'https://...' }
+				meta[key] = {
+					title: item.label,
+					type: "page",
+					href: sanitizeUrl(item.url),
+				};
 			}
 		}
 	}
 
-	// Convert to array and sort
-	const result: Array<ApiGroup> = [];
-	for (const [tag, endpoints] of groups) {
-		result.push({
-			tag,
-			slug: slugify(tag),
-			endpoints: endpoints.sort((a, b) => a.path.localeCompare(b.path)),
-		});
-	}
-
-	return result.sort((a, b) => a.tag.localeCompare(b.tag));
-}
-
-/**
- * Generates an MDX page for a specific API group (tag).
- * Shows all endpoints in that group with their methods.
- */
-export function generateApiGroupPage(group: ApiGroup, _apiTitle: string): string {
-	const endpointSections = group.endpoints.map(ep => {
-		const methodBadge = getMethodBadge(ep.method);
-		return `### ${methodBadge} \`${ep.path}\`
-
-${ep.summary || ep.description || "No description available."}
-
-${ep.operationId ? `**Operation ID:** \`${ep.operationId}\`` : ""}
-`;
-	});
-
-	return `---
-title: ${group.tag}
----
-
-# ${group.tag}
-
-API endpoints for ${group.tag.toLowerCase()} operations.
-
-${endpointSections.join("\n---\n\n")}
-`;
-}
-
-/**
- * Returns a styled method badge for display
- */
-function getMethodBadge(method: string): string {
-	return method;
-}
-
-/**
- * Generates the _meta.js content for API navigation with grouped endpoints.
- * Creates a collapsible navigation structure.
- */
-export function generateApiNavigationMeta(
-	groups: Array<ApiGroup>,
-	includeOverview = true,
-	includeInteractive = true,
-): string {
-	const entries: Array<string> = [];
-
-	if (includeOverview) {
-		entries.push(`  "index": "Overview"`);
-	}
-
-	// Add each group with its endpoints as a collapsible menu
-	for (const group of groups) {
-		entries.push(`  "${group.slug}": "${group.tag}"`);
-	}
-
-	if (includeInteractive) {
-		entries.push(`  "interactive": "Interactive API"`);
-	}
-
-	return `export default {\n${entries.join(",\n")}\n}\n`;
-}
-
-/**
- * Generates an overview page listing all API groups and their endpoint counts.
- */
-export function generateApiGroupOverviewPage(spec: OpenApiSpec, title: string, groups: Array<ApiGroup>): string {
-	const info = spec.info || {};
-	const groupLinks = groups
-		.map(
-			g => `- [**${g.tag}**](./${g.slug}) - ${g.endpoints.length} endpoint${g.endpoints.length === 1 ? "" : "s"}`,
-		)
-		.join("\n");
-
-	const totalEndpoints = groups.reduce((sum, g) => sum + g.endpoints.length, 0);
-
-	return `---
-title: ${title}
----
-
-# ${info.title || title}
-
-${info.description || "API documentation."}
-
-**Version:** ${info.version || "1.0.0"}
-
-## API Groups
-
-This API has **${totalEndpoints}** endpoints organized into **${groups.length}** groups:
-
-${groupLinks}
-
-## Quick Reference
-
-| Group | Endpoints | Description |
-|-------|-----------|-------------|
-${groups.map(g => `| [${g.tag}](./${g.slug}) | ${g.endpoints.length} | ${g.tag} operations |`).join("\n")}
-
----
-
-*Use the navigation menu on the left to explore each API group.*
-
-{/* Build timestamp: ${Date.now()} - Forces cache invalidation */}
-`;
+	return meta;
 }
 
 /**
@@ -675,6 +474,38 @@ export function getOrphanedContentFiles(existingFilePaths: Array<string>, expect
 }
 
 /**
+ * Returns folder paths that need to be deleted when switching to slugified folder names.
+ * When folders have spaces or special characters (e.g., "Getting Started"), they are
+ * now stored with slugified names (e.g., "getting-started"). The old non-slugified
+ * folders should be deleted to avoid conflicts.
+ *
+ * @param folderPaths - Array of original folder paths (e.g., from allFolderMetas)
+ * @returns Array of content folder paths to delete (non-slugified versions that differ from slugified)
+ */
+export function getNonSlugifiedFolderPaths(folderPaths: Array<string>): Array<string> {
+	const pathsToDelete: Array<string> = [];
+
+	for (const folderPath of folderPaths) {
+		if (!folderPath) {
+			continue;
+		}
+
+		// Slugify each part of the path
+		const slugifiedPath = folderPath
+			.split("/")
+			.map(part => slugify(part))
+			.join("/");
+
+		// If the slugified path differs from the original, the original needs to be deleted
+		if (slugifiedPath !== folderPath) {
+			pathsToDelete.push(`content/${folderPath}`);
+		}
+	}
+
+	return pathsToDelete;
+}
+
+/**
  * Computes file paths that should be deleted from the repository
  * based on deleted article metadata. Uses Nextra 4.x App Router structure.
  *
@@ -718,12 +549,13 @@ export function getDeletedFilePaths(deletedArticles: Array<DeletedArticle>): Arr
 				paths.push(`content/${slug}.${extension}`);
 			}
 		} else {
-			// Markdown files are stored in content/ folder as .mdx (Nextra 4.x)
+			// Markdown files - try both .md (new default) and .mdx (legacy or explicit text/mdx)
+			// The GitHub API ignores deletion requests for files that don't exist.
+			paths.push(`content/${slug}.md`);
 			paths.push(`content/${slug}.mdx`);
 
 			// IMPORTANT: Also try to delete .yaml and .json variants in case the file
 			// was previously saved with wrong extension due to faulty content detection.
-			// The GitHub API ignores deletion requests for files that don't exist.
 			paths.push(`content/${slug}.yaml`);
 			paths.push(`content/${slug}.json`);
 		}

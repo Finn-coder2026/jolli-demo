@@ -17,7 +17,10 @@ export const PushOpSchema = z.object({
 });
 
 export const PushRequestSchema = z.object({
-	requestId: z.string().optional(),
+	clientChangesetId: z.string(),
+	targetBranch: z.literal("main"),
+	message: z.string().optional(),
+	mergePrompt: z.string().optional(),
 	ops: z.array(PushOpSchema),
 });
 
@@ -42,6 +45,45 @@ export const PushResultSchema = z.object({
 export const PushResponseSchema = z.object({
 	results: z.array(PushResultSchema),
 	newCursor: z.number(),
+	changeset: z
+		.object({
+			id: z.number(),
+			clientChangesetId: z.string(),
+			status: z.string(),
+			commitScopeKey: z.string(),
+			targetBranch: z.string(),
+			payloadHash: z.string(),
+			message: z.string().optional(),
+			mergePrompt: z.string().optional(),
+			createdAt: z.string().or(z.date()),
+		})
+		.optional(),
+	commit: z
+		.object({
+			id: z.number(),
+			clientChangesetId: z.string(),
+			status: z.string(),
+			commitScopeKey: z.string(),
+			targetBranch: z.string(),
+			payloadHash: z.string(),
+			message: z.string().optional(),
+			mergePrompt: z.string().optional(),
+			createdAt: z.string().or(z.date()),
+		})
+		.optional(),
+	files: z
+		.array(
+			z.object({
+				id: z.number(),
+				fileId: z.string(),
+				docJrn: z.string(),
+				serverPath: z.string(),
+				baseVersion: z.number(),
+				opType: z.string(),
+			}),
+		)
+		.optional(),
+	replayed: z.boolean().optional(),
 });
 
 export const PullResponseSchema = z.object({

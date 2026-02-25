@@ -163,6 +163,26 @@ const devToolsContent = {
 				en: "Are you sure you want to clear all sync data? This will reset the sync cursor and remove all sync article tracking. CLI clients will need to re-sync. This action cannot be undone.",
 				es: "¿Estás seguro de que quieres limpiar todos los datos de sincronización? Esto restablecerá el cursor de sincronización y eliminará todo el seguimiento de artículos sincronizados. Los clientes CLI necesitarán re-sincronizar. Esta acción no se puede deshacer.",
 			}),
+			clearSpaces: t({
+				en: "Clear Spaces",
+				es: "Limpiar Espacios",
+			}),
+			clearSpacesDesc: t({
+				en: "Remove all spaces, including all folders and articles within them",
+				es: "Eliminar todos los espacios, incluyendo todas las carpetas y artículos dentro de ellos",
+			}),
+			clearSpacesConfirm: t({
+				en: "Are you sure you want to clear all spaces? This will delete all spaces along with all folders and articles they contain. This action cannot be undone.",
+				es: "¿Estás seguro de que quieres limpiar todos los espacios? Esto eliminará todos los espacios junto con todas las carpetas y artículos que contienen. Esta acción no se puede deshacer.",
+			}),
+			confirmTitle: t({
+				en: "Are you sure?",
+				es: "¿Estás seguro?",
+			}),
+			cancel: t({
+				en: "Cancel",
+				es: "Cancelar",
+			}),
 			clearing: t({
 				en: "Clearing...",
 				es: "Limpiando...",

@@ -6,7 +6,7 @@ import {
 	type TenantOrgConnectionManagerInternalConfig,
 } from "./TenantOrgConnectionManager";
 import type { TenantRegistryClient } from "./TenantRegistryClient";
-import type { Org, Tenant } from "jolli-common";
+import type { OrgSummary, Tenant } from "jolli-common";
 import type { Sequelize } from "sequelize";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -43,7 +43,7 @@ function createMockDatabaseConfig(overrides: Partial<TenantDatabaseConfig> = {})
 	};
 }
 
-function createMockOrg(overrides: Partial<Org> = {}): Org {
+function createMockOrg(overrides: Partial<OrgSummary> = {}): OrgSummary {
 	return {
 		id: "org-123",
 		tenantId: "tenant-123",
@@ -53,7 +53,6 @@ function createMockOrg(overrides: Partial<Org> = {}): Org {
 		status: "active",
 		isDefault: true,
 		createdAt: new Date("2024-01-01"),
-		updatedAt: new Date("2024-01-01"),
 		...overrides,
 	};
 }
@@ -93,6 +92,7 @@ describe("TenantOrgConnectionManager", () => {
 			getTenantByDomain: vi.fn(),
 			getTenantDatabaseConfig: vi.fn().mockResolvedValue(mockDbConfig),
 			listTenants: vi.fn(),
+			listTenantsWithDefaultOrg: vi.fn(),
 			listAllActiveTenants: vi.fn(),
 			getOrg: vi.fn(),
 			getOrgBySlug: vi.fn(),
@@ -101,6 +101,7 @@ describe("TenantOrgConnectionManager", () => {
 			listAllActiveOrgs: vi.fn(),
 			getTenantOrgByInstallationId: vi.fn(),
 			createInstallationMapping: vi.fn(),
+			ensureInstallationMapping: vi.fn(),
 			deleteInstallationMapping: vi.fn(),
 			close: vi.fn(),
 		};
@@ -147,6 +148,183 @@ describe("TenantOrgConnectionManager", () => {
 
 			// forceSync should be passed through to createDatabaseFn
 			expect(createDatabaseFn).toHaveBeenCalledWith(mockSequelize, { forceSync: true });
+		});
+
+		it("evicts cached connection when forceSync is requested", async () => {
+			const tenant = createMockTenant();
+			const org = createMockOrg();
+
+			// Create a connection first (without forceSync)
+			const database1 = await manager.getConnection(tenant, org);
+			expect(createDatabaseFn).toHaveBeenCalledTimes(1);
+			expect(createDatabaseFn).toHaveBeenLastCalledWith(mockSequelize, undefined);
+
+			// Now request with forceSync - should evict cached and create new
+			const database2 = await manager.getConnection(tenant, org, { forceSync: true });
+
+			// Should have created a second connection
+			expect(createDatabaseFn).toHaveBeenCalledTimes(2);
+			expect(createDatabaseFn).toHaveBeenLastCalledWith(mockSequelize, { forceSync: true });
+			// Old connection should have been closed
+			expect(mockSequelize.close).toHaveBeenCalled();
+			// Both return the mock database (since mock returns same object)
+			expect(database1).toBe(database2);
+		});
+
+		it("handles forceSync eviction close errors gracefully", async () => {
+			const tenant = createMockTenant();
+			const org = createMockOrg();
+
+			// Create a connection first
+			await manager.getConnection(tenant, org);
+
+			// Make close fail for forceSync eviction
+			(mockSequelize.close as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+				new Error("forceSync eviction close failed"),
+			);
+
+			// Request with forceSync - should still work despite close error
+			const database = await manager.getConnection(tenant, org, { forceSync: true });
+
+			expect(database).toBe(mockDatabase);
+			expect(createDatabaseFn).toHaveBeenCalledTimes(2);
+		});
+
+		it("does not evict when forceSync is not requested on cache hit", async () => {
+			const tenant = createMockTenant();
+			const org = createMockOrg();
+
+			// Create a connection first
+			await manager.getConnection(tenant, org);
+			expect(createDatabaseFn).toHaveBeenCalledTimes(1);
+
+			// Request without forceSync - should return cached
+			await manager.getConnection(tenant, org);
+			expect(createDatabaseFn).toHaveBeenCalledTimes(1);
+
+			// Request with explicit forceSync: false - should return cached
+			await manager.getConnection(tenant, org, { forceSync: false });
+			expect(createDatabaseFn).toHaveBeenCalledTimes(1);
+		});
+
+		it("handles forceSync when in-flight initialization fails", async () => {
+			const tenant = createMockTenant();
+			const org = createMockOrg();
+
+			let rejectDb1!: (err: Error) => void;
+			const dbPromise1 = new Promise<Database>((_resolve, reject) => {
+				rejectDb1 = reject;
+			});
+
+			createDatabaseFn.mockReturnValueOnce(dbPromise1).mockResolvedValueOnce(mockDatabase);
+
+			// Request 1: Start initialization without forceSync (don't await yet)
+			const promise1 = manager.getConnection(tenant, org);
+
+			// Request 2: forceSync while Request 1 is initializing
+			const promise2 = manager.getConnection(tenant, org, { forceSync: true });
+
+			// Reject Request 1's database creation
+			rejectDb1(new Error("Init failed"));
+
+			// Request 1 should fail
+			await expect(promise1).rejects.toThrow("Init failed");
+			// Request 2 should succeed with a new connection
+			const db2 = await promise2;
+			expect(db2).toBe(mockDatabase);
+		});
+
+		it("handles close error when evicting in-flight initializing connection", async () => {
+			const tenant = createMockTenant();
+			const org = createMockOrg();
+
+			const mockDatabase1 = { id: "db1" } as unknown as Database;
+			const mockSequelize1 = createMockSequelize();
+			const mockSequelize2 = createMockSequelize();
+
+			let resolveDb1!: (db: Database) => void;
+			const dbPromise1 = new Promise<Database>(resolve => {
+				resolveDb1 = resolve;
+			});
+
+			let callCount = 0;
+			createSequelizeFn.mockImplementation(() => {
+				callCount++;
+				return callCount === 1 ? mockSequelize1 : mockSequelize2;
+			});
+			createDatabaseFn.mockReturnValueOnce(dbPromise1).mockResolvedValueOnce(mockDatabase);
+
+			// Make close fail for the first connection
+			(mockSequelize1.close as ReturnType<typeof vi.fn>).mockRejectedValue(
+				new Error("Close failed during forceSync eviction"),
+			);
+
+			// Request 1: Start initialization
+			const promise1 = manager.getConnection(tenant, org);
+
+			// Request 2: forceSync while Request 1 is initializing
+			const promise2 = manager.getConnection(tenant, org, { forceSync: true });
+
+			// Resolve Request 1's database creation
+			resolveDb1(mockDatabase1);
+
+			// Both should complete (close error is logged but not thrown)
+			await promise1;
+			const db2 = await promise2;
+			expect(db2).toBe(mockDatabase);
+
+			// Close was attempted on the first connection
+			expect(mockSequelize1.close).toHaveBeenCalled();
+		});
+
+		it("waits for in-flight initialization before evicting when forceSync requested", async () => {
+			const tenant = createMockTenant();
+			const org = createMockOrg();
+
+			// Track which database was created with which options
+			const mockDatabase1 = { id: "db1" } as unknown as Database;
+			const mockDatabase2 = { id: "db2" } as unknown as Database;
+			const mockSequelize1 = createMockSequelize();
+			const mockSequelize2 = createMockSequelize();
+
+			let resolveDb1!: (db: Database) => void;
+			const dbPromise1 = new Promise<Database>(resolve => {
+				resolveDb1 = resolve;
+			});
+
+			let callCount = 0;
+			createSequelizeFn.mockImplementation(() => {
+				callCount++;
+				return callCount === 1 ? mockSequelize1 : mockSequelize2;
+			});
+			createDatabaseFn.mockReturnValueOnce(dbPromise1).mockResolvedValueOnce(mockDatabase2);
+
+			// Request 1: Start initialization without forceSync (don't await yet)
+			const promise1 = manager.getConnection(tenant, org);
+
+			// Request 2: forceSync while Request 1 is initializing
+			const promise2 = manager.getConnection(tenant, org, { forceSync: true });
+
+			// Resolve Request 1's database creation
+			resolveDb1(mockDatabase1);
+
+			// Both requests should complete
+			const db1 = await promise1;
+			const db2 = await promise2;
+
+			// Request 1 returns its database (before forceSync eviction)
+			expect(db1).toBe(mockDatabase1);
+			// Request 2 should get a NEW connection with forceSync
+			expect(db2).toBe(mockDatabase2);
+
+			// Two connections should have been created
+			expect(createDatabaseFn).toHaveBeenCalledTimes(2);
+			// First without forceSync, second with forceSync
+			expect(createDatabaseFn).toHaveBeenNthCalledWith(1, mockSequelize1, undefined);
+			expect(createDatabaseFn).toHaveBeenNthCalledWith(2, mockSequelize2, { forceSync: true });
+
+			// The first connection should have been closed after forceSync eviction
+			expect(mockSequelize1.close).toHaveBeenCalled();
 		});
 
 		it("returns cached connection on cache hit", async () => {
@@ -550,6 +728,148 @@ describe("TenantOrgConnectionManager", () => {
 
 			const minimalManager = createTenantOrgConnectionManager(minimalConfig);
 			expect(minimalManager.getCacheSize()).toBe(0);
+		});
+	});
+
+	describe("checkAllConnectionsHealth", () => {
+		it("returns healthy when no connections in cache", async () => {
+			const result = await manager.checkAllConnectionsHealth();
+
+			expect(result.status).toBe("healthy");
+			expect(result.total).toBe(0);
+			expect(result.healthy).toBe(0);
+			expect(result.unhealthy).toBe(0);
+			expect(result.connections).toHaveLength(0);
+		});
+
+		it("checks health of all cached connections", async () => {
+			const tenant = createMockTenant();
+			const org1 = createMockOrg({ id: "org-1", slug: "default", schemaName: "org_default" });
+			const org2 = createMockOrg({ id: "org-2", slug: "engineering", schemaName: "org_engineering" });
+
+			// Add authenticate mock to sequelize
+			(mockSequelize as unknown as { authenticate: ReturnType<typeof vi.fn> }).authenticate = vi
+				.fn()
+				.mockResolvedValue(undefined);
+
+			await manager.getConnection(tenant, org1);
+			await manager.getConnection(tenant, org2);
+
+			const result = await manager.checkAllConnectionsHealth();
+
+			expect(result.status).toBe("healthy");
+			expect(result.total).toBe(2);
+			expect(result.healthy).toBe(2);
+			expect(result.unhealthy).toBe(0);
+			expect(result.connections).toHaveLength(2);
+
+			// Check connection details
+			const conn1 = result.connections.find(c => c.schemaName === "org_default");
+			expect(conn1).toBeDefined();
+			expect(conn1?.tenantSlug).toBe("test-tenant");
+			expect(conn1?.orgSlug).toBe("default");
+			expect(conn1?.status).toBe("healthy");
+		});
+
+		it("reports unhealthy when connection check fails", async () => {
+			const tenant = createMockTenant();
+			const org = createMockOrg();
+
+			// Add authenticate mock that fails
+			(mockSequelize as unknown as { authenticate: ReturnType<typeof vi.fn> }).authenticate = vi
+				.fn()
+				.mockRejectedValue(new Error("Connection refused"));
+
+			await manager.getConnection(tenant, org);
+
+			const result = await manager.checkAllConnectionsHealth();
+
+			expect(result.status).toBe("unhealthy");
+			expect(result.total).toBe(1);
+			expect(result.healthy).toBe(0);
+			expect(result.unhealthy).toBe(1);
+			expect(result.connections[0].status).toBe("unhealthy");
+			expect(result.connections[0].error).toBe("Connection refused");
+		});
+
+		it("handles timeout on slow connections", async () => {
+			const tenant = createMockTenant();
+			const org = createMockOrg();
+
+			// Add authenticate mock that never resolves
+			(mockSequelize as unknown as { authenticate: ReturnType<typeof vi.fn> }).authenticate = vi
+				.fn()
+				.mockImplementation(
+					() =>
+						new Promise(() => {
+							/* intentionally never resolves to test timeout */
+						}),
+				);
+
+			await manager.getConnection(tenant, org);
+
+			// Use very short timeout
+			const result = await manager.checkAllConnectionsHealth(100);
+
+			expect(result.status).toBe("unhealthy");
+			expect(result.connections[0].status).toBe("unhealthy");
+			expect(result.connections[0].error).toBe("Connection health check timeout");
+		});
+
+		it("skips initializing connections", async () => {
+			const tenant = createMockTenant();
+			const org = createMockOrg();
+
+			let resolveDb!: (db: Database) => void;
+			const dbPromise = new Promise<Database>(resolve => {
+				resolveDb = resolve;
+			});
+			createDatabaseFn.mockReturnValue(dbPromise);
+
+			// Start initialization but don't complete
+			const connectionPromise = manager.getConnection(tenant, org);
+
+			// Check health while initializing
+			const result = await manager.checkAllConnectionsHealth();
+
+			// Should skip the initializing connection
+			expect(result.total).toBe(0);
+
+			// Complete initialization
+			resolveDb(mockDatabase);
+			await connectionPromise;
+		});
+
+		it("reports mixed results correctly", async () => {
+			const tenant = createMockTenant();
+			const org1 = createMockOrg({ id: "org-1", schemaName: "org_healthy" });
+			const org2 = createMockOrg({ id: "org-2", schemaName: "org_unhealthy" });
+
+			const mockSequelize1 = createMockSequelize();
+			const mockSequelize2 = createMockSequelize();
+
+			(mockSequelize1 as unknown as { authenticate: ReturnType<typeof vi.fn> }).authenticate = vi
+				.fn()
+				.mockResolvedValue(undefined);
+			(mockSequelize2 as unknown as { authenticate: ReturnType<typeof vi.fn> }).authenticate = vi
+				.fn()
+				.mockRejectedValue(new Error("DB down"));
+
+			let callCount = 0;
+			createSequelizeFn.mockImplementation(() => {
+				callCount++;
+				return callCount === 1 ? mockSequelize1 : mockSequelize2;
+			});
+
+			await manager.getConnection(tenant, org1);
+			await manager.getConnection(tenant, org2);
+
+			const result = await manager.checkAllConnectionsHealth();
+
+			expect(result.status).toBe("unhealthy");
+			expect(result.total).toBe(2);
+			expect(result.healthy).toBe(1);
+			expect(result.unhealthy).toBe(1);
 		});
 	});
 

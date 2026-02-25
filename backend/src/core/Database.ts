@@ -19,11 +19,11 @@
  * @module Database
  */
 
+import { type ActiveUserDao, createActiveUserDao, createActiveUserDaoProvider } from "../dao/ActiveUserDao";
+import { type ArchivedUserDao, createArchivedUserDao, createArchivedUserDaoProvider } from "../dao/ArchivedUserDao";
 import { type AssetDao, createAssetDao, createAssetDaoProvider } from "../dao/AssetDao";
 import { type AuditEventDao, createAuditEventDao, createAuditEventDaoProvider } from "../dao/AuditEventDao";
-import { type AuthDao, createAuthDao, createAuthDaoProvider } from "../dao/AuthDao";
 import { type CollabConvoDao, createCollabConvoDao, createCollabConvoDaoProvider } from "../dao/CollabConvoDao";
-import { type ConvoDao, createConvoDao, createConvoDaoProvider } from "../dao/ConvoDao";
 import type { DaoProvider } from "../dao/DaoProvider";
 import { createDocDao, createDocDaoProvider, type DocDao } from "../dao/DocDao";
 import { createDocDraftDao, createDocDraftDaoProvider, type DocDraftDao } from "../dao/DocDraftDao";
@@ -46,18 +46,54 @@ import {
 } from "../dao/GitHubInstallationDao";
 import { createIntegrationDao, createIntegrationDaoProvider, type IntegrationDao } from "../dao/IntegrationDao";
 import { createJobDao, createJobDaoProvider, type JobDao } from "../dao/JobDao.js";
+import { createLegacyTableCleanupDao, type LegacyTableCleanupDao } from "../dao/LegacyTableCleanupDao";
+import { createPermissionDao, createPermissionDaoProvider, type PermissionDao } from "../dao/PermissionDao";
+import { createRoleDao, createRoleDaoProvider, type RoleDao } from "../dao/RoleDao";
 import { createSiteDao, createSiteDaoProvider, type SiteDao } from "../dao/SiteDao";
+import { createSourceDao, createSourceDaoProvider, type SourceDao } from "../dao/SourceDao";
 import { createSpaceDao, createSpaceDaoProvider, type SpaceDao } from "../dao/SpaceDao";
 import { createSyncArticleDao, createSyncArticleDaoProvider, type SyncArticleDao } from "../dao/SyncArticleDao";
-import { createUserDao, createUserDaoProvider, type UserDao } from "../dao/UserDao";
+import { createSyncCommitDao, createSyncCommitDaoProvider, type SyncCommitDao } from "../dao/SyncCommitDao";
+import {
+	createUserInvitationDao,
+	createUserInvitationDaoProvider,
+	type UserInvitationDao,
+} from "../dao/UserInvitationDao";
+import {
+	createUserOnboardingDao,
+	createUserOnboardingDaoProvider,
+	type UserOnboardingDao,
+} from "../dao/UserOnboardingDao";
+import {
+	createUserPreferenceDao,
+	createUserPreferenceDaoProvider,
+	type UserPreferenceDao,
+} from "../dao/UserPreferenceDao";
+import {
+	createUserSpacePreferenceDao,
+	createUserSpacePreferenceDaoProvider,
+	type UserSpacePreferenceDao,
+} from "../dao/UserSpacePreferenceDao";
 import { createVisitDao, createVisitDaoProvider, type VisitDao } from "../dao/VisitDao";
+import { defineActiveUsers } from "../model/ActiveUser";
+import { defineArchivedUsers } from "../model/ArchivedUser";
 import { defineDocs } from "../model/Doc";
 import { defineDocDrafts } from "../model/DocDraft";
 import { defineDocDraftChanges } from "../model/DocDraftSectionChanges";
 import { defineDocHistories } from "../model/DocHistory";
+import { defineIntegrations } from "../model/Integration";
+import { definePermissions } from "../model/Permission";
+import { defineRoles } from "../model/Role";
+import { defineRolePermissions } from "../model/RolePermission";
+import { defineSources, defineSpaceSources } from "../model/Source";
 import { defineSpaces } from "../model/Space";
 import { defineSyncArticles } from "../model/SyncArticle";
-import { defineUsers } from "../model/User";
+import { defineSyncCommits } from "../model/SyncCommit";
+import { defineSyncCommitFiles } from "../model/SyncCommitFile";
+import { defineSyncCommitFileReviews } from "../model/SyncCommitFileReview";
+import { defineUserInvitations } from "../model/UserInvitation";
+import { defineUserOnboarding } from "../model/UserOnboarding";
+import { defineUserPreferences } from "../model/UserPreference";
 import { defineUserSpacePreferences } from "../model/UserSpacePreference";
 import { getLog } from "../util/Logger";
 import { QueryTypes, type Sequelize } from "sequelize";
@@ -73,9 +109,7 @@ export interface Database {
 	// DAOs (for backwards compatibility and direct access in single-tenant mode)
 	readonly auditEventDao: AuditEventDao;
 	readonly assetDao: AssetDao;
-	readonly authDao: AuthDao;
 	readonly collabConvoDao: CollabConvoDao;
-	readonly convoDao: ConvoDao;
 	readonly docDao: DocDao;
 	readonly docDraftDao: DocDraftDao;
 	readonly docDraftEditHistoryDao: DocDraftEditHistoryDao;
@@ -86,17 +120,25 @@ export interface Database {
 	readonly githubInstallationDao: GitHubInstallationDao;
 	readonly integrationDao: IntegrationDao;
 	readonly jobDao: JobDao;
+	readonly legacyTableCleanupDao: LegacyTableCleanupDao;
+	readonly syncCommitDao: SyncCommitDao;
 	readonly syncArticleDao: SyncArticleDao;
 	readonly visitDao: VisitDao;
-	readonly userDao: UserDao;
+	readonly activeUserDao: ActiveUserDao;
+	readonly archivedUserDao: ArchivedUserDao;
+	readonly userInvitationDao: UserInvitationDao;
+	readonly userOnboardingDao: UserOnboardingDao;
+	readonly userSpacePreferenceDao: UserSpacePreferenceDao;
+	readonly userPreferenceDao: UserPreferenceDao;
+	readonly sourceDao: SourceDao;
 	readonly spaceDao: SpaceDao;
+	readonly roleDao: RoleDao;
+	readonly permissionDao: PermissionDao;
 
 	// Providers (for multi-tenant support - use these in routers)
 	readonly auditEventDaoProvider: DaoProvider<AuditEventDao>;
 	readonly assetDaoProvider: DaoProvider<AssetDao>;
-	readonly authDaoProvider: DaoProvider<AuthDao>;
 	readonly collabConvoDaoProvider: DaoProvider<CollabConvoDao>;
-	readonly convoDaoProvider: DaoProvider<ConvoDao>;
 	readonly docDaoProvider: DaoProvider<DocDao>;
 	readonly docDraftDaoProvider: DaoProvider<DocDraftDao>;
 	readonly docDraftEditHistoryDaoProvider: DaoProvider<DocDraftEditHistoryDao>;
@@ -107,10 +149,19 @@ export interface Database {
 	readonly githubInstallationDaoProvider: DaoProvider<GitHubInstallationDao>;
 	readonly integrationDaoProvider: DaoProvider<IntegrationDao>;
 	readonly jobDaoProvider: DaoProvider<JobDao>;
+	readonly syncCommitDaoProvider: DaoProvider<SyncCommitDao>;
 	readonly syncArticleDaoProvider: DaoProvider<SyncArticleDao>;
 	readonly visitDaoProvider: DaoProvider<VisitDao>;
-	readonly userDaoProvider: DaoProvider<UserDao>;
+	readonly activeUserDaoProvider: DaoProvider<ActiveUserDao>;
+	readonly archivedUserDaoProvider: DaoProvider<ArchivedUserDao>;
+	readonly userInvitationDaoProvider: DaoProvider<UserInvitationDao>;
+	readonly userOnboardingDaoProvider: DaoProvider<UserOnboardingDao>;
+	readonly userSpacePreferenceDaoProvider: DaoProvider<UserSpacePreferenceDao>;
+	readonly userPreferenceDaoProvider: DaoProvider<UserPreferenceDao>;
+	readonly sourceDaoProvider: DaoProvider<SourceDao>;
 	readonly spaceDaoProvider: DaoProvider<SpaceDao>;
+	readonly roleDaoProvider: DaoProvider<RoleDao>;
+	readonly permissionDaoProvider: DaoProvider<PermissionDao>;
 }
 
 /**
@@ -188,6 +239,7 @@ async function syncModelsExcludingPartitioned(sequelize: Sequelize, partitionedM
 	for (const modelName of Object.keys(sequelize.models)) {
 		if (!partitionedModels.includes(modelName)) {
 			await sequelize.models[modelName].sync();
+			log.info("Synced model: %s", modelName);
 		}
 	}
 }
@@ -268,23 +320,39 @@ export async function createDatabase(sequelize: Sequelize, options?: CreateDatab
 	// must be defined BEFORE child tables that reference them.
 	//
 	// Foreign key dependencies:
+	// - integrations (no dependencies)
 	// - spaces (no dependencies)
+	// - sources -> integrations (integrationId FK)
+	// - space_sources -> spaces, sources
 	// - docs -> spaces (spaceId FK)
-	// - doc_drafts -> docs, users
+	// - doc_drafts -> docs
 	// - doc_draft_section_changes -> doc_drafts, docs
 	// - doc_histories -> docs
 	// - user_space_preferences -> spaces
 	//
 	// By calling define functions in order BEFORE any DAO creation,
 	// we ensure Sequelize creates tables in dependency order during sync().
-	defineUsers(sequelize); // Must come first (doc_drafts references users)
+	defineRoles(sequelize); // RBAC: Must come before active_users (active_users.roleId FK)
+	definePermissions(sequelize); // RBAC: No dependencies
+	defineRolePermissions(sequelize); // RBAC: references roles and permissions
+	defineActiveUsers(sequelize); // FK to roles (roleId)
+	defineUserInvitations(sequelize); // FK to active_users
+	defineArchivedUsers(sequelize); // FK to active_users
+	defineIntegrations(sequelize); // Must come before sources (sources.integrationId references integrations)
 	defineSpaces(sequelize); // Must come before docs (docs references spaces)
+	defineSources(sequelize); // Source records (references integrations)
+	defineSpaceSources(sequelize); // Junction table for space-source bindings (references spaces + sources)
 	defineDocs(sequelize); // Must come before doc_drafts and doc_histories
 	defineDocDrafts(sequelize); // Must come before doc_draft_section_changes
 	defineDocDraftChanges(sequelize);
 	defineDocHistories(sequelize); // References docs
 	defineSyncArticles(sequelize);
+	defineSyncCommits(sequelize);
+	defineSyncCommitFiles(sequelize);
+	defineSyncCommitFileReviews(sequelize);
+	defineUserOnboarding(sequelize); // References active_users
 	defineUserSpacePreferences(sequelize); // References spaces
+	defineUserPreferences(sequelize); // User favorites (no FK dependencies)
 
 	// Create section changes DAO first since DocDraftDao needs it as a parameter
 	const docDraftSectionChangesDao = createDocDraftSectionChangesDao(sequelize);
@@ -292,9 +360,7 @@ export async function createDatabase(sequelize: Sequelize, options?: CreateDatab
 	// Create all DAOs (order doesn't matter now since models are pre-defined)
 	const auditEventDao = createAuditEventDao(sequelize);
 	const assetDao = createAssetDao(sequelize);
-	const authDao = createAuthDao(sequelize);
 	const collabConvoDao = createCollabConvoDao(sequelize);
-	const convoDao = createConvoDao(sequelize);
 	const docDao = createDocDao(sequelize);
 	const docDraftDao = createDocDraftDao(sequelize, docDraftSectionChangesDao);
 	const docDraftEditHistoryDao = createDocDraftEditHistoryDao(sequelize);
@@ -304,10 +370,20 @@ export async function createDatabase(sequelize: Sequelize, options?: CreateDatab
 	const githubInstallationDao = createGitHubInstallationDao(sequelize);
 	const integrationDao = createIntegrationDao(sequelize);
 	const jobDao = createJobDao(sequelize);
+	const legacyTableCleanupDao = createLegacyTableCleanupDao(sequelize);
+	const syncCommitDao = createSyncCommitDao(sequelize);
 	const syncArticleDao = createSyncArticleDao(sequelize);
 	const visitDao = createVisitDao(sequelize);
-	const userDao = createUserDao(sequelize);
+	const activeUserDao = createActiveUserDao(sequelize);
+	const archivedUserDao = createArchivedUserDao(sequelize);
+	const userInvitationDao = createUserInvitationDao(sequelize);
+	const userOnboardingDao = createUserOnboardingDao(sequelize);
+	const userSpacePreferenceDao = createUserSpacePreferenceDao(sequelize);
+	const userPreferenceDao = createUserPreferenceDao(sequelize);
+	const sourceDao = createSourceDao(sequelize);
 	const spaceDao = createSpaceDao(sequelize);
+	const roleDao = createRoleDao(sequelize);
+	const permissionDao = createPermissionDao(sequelize);
 
 	const db = {
 		// Sequelize instance
@@ -316,9 +392,7 @@ export async function createDatabase(sequelize: Sequelize, options?: CreateDatab
 		// DAOs
 		auditEventDao,
 		assetDao,
-		authDao,
 		collabConvoDao,
-		convoDao,
 		docDao,
 		docDraftDao,
 		docDraftEditHistoryDao,
@@ -329,17 +403,25 @@ export async function createDatabase(sequelize: Sequelize, options?: CreateDatab
 		githubInstallationDao,
 		integrationDao,
 		jobDao,
+		legacyTableCleanupDao,
+		syncCommitDao,
 		syncArticleDao,
 		visitDao,
-		userDao,
+		activeUserDao,
+		archivedUserDao,
+		userInvitationDao,
+		userOnboardingDao,
+		userSpacePreferenceDao,
+		userPreferenceDao,
+		sourceDao,
 		spaceDao,
+		roleDao,
+		permissionDao,
 
 		// Providers (for multi-tenant support - pass default DAO to each provider)
 		auditEventDaoProvider: createAuditEventDaoProvider(auditEventDao),
 		assetDaoProvider: createAssetDaoProvider(assetDao),
-		authDaoProvider: createAuthDaoProvider(authDao),
 		collabConvoDaoProvider: createCollabConvoDaoProvider(collabConvoDao),
-		convoDaoProvider: createConvoDaoProvider(convoDao),
 		docDaoProvider: createDocDaoProvider(docDao),
 		docDraftDaoProvider: createDocDraftDaoProvider(docDraftDao),
 		docDraftEditHistoryDaoProvider: createDocDraftEditHistoryDaoProvider(docDraftEditHistoryDao),
@@ -350,25 +432,32 @@ export async function createDatabase(sequelize: Sequelize, options?: CreateDatab
 		githubInstallationDaoProvider: createGitHubInstallationDaoProvider(githubInstallationDao),
 		integrationDaoProvider: createIntegrationDaoProvider(integrationDao),
 		jobDaoProvider: createJobDaoProvider(jobDao),
+		syncCommitDaoProvider: createSyncCommitDaoProvider(syncCommitDao),
 		syncArticleDaoProvider: createSyncArticleDaoProvider(syncArticleDao),
 		visitDaoProvider: createVisitDaoProvider(visitDao),
-		userDaoProvider: createUserDaoProvider(userDao),
+		activeUserDaoProvider: createActiveUserDaoProvider(activeUserDao),
+		archivedUserDaoProvider: createArchivedUserDaoProvider(archivedUserDao),
+		userInvitationDaoProvider: createUserInvitationDaoProvider(userInvitationDao),
+		userOnboardingDaoProvider: createUserOnboardingDaoProvider(userOnboardingDao),
+		userSpacePreferenceDaoProvider: createUserSpacePreferenceDaoProvider(userSpacePreferenceDao),
+		userPreferenceDaoProvider: createUserPreferenceDaoProvider(userPreferenceDao),
+		sourceDaoProvider: createSourceDaoProvider(sourceDao),
 		spaceDaoProvider: createSpaceDaoProvider(spaceDao),
+		roleDaoProvider: createRoleDaoProvider(roleDao),
+		permissionDaoProvider: createPermissionDaoProvider(permissionDao),
 	};
 
 	// Log current schema and search_path for debugging
 	await logDatabaseState(sequelize);
 
-	// Skip sync in Vercel/serverless to avoid race conditions with multiple instances
+	// Skip sync when SKIP_SEQUELIZE_SYNC is set (e.g., ECS deployments)
 	// Unless forceSync is true (used during bootstrap to explicitly create tables)
-	const isVercelEnvironment = process.env.VERCEL === "1" || process.env.VERCEL_DEPLOYMENT === "true";
-	const skipSync = !options?.forceSync && (process.env.SKIP_SEQUELIZE_SYNC === "true" || isVercelEnvironment);
+	const skipSync = !options?.forceSync && process.env.SKIP_SEQUELIZE_SYNC === "true";
 
 	if (!skipSync) {
 		await syncDatabaseModels(sequelize);
 	} else {
-		const reason = process.env.SKIP_SEQUELIZE_SYNC === "true" ? "SKIP_SEQUELIZE_SYNC=true" : "Vercel environment";
-		log.info("Skipping sequelize.sync() - %s (forceSync=%s)", reason, options?.forceSync ?? false);
+		log.info("Skipping sequelize.sync() - SKIP_SEQUELIZE_SYNC=true (forceSync=%s)", options?.forceSync ?? false);
 	}
 
 	// Run postSync hooks unless skipped (e.g., during dev migrations)

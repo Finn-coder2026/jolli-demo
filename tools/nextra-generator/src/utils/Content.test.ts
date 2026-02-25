@@ -1,27 +1,20 @@
-import type { OpenApiSpec } from "../types.js";
 import {
 	detectsAsJson,
 	detectsAsYaml,
 	escapeYaml,
-	generateApiGroupOverviewPage,
-	generateApiGroupPage,
 	generateApiInteractiveContent,
-	generateApiNavigationMeta,
 	generateApiOverviewContent,
 	generateArticleContent,
 	generateIndexContent,
-	generateMetaGlobal,
 	generateNavMeta,
 	getDeletedFilePaths,
 	getEffectiveContentType,
 	getOrphanedContentFiles,
-	groupEndpointsByTag,
 	isValidUrl,
 	parseOpenApiSpec,
-	sanitizeContentForMdx,
 	slugify,
-	slugifyWithRedirect,
 } from "./content.js";
+import { sanitizeMdToMdx } from "jolli-common/server";
 import { describe, expect, it } from "vitest";
 
 describe("isValidUrl", () => {
@@ -67,38 +60,38 @@ describe("slugify", () => {
 		expect(slugify("HELLO WORLD")).toBe("hello-world");
 	});
 
-	it("should append -doc suffix for JavaScript reserved words", () => {
-		expect(slugify("import")).toBe("import-doc");
-		expect(slugify("export")).toBe("export-doc");
-		expect(slugify("class")).toBe("class-doc");
-		expect(slugify("const")).toBe("const-doc");
-		expect(slugify("function")).toBe("function-doc");
+	it("should preserve JavaScript reserved words as slugs", () => {
+		expect(slugify("import")).toBe("import");
+		expect(slugify("export")).toBe("export");
+		expect(slugify("class")).toBe("class");
+		expect(slugify("const")).toBe("const");
+		expect(slugify("function")).toBe("function");
 	});
 
-	it("should append -doc suffix for TypeScript keywords", () => {
-		expect(slugify("interface")).toBe("interface-doc");
-		expect(slugify("type")).toBe("type-doc");
-		expect(slugify("namespace")).toBe("namespace-doc");
-		expect(slugify("readonly")).toBe("readonly-doc");
+	it("should preserve TypeScript keywords as slugs", () => {
+		expect(slugify("interface")).toBe("interface");
+		expect(slugify("type")).toBe("type");
+		expect(slugify("namespace")).toBe("namespace");
+		expect(slugify("readonly")).toBe("readonly");
 	});
 
-	it("should append -doc suffix for problematic identifiers", () => {
-		expect(slugify("__proto__")).toBe("__proto__-doc");
-		expect(slugify("prototype")).toBe("prototype-doc");
-		expect(slugify("constructor")).toBe("constructor-doc");
-		expect(slugify("index")).toBe("index-doc");
+	it("should preserve problematic identifiers as slugs", () => {
+		expect(slugify("__proto__")).toBe("__proto__");
+		expect(slugify("prototype")).toBe("prototype");
+		expect(slugify("constructor")).toBe("constructor");
+		expect(slugify("index")).toBe("index");
 	});
 
-	it("should append -doc suffix for slugs starting with digits", () => {
-		expect(slugify("2024-plan")).toBe("2024-plan-doc");
-		expect(slugify("123")).toBe("123-doc");
-		expect(slugify("1st-article")).toBe("1st-article-doc");
+	it("should preserve slugs starting with digits", () => {
+		expect(slugify("2024-plan")).toBe("2024-plan");
+		expect(slugify("123")).toBe("123");
+		expect(slugify("1st-article")).toBe("1st-article");
 	});
 
-	it("should return untitled-doc for empty result after sanitization", () => {
-		expect(slugify("!!!")).toBe("untitled-doc");
-		expect(slugify("@#$%")).toBe("untitled-doc");
-		expect(slugify("   ")).toBe("untitled-doc");
+	it("should return untitled for empty result after sanitization", () => {
+		expect(slugify("!!!")).toBe("untitled");
+		expect(slugify("@#$%")).toBe("untitled");
+		expect(slugify("   ")).toBe("untitled");
 	});
 
 	it("should not modify normal slugs", () => {
@@ -106,51 +99,6 @@ describe("slugify", () => {
 		expect(slugify("api-reference")).toBe("api-reference");
 		expect(slugify("installation")).toBe("installation");
 		expect(slugify("configuration")).toBe("configuration");
-	});
-});
-
-describe("slugifyWithRedirect", () => {
-	it("should return needsRedirect=false for normal slugs", () => {
-		const result = slugifyWithRedirect("Getting Started");
-		expect(result.slug).toBe("getting-started");
-		expect(result.originalSlug).toBe("getting-started");
-		expect(result.needsRedirect).toBe(false);
-	});
-
-	it("should return needsRedirect=true for reserved words", () => {
-		const result = slugifyWithRedirect("import");
-		expect(result.slug).toBe("import-doc");
-		expect(result.originalSlug).toBe("import");
-		expect(result.needsRedirect).toBe(true);
-	});
-
-	it("should return needsRedirect=true for TypeScript keywords", () => {
-		const result = slugifyWithRedirect("interface");
-		expect(result.slug).toBe("interface-doc");
-		expect(result.originalSlug).toBe("interface");
-		expect(result.needsRedirect).toBe(true);
-	});
-
-	it("should return needsRedirect=true for slugs starting with digits", () => {
-		const result = slugifyWithRedirect("2024 Plan");
-		expect(result.slug).toBe("2024-plan-doc");
-		expect(result.originalSlug).toBe("2024-plan");
-		expect(result.needsRedirect).toBe(true);
-	});
-
-	it("should return needsRedirect=true for empty slugs", () => {
-		const result = slugifyWithRedirect("!!!");
-		expect(result.slug).toBe("untitled-doc");
-		expect(result.originalSlug).toBe("");
-		expect(result.needsRedirect).toBe(true);
-	});
-
-	it("should handle titles that become reserved words after slugification", () => {
-		const result = slugifyWithRedirect("Import Guide");
-		// "Import Guide" becomes "import-guide" which is not reserved
-		expect(result.slug).toBe("import-guide");
-		expect(result.originalSlug).toBe("import-guide");
-		expect(result.needsRedirect).toBe(false);
 	});
 });
 
@@ -297,19 +245,19 @@ describe("escapeYaml", () => {
 	});
 });
 
-describe("sanitizeContentForMdx", () => {
+describe("sanitizeMdToMdx", () => {
 	it("should convert HTML comments to MDX comments", () => {
-		expect(sanitizeContentForMdx("<!-- comment -->")).toBe("{/* comment */}");
+		expect(sanitizeMdToMdx("<!-- comment -->")).toBe("{/* comment */}");
 	});
 
 	it("should handle multiline comments", () => {
 		const input = "<!-- multi\nline\ncomment -->";
 		const expected = "{/* multi\nline\ncomment */}";
-		expect(sanitizeContentForMdx(input)).toBe(expected);
+		expect(sanitizeMdToMdx(input)).toBe(expected);
 	});
 
 	it("should preserve non-comment content", () => {
-		expect(sanitizeContentForMdx("# Hello World")).toBe("# Hello World");
+		expect(sanitizeMdToMdx("# Hello World")).toBe("# Hello World");
 	});
 });
 
@@ -406,19 +354,81 @@ describe("generateArticleContent", () => {
 		expect(content).toContain("**Last Updated:**");
 	});
 
-	it("should sanitize HTML comments to MDX", () => {
+	it("should sanitize HTML comments to MDX for text/mdx content type", () => {
 		const article = {
 			content: "<!-- comment -->",
+			contentType: "text/mdx",
 			contentMetadata: { title: "Test" },
 		};
 		const content = generateArticleContent(article);
 		expect(content).toContain("{/* comment */}");
 	});
 
+	it("should preserve HTML comments for text/markdown content type", () => {
+		const article = {
+			content: "<!-- comment -->",
+			contentType: "text/markdown",
+			contentMetadata: { title: "Test" },
+		};
+		const content = generateArticleContent(article);
+		expect(content).toContain("<!-- comment -->");
+	});
+
+	it("should preserve HTML comments when no content type specified (default to markdown)", () => {
+		const article = {
+			content: "<!-- comment -->",
+			contentMetadata: { title: "Test" },
+		};
+		const content = generateArticleContent(article);
+		expect(content).toContain("<!-- comment -->");
+	});
+
 	it("should handle missing metadata gracefully", () => {
 		const article = { content: "Just content" };
 		const content = generateArticleContent(article);
 		expect(content).toContain("title: Untitled Article");
+	});
+
+	it("should strip entire brain frontmatter block from content", () => {
+		const article = {
+			content: "---\njrn: readme-abc123\nattention:\n  - op: file\n    path: src/main.ts\n---\n# Hello World",
+			contentMetadata: { title: "Test Article" },
+		};
+		const result = generateArticleContent(article);
+
+		// Entire brain frontmatter block should be stripped
+		expect(result).not.toContain("jrn: readme-abc123");
+		expect(result).not.toContain("attention:");
+		expect(result).not.toContain("op: file");
+		// Article content should remain
+		expect(result).toContain("# Hello World");
+		// Nextra frontmatter should be present
+		expect(result).toContain("title: Test Article");
+	});
+
+	it("should strip entire brain frontmatter including non-jolli fields", () => {
+		const article = {
+			content:
+				"---\njrn: doc-xyz789\nattention:\n  - op: file\n    path: README.md\ncustom_field: keep-me\n---\n# Content",
+			contentMetadata: { title: "Test" },
+		};
+		const result = generateArticleContent(article);
+
+		// Entire brain block is discarded — the generator builds its own frontmatter
+		expect(result).not.toContain("jrn: doc-xyz789");
+		expect(result).not.toContain("custom_field: keep-me");
+		expect(result).toContain("# Content");
+	});
+
+	it("should pass through content unchanged when no frontmatter exists", () => {
+		const article = {
+			content: "# No frontmatter here\n\nJust plain content.",
+			contentMetadata: { title: "Plain" },
+		};
+		const result = generateArticleContent(article);
+
+		expect(result).toContain("# No frontmatter here");
+		expect(result).toContain("Just plain content.");
 	});
 });
 
@@ -438,13 +448,13 @@ describe("generateIndexContent", () => {
 });
 
 describe("generateNavMeta", () => {
-	it("should generate navigation meta from articles with hidden index", () => {
+	it("should generate navigation meta from articles", () => {
 		const articles = [
 			{ content: "", contentMetadata: { title: "Getting Started" } },
 			{ content: "", contentMetadata: { title: "API Reference" } },
 		];
 		const meta = generateNavMeta(articles);
-		// JOLLI-191: Hidden index entry is included (Nextra shows "Index" by default even without file)
+		// Hidden index prevents Nextra from auto-generating Index nav item
 		expect(meta).toEqual({
 			index: { display: "hidden" },
 			"getting-started": "Getting Started",
@@ -512,7 +522,7 @@ describe("generateNavMeta", () => {
 		const articles = [{ content: "", contentMetadata: { title: "Test" } }];
 		const meta = generateNavMeta(articles, []);
 
-		// JOLLI-191: Hidden index + article
+		// Hidden index + the article
 		expect(Object.keys(meta)).toEqual(["index", "test"]);
 		expect(meta.index).toEqual({ display: "hidden" });
 	});
@@ -521,256 +531,82 @@ describe("generateNavMeta", () => {
 		const articles = [{ content: "", contentMetadata: { title: "Test" } }];
 		const meta = generateNavMeta(articles, undefined);
 
-		// JOLLI-191: Hidden index + article
+		// Hidden index + the article
 		expect(Object.keys(meta)).toEqual(["index", "test"]);
 		expect(meta.index).toEqual({ display: "hidden" });
 	});
-});
 
-describe("groupEndpointsByTag", () => {
-	it("should group endpoints by their tags", () => {
-		const spec = {
-			openapi: "3.0.0",
-			info: { title: "Test API", version: "1.0.0" },
-			paths: {
-				"/users": {
-					get: { summary: "Get users", tags: ["Users"] },
-					post: { summary: "Create user", tags: ["Users"] },
-				},
-				"/products": {
-					get: { summary: "Get products", tags: ["Products"] },
-				},
-			},
+	// JOLLI-382: Header links are now added to _meta.ts for native Nextra navbar rendering
+	it("should add header links to _meta.ts with type: page", () => {
+		const articles = [{ content: "", contentMetadata: { title: "Test Article" } }];
+		const headerLinks = {
+			items: [
+				{ label: "GitHub", url: "https://github.com/example" },
+				{ label: "Community", url: "https://discord.gg/example" },
+			],
 		};
+		const meta = generateNavMeta(articles, undefined, headerLinks);
 
-		const groups = groupEndpointsByTag(spec);
-		expect(groups).toHaveLength(2);
-
-		const usersGroup = groups.find(g => g.tag === "Users");
-		expect(usersGroup).toBeDefined();
-		expect(usersGroup?.endpoints).toHaveLength(2);
-		expect(usersGroup?.slug).toBe("users");
-
-		const productsGroup = groups.find(g => g.tag === "Products");
-		expect(productsGroup).toBeDefined();
-		expect(productsGroup?.endpoints).toHaveLength(1);
+		// Should have: article and 2 header links (no hidden index)
+		// Note: No separator - visual separation is handled by CSS (margin-left: auto)
+		expect(meta["test-article"]).toBe("Test Article");
+		expect(meta["---"]).toBeUndefined();
+		// External links need type: 'page' to appear in navbar (not sidebar)
+		// Per Nextra 4 docs: { title: '...', type: 'page', href: 'https://...' }
+		expect(meta["nav-0"]).toEqual({
+			title: "GitHub",
+			type: "page",
+			href: "https://github.com/example",
+		});
+		expect(meta["nav-1"]).toEqual({
+			title: "Community",
+			type: "page",
+			href: "https://discord.gg/example",
+		});
 	});
 
-	it("should derive tags from path when no tags are defined", () => {
-		const spec = {
-			openapi: "3.0.0",
-			info: { title: "Test API", version: "1.0.0" },
-			paths: {
-				"/tenants/{id}": {
-					get: { summary: "Get tenant" },
-					delete: { summary: "Delete tenant" },
-				},
-				"/providers": {
-					get: { summary: "Get providers" },
-				},
-			},
-		};
-
-		const groups = groupEndpointsByTag(spec);
-		expect(groups).toHaveLength(2);
-
-		const tenantsGroup = groups.find(g => g.tag === "Tenants");
-		expect(tenantsGroup).toBeDefined();
-		expect(tenantsGroup?.endpoints).toHaveLength(2);
-
-		const providersGroup = groups.find(g => g.tag === "Providers");
-		expect(providersGroup).toBeDefined();
-		expect(providersGroup?.endpoints).toHaveLength(1);
-	});
-
-	it("should use 'General' for paths with no meaningful segments", () => {
-		const spec = {
-			openapi: "3.0.0",
-			info: { title: "Test API", version: "1.0.0" },
-			paths: {
-				"/{id}": {
-					get: { summary: "Get by ID" },
-				},
-			},
-		};
-
-		const groups = groupEndpointsByTag(spec);
-		expect(groups).toHaveLength(1);
-		expect(groups[0].tag).toBe("General");
-	});
-
-	it("should return empty array for spec without paths", () => {
-		const spec = {
-			openapi: "3.0.0",
-			info: { title: "Test API", version: "1.0.0" },
-		};
-
-		const groups = groupEndpointsByTag(spec);
-		expect(groups).toHaveLength(0);
-	});
-
-	it("should sort groups alphabetically by tag", () => {
-		const spec = {
-			openapi: "3.0.0",
-			info: { title: "Test API", version: "1.0.0" },
-			paths: {
-				"/zebras": { get: { summary: "Get zebras", tags: ["Zebras"] } },
-				"/apples": { get: { summary: "Get apples", tags: ["Apples"] } },
-				"/middle": { get: { summary: "Get middle", tags: ["Middle"] } },
-			},
-		};
-
-		const groups = groupEndpointsByTag(spec as OpenApiSpec);
-		expect(groups[0].tag).toBe("Apples");
-		expect(groups[1].tag).toBe("Middle");
-		expect(groups[2].tag).toBe("Zebras");
-	});
-});
-
-describe("generateApiGroupPage", () => {
-	it("should generate MDX page with endpoint details", () => {
-		const group = {
-			tag: "Users",
-			slug: "users",
-			endpoints: [
+	it("should add header links with dropdown menus to _meta.ts", () => {
+		const articles = [{ content: "", contentMetadata: { title: "Docs" } }];
+		const headerLinks = {
+			items: [
 				{
-					method: "GET",
-					path: "/users",
-					summary: "Get all users",
-					description: "",
-					tags: ["Users"],
-				},
-				{
-					method: "POST",
-					path: "/users",
-					summary: "Create a user",
-					description: "",
-					operationId: "createUser",
-					tags: ["Users"],
+					label: "Resources",
+					items: [
+						{ label: "Blog", url: "https://blog.example.com" },
+						{ label: "Tutorials", url: "https://tutorials.example.com" },
+					],
 				},
 			],
 		};
+		const meta = generateNavMeta(articles, undefined, headerLinks);
 
-		const content = generateApiGroupPage(group, "My API");
-		expect(content).toContain("title: Users");
-		expect(content).toContain("# Users");
-		expect(content).toContain("GET");
-		expect(content).toContain("`/users`");
-		expect(content).toContain("Get all users");
-		expect(content).toContain("POST");
-		expect(content).toContain("Create a user");
-		expect(content).toContain("`createUser`");
-	});
-
-	it("should show 'No description available' for endpoints without summary", () => {
-		const group = {
-			tag: "Empty",
-			slug: "empty",
-			endpoints: [
-				{
-					method: "GET",
-					path: "/empty",
-					summary: "",
-					description: "",
-					tags: ["Empty"],
-				},
-			],
-		};
-
-		const content = generateApiGroupPage(group, "API");
-		expect(content).toContain("No description available");
-	});
-});
-
-describe("generateApiNavigationMeta", () => {
-	it("should generate _meta.js content with all groups", () => {
-		const groups = [
-			{ tag: "Users", slug: "users", endpoints: [] },
-			{ tag: "Products", slug: "products", endpoints: [] },
-		];
-
-		const content = generateApiNavigationMeta(groups);
-		expect(content).toContain("export default");
-		expect(content).toContain('"index": "Overview"');
-		expect(content).toContain('"users": "Users"');
-		expect(content).toContain('"products": "Products"');
-		expect(content).toContain('"interactive": "Interactive API"');
-	});
-
-	it("should exclude overview when includeOverview is false", () => {
-		const groups = [{ tag: "Users", slug: "users", endpoints: [] }];
-
-		const content = generateApiNavigationMeta(groups, false, true);
-		expect(content).not.toContain('"index": "Overview"');
-		expect(content).toContain('"users": "Users"');
-		expect(content).toContain('"interactive": "Interactive API"');
-	});
-
-	it("should exclude interactive when includeInteractive is false", () => {
-		const groups = [{ tag: "Users", slug: "users", endpoints: [] }];
-
-		const content = generateApiNavigationMeta(groups, true, false);
-		expect(content).toContain('"index": "Overview"');
-		expect(content).toContain('"users": "Users"');
-		expect(content).not.toContain('"interactive": "Interactive API"');
-	});
-});
-
-describe("generateApiGroupOverviewPage", () => {
-	it("should generate overview page with all group links", () => {
-		const spec = {
-			openapi: "3.0.0",
-			info: { title: "My API", version: "2.0.0", description: "API description" },
-			paths: {},
-		};
-		const groups = [
-			{
-				tag: "Users",
-				slug: "users",
-				endpoints: [
-					{ method: "GET", path: "/users", summary: "", description: "", tags: ["Users"] },
-					{ method: "POST", path: "/users", summary: "", description: "", tags: ["Users"] },
-				],
+		// Should have dropdown menu format
+		expect(meta["nav-0"]).toEqual({
+			title: "Resources",
+			type: "menu",
+			items: {
+				blog: { title: "Blog", href: "https://blog.example.com" },
+				tutorials: { title: "Tutorials", href: "https://tutorials.example.com" },
 			},
-			{
-				tag: "Products",
-				slug: "products",
-				endpoints: [{ method: "GET", path: "/products", summary: "", description: "", tags: ["Products"] }],
-			},
-		];
-
-		const content = generateApiGroupOverviewPage(spec, "API Reference", groups);
-		expect(content).toContain("title: API Reference");
-		expect(content).toContain("# My API");
-		expect(content).toContain("API description");
-		expect(content).toContain("**Version:** 2.0.0");
-		expect(content).toContain("**3** endpoints");
-		expect(content).toContain("**2** groups");
-		expect(content).toContain("[**Users**](./users)");
-		expect(content).toContain("2 endpoints");
-		expect(content).toContain("[**Products**](./products)");
-		expect(content).toContain("1 endpoint");
+		});
 	});
 
-	it("should handle spec without info", () => {
-		const spec = {
-			openapi: "3.0.0",
-			paths: {},
-		};
-		const groups = [{ tag: "Test", slug: "test", endpoints: [] }];
+	it("should not add separator when no header links", () => {
+		const articles = [{ content: "", contentMetadata: { title: "Test" } }];
+		const meta = generateNavMeta(articles, undefined, undefined);
 
-		const content = generateApiGroupOverviewPage(spec, "API", groups);
-		expect(content).toContain("# API");
-		expect(content).toContain("**Version:** 1.0.0");
+		// Should NOT have separator
+		expect(meta["---"]).toBeUndefined();
 	});
 });
 
 describe("getDeletedFilePaths", () => {
-	it("should return MDX and fallback YAML/JSON paths for markdown articles", () => {
-		// Also deletes .yaml and .json variants in case file was previously saved with wrong extension
+	it("should return MD, MDX, and fallback YAML/JSON paths for markdown articles", () => {
+		// Deletes both .md (new default) and .mdx (legacy), plus .yaml/.json variants
 		const articles = [{ title: "Getting Started", contentType: "text/markdown" }];
 		const paths = getDeletedFilePaths(articles);
 		expect(paths).toEqual([
+			"content/getting-started.md",
 			"content/getting-started.mdx",
 			"content/getting-started.yaml",
 			"content/getting-started.json",
@@ -830,6 +666,7 @@ describe("getDeletedFilePaths", () => {
 		];
 		const paths = getDeletedFilePaths(articles);
 		expect(paths).toEqual([
+			"content/getting-started.md",
 			"content/getting-started.mdx",
 			"content/getting-started.yaml",
 			"content/getting-started.json",
@@ -848,31 +685,11 @@ describe("getDeletedFilePaths", () => {
 		const articles = [{ title: "My Special API: Version 2.0!", contentType: "text/markdown" }];
 		const paths = getDeletedFilePaths(articles);
 		expect(paths).toEqual([
+			"content/my-special-api-version-20.md",
 			"content/my-special-api-version-20.mdx",
 			"content/my-special-api-version-20.yaml",
 			"content/my-special-api-version-20.json",
 		]);
-	});
-});
-
-describe("generateMetaGlobal", () => {
-	it("should generate a valid _meta.global.js content", () => {
-		const content = generateMetaGlobal("My Docs Site");
-		expect(content).toContain("Global navigation configuration for My Docs Site");
-		expect(content).toContain("export default {");
-		expect(content).toContain("https://nextra.site/docs/docs-theme/page-configuration");
-	});
-
-	it("should include example configuration comments", () => {
-		const content = generateMetaGlobal("Test Site");
-		expect(content).toContain("// Add global navigation items here");
-		expect(content).toContain('title: "Documentation"');
-		expect(content).toContain('type: "page"');
-	});
-
-	it("should include the display name in the header comment", () => {
-		const content = generateMetaGlobal("Acme Corp Docs");
-		expect(content).toContain("Global navigation configuration for Acme Corp Docs");
 	});
 });
 
@@ -982,5 +799,21 @@ describe("getOrphanedContentFiles", () => {
 
 		const orphaned = getOrphanedContentFiles(existingFiles, expectedSlugs);
 		expect(orphaned).toEqual(["content/orphan.md"]);
+	});
+
+	it("should ignore non-content files (e.g., .ts, .tsx, .css)", () => {
+		const existingFiles = [
+			"content/valid-article.mdx",
+			"content/component.tsx",
+			"content/helper.ts",
+			"content/styles.css",
+			"content/readme.txt",
+		];
+		const expectedSlugs = ["valid-article"];
+
+		const orphaned = getOrphanedContentFiles(existingFiles, expectedSlugs);
+		// Only content files (.mdx, .md, .yaml, .json, .yml) should be considered orphaned
+		// Non-content files like .tsx, .ts, .css, .txt should be ignored
+		expect(orphaned).toEqual([]);
 	});
 });

@@ -57,7 +57,6 @@ describe("DocDraft", () => {
 		expect(schema.createdBy).toEqual({
 			type: DataTypes.INTEGER,
 			allowNull: false,
-			references: { model: "users", key: "id" },
 		});
 
 		// Validate contentLastEditedAt field
@@ -70,7 +69,6 @@ describe("DocDraft", () => {
 		expect(schema.contentLastEditedBy).toEqual({
 			type: DataTypes.INTEGER,
 			allowNull: true,
-			references: { model: "users", key: "id" },
 		});
 
 		// Validate contentMetadata field
@@ -96,7 +94,6 @@ describe("DocDraft", () => {
 		expect(schema.sharedBy).toEqual({
 			type: DataTypes.INTEGER,
 			allowNull: true,
-			references: { model: "users", key: "id" },
 		});
 
 		// Validate createdByAgent field

@@ -5,6 +5,7 @@ import { mockGitHubInstallationDao } from "../../dao/GitHubInstallationDao.mock"
 import * as GitHubAppModel from "../../model/GitHubApp";
 import { mockGitHubApp } from "../../model/GitHubApp.mock";
 import type { TenantOrgContext } from "../../tenant/TenantContext";
+import type { TenantOrgByInstallationResult, TenantRegistryClient } from "../../tenant/TenantRegistryClient";
 import * as GithubAppUtil from "../../util/GithubAppUtil";
 import type { ConnectStatePayload } from "../ConnectProvider";
 import { validateConnectCode } from "../ConnectStateService";
@@ -514,9 +515,141 @@ describe("GitHubConnectProvider", () => {
 			expect(result).toHaveLength(1);
 			expect(result[0].repos).toEqual([]); // Empty array on failure
 		});
+
+		it("should exclude installations owned by a different tenant", async () => {
+			const mockRegistryClient = {
+				getTenantOrgByInstallationId: vi.fn(),
+				createInstallationMapping: vi.fn(),
+				deleteInstallationMapping: vi.fn(),
+			} as unknown as TenantRegistryClient;
+			const providerWithRegistry = new GitHubConnectProvider(
+				mockDaoProvider(githubInstallationDao),
+				mockRegistryClient,
+			);
+
+			vi.spyOn(GithubAppUtil, "createGitHubAppJWT").mockReturnValue("mock-jwt");
+			vi.spyOn(GithubAppUtil, "getInstallations").mockResolvedValue([
+				{ id: 100, account: { login: "my-org", type: "Organization" } } as never,
+				{ id: 200, account: { login: "other-tenant-org", type: "Organization" } } as never,
+				{ id: 300, account: { login: "unclaimed-org", type: "Organization" } } as never,
+			]);
+			vi.spyOn(GithubAppUtil, "fetchInstallationRepositories").mockResolvedValue(["some/repo"]);
+			githubInstallationDao.listInstallations = vi.fn().mockResolvedValue([]);
+
+			const tenantContext = createMockTenantContext();
+
+			// Installation 100: owned by current tenant
+			vi.mocked(mockRegistryClient.getTenantOrgByInstallationId).mockImplementation((installationId: number) => {
+				if (installationId === 100) {
+					return Promise.resolve({
+						tenant: { id: "1" },
+						org: { id: "1" },
+					} as TenantOrgByInstallationResult);
+				}
+				if (installationId === 200) {
+					return Promise.resolve({
+						tenant: { id: "other-tenant-id" },
+						org: { id: "2" },
+					} as TenantOrgByInstallationResult);
+				}
+				// 300 is unclaimed
+				return Promise.resolve(undefined);
+			});
+
+			const result = await providerWithRegistry.listAvailableInstallations("user-token", tenantContext);
+
+			// Should include current tenant's (100) and unclaimed (300), but not other tenant's (200)
+			expect(result).toHaveLength(2);
+			expect(result.map(r => r.installationId)).toEqual([100, 300]);
+		});
+
+		it("should include installations owned by the current tenant", async () => {
+			const mockRegistryClient = {
+				getTenantOrgByInstallationId: vi.fn(),
+				createInstallationMapping: vi.fn(),
+				deleteInstallationMapping: vi.fn(),
+			} as unknown as TenantRegistryClient;
+			const providerWithRegistry = new GitHubConnectProvider(
+				mockDaoProvider(githubInstallationDao),
+				mockRegistryClient,
+			);
+
+			vi.spyOn(GithubAppUtil, "createGitHubAppJWT").mockReturnValue("mock-jwt");
+			vi.spyOn(GithubAppUtil, "getInstallations").mockResolvedValue([
+				{ id: 100, account: { login: "my-org", type: "Organization" } } as never,
+			]);
+			vi.spyOn(GithubAppUtil, "fetchInstallationRepositories").mockResolvedValue(["my-org/repo1"]);
+			githubInstallationDao.listInstallations = vi.fn().mockResolvedValue([]);
+
+			const tenantContext = createMockTenantContext();
+			vi.mocked(mockRegistryClient.getTenantOrgByInstallationId).mockResolvedValue({
+				tenant: { id: "1" },
+				org: { id: "1" },
+			} as TenantOrgByInstallationResult);
+
+			const result = await providerWithRegistry.listAvailableInstallations("user-token", tenantContext);
+
+			expect(result).toHaveLength(1);
+			expect(result[0].installationId).toBe(100);
+			expect(result[0].accountLogin).toBe("my-org");
+		});
+
+		it("should return empty array in multi-tenant mode without registry client", async () => {
+			process.env.MULTI_TENANT_ENABLED = "true";
+			resetConfig();
+
+			// Default provider has no registry client
+			const result = await provider.listAvailableInstallations("user-token", createMockTenantContext());
+
+			expect(result).toEqual([]);
+		});
+
+		it("should include unclaimed installations with no mapping", async () => {
+			const mockRegistryClient = {
+				getTenantOrgByInstallationId: vi.fn(),
+				createInstallationMapping: vi.fn(),
+				deleteInstallationMapping: vi.fn(),
+			} as unknown as TenantRegistryClient;
+			const providerWithRegistry = new GitHubConnectProvider(
+				mockDaoProvider(githubInstallationDao),
+				mockRegistryClient,
+			);
+
+			vi.spyOn(GithubAppUtil, "createGitHubAppJWT").mockReturnValue("mock-jwt");
+			vi.spyOn(GithubAppUtil, "getInstallations").mockResolvedValue([
+				{ id: 500, account: { login: "new-org", type: "Organization" } } as never,
+			]);
+			vi.spyOn(GithubAppUtil, "fetchInstallationRepositories").mockResolvedValue(["new-org/repo1"]);
+			githubInstallationDao.listInstallations = vi.fn().mockResolvedValue([]);
+
+			// No mapping exists for this installation
+			vi.mocked(mockRegistryClient.getTenantOrgByInstallationId).mockResolvedValue(undefined);
+
+			const result = await providerWithRegistry.listAvailableInstallations(
+				"user-token",
+				createMockTenantContext(),
+			);
+
+			expect(result).toHaveLength(1);
+			expect(result[0].installationId).toBe(500);
+			expect(result[0].accountLogin).toBe("new-org");
+		});
 	});
 
 	describe("connectExistingInstallation", () => {
+		it("should return configuration_error in multi-tenant mode without registry client", async () => {
+			process.env.MULTI_TENANT_ENABLED = "true";
+			resetConfig();
+
+			// Default provider has no registry client
+			const result = await provider.connectExistingInstallation(123, createMockTenantContext());
+
+			expect(result.success).toBe(false);
+			if (!result.success) {
+				expect(result.error).toBe("configuration_error");
+			}
+		});
+
 		it("should return error when installation not found", async () => {
 			vi.spyOn(GithubAppUtil, "findInstallationInGithubApp").mockResolvedValue(undefined);
 
@@ -605,6 +738,60 @@ describe("GitHubConnectProvider", () => {
 
 			expect(result.success).toBe(true);
 			expect(GithubAppUtil.upsertInstallationContainer).toHaveBeenCalled();
+		});
+
+		it("should reject connecting an installation owned by another tenant", async () => {
+			const mockRegistryClient = {
+				getTenantOrgByInstallationId: vi.fn(),
+				createInstallationMapping: vi.fn(),
+				deleteInstallationMapping: vi.fn(),
+			} as unknown as TenantRegistryClient;
+			const providerWithRegistry = new GitHubConnectProvider(
+				mockDaoProvider(githubInstallationDao),
+				mockRegistryClient,
+			);
+
+			vi.mocked(mockRegistryClient.getTenantOrgByInstallationId).mockResolvedValue({
+				tenant: { id: "other-tenant-id" },
+				org: { id: "2" },
+			} as TenantOrgByInstallationResult);
+
+			const result = await providerWithRegistry.connectExistingInstallation(123, createMockTenantContext());
+
+			expect(result.success).toBe(false);
+			if (!result.success) {
+				expect(result.error).toBe("installation_not_available");
+			}
+		});
+
+		it("should allow connecting an unclaimed installation", async () => {
+			const mockRegistryClient = {
+				getTenantOrgByInstallationId: vi.fn(),
+				createInstallationMapping: vi.fn(),
+				deleteInstallationMapping: vi.fn(),
+			} as unknown as TenantRegistryClient;
+			const providerWithRegistry = new GitHubConnectProvider(
+				mockDaoProvider(githubInstallationDao),
+				mockRegistryClient,
+			);
+
+			// No mapping exists
+			vi.mocked(mockRegistryClient.getTenantOrgByInstallationId).mockResolvedValue(undefined);
+
+			vi.spyOn(GithubAppUtil, "findInstallationInGithubApp").mockResolvedValue({
+				id: 123,
+				account: { login: "acme-org", type: "Organization" },
+				target_type: "Organization",
+			});
+			vi.spyOn(GithubAppUtil, "fetchInstallationRepositories").mockResolvedValue(["acme-org/repo1"]);
+			vi.spyOn(GithubAppUtil, "upsertInstallationContainer").mockResolvedValue(undefined);
+
+			const result = await providerWithRegistry.connectExistingInstallation(123, createMockTenantContext());
+
+			expect(result.success).toBe(true);
+			if (result.success) {
+				expect(result.redirectPath).toBe("/integrations/github/org/acme-org?new_installation=true");
+			}
 		});
 	});
 });

@@ -26,9 +26,8 @@ export interface ParameterStoreLoaderOptions {
 	pstoreEnv: string;
 
 	/**
-	 * The path base to use. Defaults to "backend".
-	 * - "backend" uses /jolli/backend/{pstoreEnv}/
-	 * - "vercel" uses /jolli/vercel/{pstoreEnv}/
+	 * The path base to use. Defaults to "app".
+	 * - "app" uses /jolli/app/{pstoreEnv}/
 	 */
 	pathBase?: string;
 
@@ -66,7 +65,7 @@ export class ParameterStoreLoader {
 
 	/**
 	 * @deprecated Use the options object constructor instead.
-	 * Create a ParameterStoreLoader for /jolli/backend/{pstoreEnv}/.
+	 * Create a ParameterStoreLoader for /jolli/app/{pstoreEnv}/.
 	 */
 	constructor(pstoreEnv: string, region?: string, applyToProcessEnv?: boolean);
 
@@ -75,14 +74,14 @@ export class ParameterStoreLoader {
 		if (typeof optionsOrPstoreEnv === "string") {
 			// Legacy constructor
 			const pstoreEnv = optionsOrPstoreEnv;
-			this.pathPrefix = `/jolli/backend/${pstoreEnv}/`;
+			this.pathPrefix = `/jolli/app/${pstoreEnv}/`;
 			this.applyToProcessEnv = applyToProcessEnv;
 			const effectiveRegion = region || process.env.AWS_REGION;
 			this.ssmClient = new SSMClient(effectiveRegion ? { region: effectiveRegion } : {});
 		} else {
 			// New options-based constructor
 			const opts = optionsOrPstoreEnv;
-			const pathBase = opts.pathBase ?? "backend";
+			const pathBase = opts.pathBase ?? "app";
 			this.pathPrefix = `/jolli/${pathBase}/${opts.pstoreEnv}/`;
 			this.applyToProcessEnv = opts.applyToProcessEnv ?? true;
 			const effectiveRegion = opts.region || process.env.AWS_REGION;
@@ -168,7 +167,7 @@ export class ParameterStoreLoader {
 
 	/**
 	 * Converts a parameter name to an environment variable name.
-	 * Example: "/jolli/backend/prod/github/apps/info" -> "GITHUB_APPS_INFO"
+	 * Example: "/jolli/app/prod/github/apps/info" -> "GITHUB_APPS_INFO"
 	 */
 	private convertParameterNameToEnvVar(parameterName: string): string {
 		if (!parameterName.startsWith(this.pathPrefix)) {

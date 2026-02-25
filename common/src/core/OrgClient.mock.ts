@@ -6,6 +6,7 @@ export function mockOrgClient(partial?: Partial<OrgClient>): OrgClient {
 			tenant: null,
 			org: null,
 			availableOrgs: [],
+			favoritesHash: "EMPTY",
 		}),
 		listOrgs: async (): Promise<OrgListResponse> => ({
 			orgs: [],

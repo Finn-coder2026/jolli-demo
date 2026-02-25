@@ -1,7 +1,8 @@
 import { createMockClient, createMockIntlayerValue, renderWithProviders } from "../../test/TestUtils";
+import { createMockChangedArticle, createMockSite } from "./__testUtils__/SiteTestFactory";
 import { SiteDetail } from "./SiteDetail";
 import { fireEvent, screen, waitFor } from "@testing-library/preact";
-import type { ChangedArticle, SiteWithUpdate } from "jolli-common";
+import type { ChangedArticle } from "jolli-common";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock lucide-react icons
@@ -29,29 +30,82 @@ vi.mock("lucide-react", async importOriginal => {
 });
 
 // Mock tab components to simplify testing
-vi.mock("./SiteOverviewTab", () => ({
-	SiteOverviewTab: () => <div data-testid="site-overview-tab">Overview Tab Content</div>,
-}));
-
 vi.mock("./SiteContentTab", () => ({
 	SiteContentTab: () => <div data-testid="site-content-tab">Content Tab Content</div>,
 }));
 
-vi.mock("./SiteSettingsTab", () => ({
-	SiteSettingsTab: ({ docsite, onDeleteRequest }: { docsite: { status: string }; onDeleteRequest?: () => void }) => (
-		<div data-testid="site-settings-tab">
-			Settings Tab Content
-			{onDeleteRequest && (docsite.status === "active" || docsite.status === "error") && (
-				<button data-testid="delete-site-button" onClick={onDeleteRequest}>
-					Delete Site
+vi.mock("./branding", () => ({
+	SiteBrandingTab: () => <div data-testid="site-branding-tab">Branding Tab Content</div>,
+}));
+
+vi.mock("./SiteTreeNav", () => ({
+	SiteTreeNav: ({
+		onViewChange,
+		activeView,
+	}: {
+		site: unknown;
+		activeView: string;
+		onViewChange: (view: string) => void;
+		onSiteChange: (site: unknown) => void;
+	}) => (
+		<div data-testid="site-tree-nav">
+			<button data-testid="nav-navigation" onClick={() => onViewChange("navigation")}>
+				Navigation
+			</button>
+			<button data-testid="nav-content" onClick={() => onViewChange("content")}>
+				Content
+			</button>
+			<button data-testid="nav-branding" onClick={() => onViewChange("branding")}>
+				Branding
+			</button>
+			<span data-testid="active-view">{activeView}</span>
+		</div>
+	),
+}));
+
+vi.mock("./SiteNavigationTab", () => ({
+	SiteNavigationTab: () => <div data-testid="site-navigation-tab">Navigation Tab Content</div>,
+}));
+
+vi.mock("./SiteRebuildIndicator", () => ({
+	SiteRebuildIndicator: ({
+		site,
+		rebuilding,
+		onRebuild,
+	}: {
+		site: { status: string; needsUpdate?: boolean };
+		rebuilding: boolean;
+		hasUnsavedChanges: boolean;
+		onRebuild: () => void;
+		onReviewChanges?: () => void;
+		buildProgress?: number;
+	}) => (
+		<div data-testid="site-rebuild-indicator">
+			{site.status === "building" || site.status === "pending" ? (
+				<span>Building...</span>
+			) : site.status === "error" ? (
+				<span>Build Error</span>
+			) : site.needsUpdate ? (
+				<span>Changes Available</span>
+			) : (
+				<span>Up to Date</span>
+			)}
+			{/* Only show rebuild button when not building/pending */}
+			{site.status !== "building" && site.status !== "pending" && (
+				<button data-testid="rebuild-button" onClick={onRebuild} disabled={rebuilding}>
+					Rebuild
 				</button>
 			)}
 		</div>
 	),
 }));
 
-vi.mock("./SiteLogsTab", () => ({
-	SiteLogsTab: () => <div data-testid="site-logs-tab">Logs Tab Content</div>,
+vi.mock("./SitePendingChangesTab", () => ({
+	SitePendingChangesTab: () => <div data-testid="site-pending-changes-tab">Pending Changes Tab Content</div>,
+}));
+
+vi.mock("./SiteBuildLogsPanel", () => ({
+	SiteBuildLogsPanel: () => <div data-testid="site-build-logs-panel">Build Logs Panel</div>,
 }));
 
 const mockSiteClient = {
@@ -59,21 +113,11 @@ const mockSiteClient = {
 	getSite: vi.fn(),
 	createSite: vi.fn(),
 	regenerateSite: vi.fn(),
-	updateRepositoryFile: vi.fn(),
-	checkUpdateStatus: vi.fn(),
-	toggleProtection: vi.fn(),
-	refreshProtectionStatus: vi.fn(),
-	publishSite: vi.fn(),
-	unpublishSite: vi.fn(),
 	deleteSite: vi.fn(),
 	updateSiteArticles: vi.fn(),
 	cancelBuild: vi.fn(),
 	getChangedConfigFiles: vi.fn().mockResolvedValue([]),
 	formatCode: vi.fn(),
-	createFolder: vi.fn().mockResolvedValue({ success: true, path: "" }),
-	deleteFolder: vi.fn().mockResolvedValue({ success: true }),
-	renameFolder: vi.fn().mockResolvedValue({ success: true, newPath: "" }),
-	moveFile: vi.fn().mockResolvedValue({ success: true, newPath: "" }),
 	listFolderContents: vi.fn().mockResolvedValue({ files: [] }),
 	checkSubdomainAvailability: vi.fn(),
 	addCustomDomain: vi.fn(),
@@ -82,8 +126,12 @@ const mockSiteClient = {
 	verifyCustomDomain: vi.fn(),
 	refreshDomainStatuses: vi.fn(),
 	updateJwtAuthConfig: vi.fn(),
+	updateBranding: vi.fn(),
 	getRepositoryTree: vi.fn().mockResolvedValue({ sha: "", tree: [], truncated: false }),
 	getFileContent: vi.fn().mockResolvedValue({ name: "", path: "", sha: "", type: "file" }),
+	updateFolderStructure: vi.fn(),
+	syncTree: vi.fn().mockResolvedValue({ success: true, commitSha: "mock-commit-sha" }),
+	getSitesForArticle: vi.fn().mockResolvedValue([]),
 };
 
 vi.mock("jolli-common", async () => {
@@ -100,58 +148,16 @@ vi.mock("jolli-common", async () => {
 const CONTENT = {
 	loading: "Loading...",
 	notFound: "Site not found",
-	updateAvailable: "Update Available",
-	contentChangesDescription: "Article content has been modified since the last build",
-	selectionChangesDescription: "Article selection has changed since the last build",
-	mixedChangesDescription: "Articles have been modified and selection has changed since the last build",
-	configChangesDescription: "Configuration files have been manually edited since the last build",
-	upToDate: "Up to Date",
-	changedFilesTitle: "Changed Files",
-	buildInProgress: "Build in Progress",
-	buildError: "Build Error",
 };
 
 describe("SiteDetail", () => {
-	const mockOnBack = vi.fn();
-
-	function createMockSite(overrides: Partial<SiteWithUpdate> = {}): SiteWithUpdate {
-		return {
-			id: 1,
-			name: "test-site",
-			displayName: "Test Site",
-			status: "active",
-			visibility: "external",
-			needsUpdate: false,
-			metadata: {
-				githubRepo: "test-org/test-site",
-				githubUrl: "https://github.com/test-org/test-site",
-				framework: "nextra",
-				articleCount: 5,
-				productionUrl: "https://test-site.vercel.app",
-			},
-			createdAt: "2024-01-01T00:00:00Z",
-			updatedAt: "2024-01-01T00:00:00Z",
-			lastGeneratedAt: "2024-01-01T00:00:00Z",
-			userId: 1,
-			...overrides,
-		};
-	}
-
-	function createMockChangedArticle(overrides: Partial<ChangedArticle> = {}): ChangedArticle {
-		return {
-			id: 1,
-			title: "Test Article",
-			jrn: "jrn:article:test",
-			updatedAt: new Date().toISOString(),
-			contentType: "text/markdown",
-			changeType: "updated",
-			...overrides,
-		};
-	}
-
 	beforeEach(() => {
 		vi.clearAllMocks();
+		// Re-setup mock implementations after clearAllMocks
 		mockSiteClient.getSite.mockResolvedValue(createMockSite());
+		mockSiteClient.getChangedConfigFiles.mockResolvedValue([]);
+		mockSiteClient.getRepositoryTree.mockResolvedValue({ sha: "", tree: [], truncated: false });
+		mockSiteClient.getFileContent.mockResolvedValue({ name: "", path: "", sha: "", type: "file" });
 	});
 
 	function renderSiteDetail(docsiteId = 1) {
@@ -159,7 +165,7 @@ describe("SiteDetail", () => {
 		// Override the sites method to use our mockSiteClient
 		mockClient.sites = vi.fn(() => mockSiteClient);
 
-		return renderWithProviders(<SiteDetail docsiteId={docsiteId} onBack={mockOnBack} />, {
+		return renderWithProviders(<SiteDetail docsiteId={docsiteId} />, {
 			initialPath: createMockIntlayerValue("/sites/1"),
 			client: mockClient,
 		});
@@ -205,11 +211,11 @@ describe("SiteDetail", () => {
 			});
 		});
 
-		it("should show back button", async () => {
+		it("should show site tree nav for navigation", async () => {
 			renderSiteDetail();
 
 			await waitFor(() => {
-				expect(screen.getByTestId("back-button")).toBeDefined();
+				expect(screen.getByTestId("site-tree-nav")).toBeDefined();
 			});
 		});
 
@@ -223,55 +229,35 @@ describe("SiteDetail", () => {
 				expect(screen.getByTestId("rebuild-button")).toBeDefined();
 			});
 		});
-
-		it("should show delete button in settings tab for active sites", async () => {
-			const site = createMockSite({ status: "active" });
-			mockSiteClient.getSite.mockResolvedValue(site);
-
-			renderSiteDetail();
-
-			// Wait for site to load and tabs to be visible
-			await waitFor(() => {
-				expect(screen.getByTestId("settings-tab-trigger")).toBeDefined();
-			});
-
-			// Click settings tab to see delete button
-			fireEvent.click(screen.getByTestId("settings-tab-trigger"));
-
-			await waitFor(() => {
-				expect(screen.getByTestId("delete-site-button")).toBeDefined();
-			});
-		});
 	});
 
 	describe("update indicator", () => {
-		it("should show update available alert when needsUpdate is true", async () => {
+		it("should show changes available when needsUpdate is true", async () => {
 			const site = createMockSite({ needsUpdate: true });
 			mockSiteClient.getSite.mockResolvedValue(site);
 
 			renderSiteDetail();
 
 			await waitFor(() => {
-				expect(screen.getByText(CONTENT.updateAvailable)).toBeDefined();
-				// Default description when no changed articles are provided
-				expect(screen.getByText(CONTENT.contentChangesDescription)).toBeDefined();
+				expect(screen.getByTestId("site-rebuild-indicator")).toBeDefined();
+				expect(screen.getByText("Changes Available")).toBeDefined();
 			});
 		});
 
-		it("should show up to date alert when needsUpdate is false", async () => {
+		it("should show up to date when needsUpdate is false", async () => {
 			const site = createMockSite({ needsUpdate: false, status: "active" });
 			mockSiteClient.getSite.mockResolvedValue(site);
 
 			renderSiteDetail();
 
 			await waitFor(() => {
-				expect(screen.getByText(CONTENT.upToDate)).toBeDefined();
+				expect(screen.getByText("Up to Date")).toBeDefined();
 			});
 		});
 	});
 
 	describe("changed files display", () => {
-		it("should display changed files list when site needs update", async () => {
+		it("should show changes available when site has changed articles", async () => {
 			const changedArticles: Array<ChangedArticle> = [
 				createMockChangedArticle({ id: 1, title: "Getting Started Guide", contentType: "text/markdown" }),
 				createMockChangedArticle({ id: 2, title: "API Reference", contentType: "text/markdown" }),
@@ -285,146 +271,14 @@ describe("SiteDetail", () => {
 
 			renderSiteDetail();
 
-			// First wait for the site to load (update indicator to appear)
+			// The rebuild indicator should show changes available
 			await waitFor(() => {
-				expect(screen.getByText(CONTENT.updateAvailable)).toBeDefined();
-			});
-
-			// Then check for changed files
-			await waitFor(() => {
-				// Verify the changed article items are rendered
-				const changedArticleItems = screen.getAllByTestId("changed-article-item");
-				expect(changedArticleItems.length).toBe(2);
-			});
-
-			// Also verify the titles are displayed
-			expect(screen.getByText("Getting Started Guide")).toBeDefined();
-			expect(screen.getByText("API Reference")).toBeDefined();
-		});
-
-		it("should show count of changed files in title", async () => {
-			const changedArticles: Array<ChangedArticle> = [
-				createMockChangedArticle({ id: 1, title: "Article 1" }),
-				createMockChangedArticle({ id: 2, title: "Article 2" }),
-				createMockChangedArticle({ id: 3, title: "Article 3" }),
-			];
-
-			const site = createMockSite({
-				needsUpdate: true,
-				changedArticles,
-			});
-			mockSiteClient.getSite.mockResolvedValue(site);
-
-			renderSiteDetail();
-
-			// First wait for the site to load
-			await waitFor(() => {
-				expect(screen.getByText(CONTENT.updateAvailable)).toBeDefined();
-			});
-
-			// Then check for changed files count
-			await waitFor(() => {
-				const changedArticleItems = screen.getAllByTestId("changed-article-item");
-				expect(changedArticleItems.length).toBe(3);
+				expect(screen.getByTestId("site-rebuild-indicator")).toBeDefined();
+				expect(screen.getByText("Changes Available")).toBeDefined();
 			});
 		});
 
-		it("should show FileJson icon for JSON content type", async () => {
-			const changedArticles: Array<ChangedArticle> = [
-				createMockChangedArticle({
-					id: 1,
-					title: "petstore.json",
-					contentType: "application/json",
-				}),
-			];
-
-			const site = createMockSite({
-				needsUpdate: true,
-				changedArticles,
-			});
-			mockSiteClient.getSite.mockResolvedValue(site);
-
-			renderSiteDetail();
-
-			await waitFor(() => {
-				const articleItem = screen.getByTestId("changed-article-item");
-				expect(articleItem.querySelector('[data-testid="file-json-icon"]')).toBeDefined();
-			});
-		});
-
-		it("should show FileJson icon for YAML content type", async () => {
-			const changedArticles: Array<ChangedArticle> = [
-				createMockChangedArticle({
-					id: 1,
-					title: "openapi.yaml",
-					contentType: "application/yaml",
-				}),
-			];
-
-			const site = createMockSite({
-				needsUpdate: true,
-				changedArticles,
-			});
-			mockSiteClient.getSite.mockResolvedValue(site);
-
-			renderSiteDetail();
-
-			await waitFor(() => {
-				const articleItem = screen.getByTestId("changed-article-item");
-				expect(articleItem.querySelector('[data-testid="file-json-icon"]')).toBeDefined();
-			});
-		});
-
-		it("should show FileText icon for markdown content type", async () => {
-			const changedArticles: Array<ChangedArticle> = [
-				createMockChangedArticle({
-					id: 1,
-					title: "README.md",
-					contentType: "text/markdown",
-				}),
-			];
-
-			const site = createMockSite({
-				needsUpdate: true,
-				changedArticles,
-			});
-			mockSiteClient.getSite.mockResolvedValue(site);
-
-			renderSiteDetail();
-
-			await waitFor(() => {
-				const articleItem = screen.getByTestId("changed-article-item");
-				expect(articleItem.querySelector('[data-testid="file-text-icon"]')).toBeDefined();
-			});
-		});
-
-		it("should display article titles and timestamps", async () => {
-			const updatedAt = "2024-06-15T10:30:00Z";
-			const changedArticles: Array<ChangedArticle> = [
-				createMockChangedArticle({
-					id: 1,
-					title: "User Guide",
-					updatedAt,
-				}),
-			];
-
-			const site = createMockSite({
-				needsUpdate: true,
-				changedArticles,
-			});
-			mockSiteClient.getSite.mockResolvedValue(site);
-
-			renderSiteDetail();
-
-			await waitFor(() => {
-				expect(screen.getByText("User Guide")).toBeDefined();
-				// Timestamp should be formatted and displayed
-				const articleItems = screen.getAllByTestId("changed-article-item");
-				expect(articleItems.length).toBe(1);
-			});
-		});
-
-		it("should not display changed files section when changedArticles is empty", async () => {
+		it("should show changes available when changedArticles is empty but needsUpdate is true", async () => {
 			const site = createMockSite({
 				needsUpdate: true,
 				changedArticles: [],
@@ -433,15 +287,14 @@ describe("SiteDetail", () => {
 
 			renderSiteDetail();
 
+			// The rebuild indicator should show changes available
 			await waitFor(() => {
-				expect(screen.getByText(CONTENT.updateAvailable)).toBeDefined();
+				expect(screen.getByTestId("site-rebuild-indicator")).toBeDefined();
+				expect(screen.getByText("Changes Available")).toBeDefined();
 			});
-
-			// Changed files title should not be present
-			expect(screen.queryByText(CONTENT.changedFilesTitle)).toBeNull();
 		});
 
-		it("should not display changed files section when changedArticles is not provided", async () => {
+		it("should show changes available when changedArticles is not provided but needsUpdate is true", async () => {
 			const site = createMockSite({
 				needsUpdate: true,
 				// Don't include changedArticles to test the undefined case
@@ -450,43 +303,16 @@ describe("SiteDetail", () => {
 
 			renderSiteDetail();
 
+			// The rebuild indicator should show changes available
 			await waitFor(() => {
-				expect(screen.getByText(CONTENT.updateAvailable)).toBeDefined();
-			});
-
-			// Changed files title should not be present
-			expect(screen.queryByText(CONTENT.changedFilesTitle)).toBeNull();
-		});
-
-		it("should handle multiple changed articles with different content types", async () => {
-			const changedArticles: Array<ChangedArticle> = [
-				createMockChangedArticle({ id: 1, title: "README.md", contentType: "text/markdown" }),
-				createMockChangedArticle({ id: 2, title: "openapi.json", contentType: "application/json" }),
-				createMockChangedArticle({ id: 3, title: "schema.yaml", contentType: "application/yaml" }),
-			];
-
-			const site = createMockSite({
-				needsUpdate: true,
-				changedArticles,
-			});
-			mockSiteClient.getSite.mockResolvedValue(site);
-
-			renderSiteDetail();
-
-			await waitFor(() => {
-				const articleItems = screen.getAllByTestId("changed-article-item");
-				expect(articleItems.length).toBe(3);
-
-				// Check all titles are displayed
-				expect(screen.getByText("README.md")).toBeDefined();
-				expect(screen.getByText("openapi.json")).toBeDefined();
-				expect(screen.getByText("schema.yaml")).toBeDefined();
+				expect(screen.getByTestId("site-rebuild-indicator")).toBeDefined();
+				expect(screen.getByText("Changes Available")).toBeDefined();
 			});
 		});
 	});
 
 	describe("build status", () => {
-		it("should show build in progress for building status", async () => {
+		it("should show building status in rebuild indicator", async () => {
 			const site = createMockSite({
 				status: "building",
 				metadata: {
@@ -502,13 +328,12 @@ describe("SiteDetail", () => {
 			renderSiteDetail();
 
 			await waitFor(() => {
-				// There may be multiple "Build in Progress" texts, so use getAllByText
-				const buildInProgressElements = screen.getAllByText(CONTENT.buildInProgress);
-				expect(buildInProgressElements.length).toBeGreaterThan(0);
+				expect(screen.getByTestId("site-rebuild-indicator")).toBeDefined();
+				expect(screen.getByText("Building...")).toBeDefined();
 			});
 		});
 
-		it("should show build error for error status", async () => {
+		it("should show build error in rebuild indicator for error status", async () => {
 			const site = createMockSite({
 				status: "error",
 				metadata: {
@@ -524,8 +349,8 @@ describe("SiteDetail", () => {
 			renderSiteDetail();
 
 			await waitFor(() => {
-				expect(screen.getByText(CONTENT.buildError)).toBeDefined();
-				expect(screen.getByText("Build failed: syntax error")).toBeDefined();
+				expect(screen.getByTestId("site-rebuild-indicator")).toBeDefined();
+				expect(screen.getByText("Build Error")).toBeDefined();
 			});
 		});
 	});
@@ -538,10 +363,9 @@ describe("SiteDetail", () => {
 			renderSiteDetail();
 
 			await waitFor(() => {
-				expect(screen.getByTestId("overview-tab-trigger")).toBeDefined();
-				expect(screen.getByTestId("content-tab-trigger")).toBeDefined();
-				expect(screen.getByTestId("settings-tab-trigger")).toBeDefined();
-				expect(screen.getByTestId("logs-tab-trigger")).toBeDefined();
+				expect(screen.getByTestId("nav-navigation")).toBeDefined();
+				expect(screen.getByTestId("nav-content")).toBeDefined();
+				expect(screen.getByTestId("nav-branding")).toBeDefined();
 			});
 		});
 
@@ -560,18 +384,18 @@ describe("SiteDetail", () => {
 			renderSiteDetail();
 
 			await waitFor(() => {
-				expect(screen.getByTestId("overview-tab-trigger")).toBeDefined();
+				expect(screen.getByTestId("nav-navigation")).toBeDefined();
 			});
 		});
 
-		it("should show overview tab content by default", async () => {
+		it("should show content tab by default", async () => {
 			const site = createMockSite({ status: "active" });
 			mockSiteClient.getSite.mockResolvedValue(site);
 
 			renderSiteDetail();
 
 			await waitFor(() => {
-				expect(screen.getByTestId("site-overview-tab")).toBeDefined();
+				expect(screen.getByTestId("site-content-tab")).toBeDefined();
 			});
 		});
 
@@ -591,14 +415,13 @@ describe("SiteDetail", () => {
 			renderSiteDetail();
 
 			await waitFor(() => {
-				expect(screen.getByText(CONTENT.buildError)).toBeDefined();
+				expect(screen.getByText("Build Error")).toBeDefined();
 			});
 
 			// Tabs should be present for error status so user can access full interface
-			expect(screen.getByTestId("overview-tab-trigger")).toBeDefined();
-			expect(screen.getByTestId("content-tab-trigger")).toBeDefined();
-			expect(screen.getByTestId("settings-tab-trigger")).toBeDefined();
-			expect(screen.getByTestId("logs-tab-trigger")).toBeDefined();
+			expect(screen.getByTestId("nav-navigation")).toBeDefined();
+			expect(screen.getByTestId("nav-content")).toBeDefined();
+			expect(screen.getByTestId("nav-branding")).toBeDefined();
 		});
 
 		it("should show rebuild button for error status", async () => {
@@ -623,34 +446,6 @@ describe("SiteDetail", () => {
 			// Rebuild button should be prominent (default variant) for error status
 			const rebuildButton = screen.getByTestId("rebuild-button");
 			expect(rebuildButton).toBeDefined();
-		});
-
-		it("should show delete button in settings tab for error status", async () => {
-			const site = createMockSite({
-				status: "error",
-				metadata: {
-					githubRepo: "test-org/test-site",
-					githubUrl: "https://github.com/test-org/test-site",
-					framework: "nextra",
-					articleCount: 5,
-					lastBuildError: "Build failed",
-				},
-			});
-			mockSiteClient.getSite.mockResolvedValue(site);
-
-			renderSiteDetail();
-
-			// Wait for site to load and tabs to be visible
-			await waitFor(() => {
-				expect(screen.getByTestId("settings-tab-trigger")).toBeDefined();
-			});
-
-			// Click settings tab to see delete button
-			fireEvent.click(screen.getByTestId("settings-tab-trigger"));
-
-			await waitFor(() => {
-				expect(screen.getByTestId("delete-site-button")).toBeDefined();
-			});
 		});
 	});
 
@@ -751,7 +546,7 @@ describe("SiteDetail", () => {
 			expect(screen.queryByTestId("rebuild-button")).toBeNull();
 		});
 
-		it("should not show delete button for building status", async () => {
+		it("should show cancel button and hide delete button for building status", async () => {
 			const site = createMockSite({
 				status: "building",
 				metadata: {
@@ -769,11 +564,6 @@ describe("SiteDetail", () => {
 			await waitFor(() => {
 				expect(screen.getByTestId("cancel-build-button")).toBeDefined();
 			});
-
-			// Click settings tab to verify delete button is not shown
-			fireEvent.click(screen.getByTestId("settings-tab-trigger"));
-
-			// Delete button should not be shown for building status
 			expect(screen.queryByTestId("delete-site-button")).toBeNull();
 		});
 

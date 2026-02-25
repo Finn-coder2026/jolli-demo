@@ -153,6 +153,13 @@ export interface DocDraftDao {
 	 * Counts articles (docs) that have drafts with pending agent suggestions.
 	 */
 	countArticlesWithAgentSuggestions(): Promise<number>;
+
+	/**
+	 * Gets all draft content strings.
+	 * Returns only the content field to minimize memory usage.
+	 * @returns Array of content strings from all drafts.
+	 */
+	getAllContent(): Promise<Array<{ content: string }>>;
 }
 
 export function createDocDraftDao(
@@ -181,6 +188,7 @@ export function createDocDraftDao(
 		countMySharedNewDrafts,
 		countSharedWithMeDrafts,
 		countArticlesWithAgentSuggestions,
+		getAllContent,
 	};
 
 	async function createDocDraft(draft: NewDocDraft): Promise<DocDraft> {
@@ -279,7 +287,7 @@ export function createDocDraftDao(
 			where: {
 				createdBy: userId,
 				title: {
-					[Op.iLike]: `%${title}%`,
+					[Op.iLike]: `%${title.replace(/[%_]/g, "\\$&")}%`,
 				},
 			},
 			order: [["updatedAt", "DESC"]],
@@ -502,6 +510,13 @@ export function createDocDraftDao(
 			{ type: QueryTypes.SELECT },
 		);
 		return result.length > 0 ? Number.parseInt(result[0].count, 10) : 0;
+	}
+
+	async function getAllContent(): Promise<Array<{ content: string }>> {
+		const drafts = await DocDrafts.findAll({
+			attributes: ["content"],
+		});
+		return drafts.map(draft => ({ content: draft.get("content") as string }));
 	}
 }
 

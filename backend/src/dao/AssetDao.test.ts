@@ -2,7 +2,7 @@ import type { Asset, NewAsset } from "../model/Asset";
 import type { TenantOrgContext } from "../tenant/TenantContext";
 import type { ModelDef } from "../util/ModelDef";
 import { type AssetDao, createAssetDao, createAssetDaoProvider } from "./AssetDao";
-import type { Sequelize } from "sequelize";
+import { Op, type Sequelize } from "sequelize";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 function mockAsset(overrides: Partial<Asset> = {}): Asset {
@@ -18,6 +18,8 @@ function mockAsset(overrides: Partial<Asset> = {}): Asset {
 		createdAt: new Date("2024-01-01"),
 		updatedAt: new Date("2024-01-01"),
 		deletedAt: null,
+		orphanedAt: null,
+		spaceId: null,
 		...overrides,
 	};
 }
@@ -109,6 +111,62 @@ describe("AssetDao", () => {
 			vi.mocked(mockAssets.findOne).mockResolvedValue(null);
 
 			const result = await assetDao.findByS3Key("tenant/org/_default/nonexistent.png");
+
+			expect(result).toBeUndefined();
+		});
+	});
+
+	describe("findByS3KeyWithSpaceAccess", () => {
+		it("should return asset when allowedSpaceIds is null (org-wide access)", async () => {
+			const asset = mockAsset({ spaceId: 5 });
+			const mockInstance = { get: vi.fn().mockReturnValue(asset) };
+			vi.mocked(mockAssets.findOne).mockResolvedValue(mockInstance as never);
+
+			const result = await assetDao.findByS3KeyWithSpaceAccess("tenant/org/space/abc123.png", null);
+
+			expect(result).toEqual(asset);
+		});
+
+		it("should return asset when asset has no spaceId (legacy org-wide image)", async () => {
+			const asset = mockAsset({ spaceId: null });
+			const mockInstance = { get: vi.fn().mockReturnValue(asset) };
+			vi.mocked(mockAssets.findOne).mockResolvedValue(mockInstance as never);
+
+			const result = await assetDao.findByS3KeyWithSpaceAccess(
+				"tenant/org/_default/abc123.png",
+				new Set([1, 2, 3]),
+			);
+
+			expect(result).toEqual(asset);
+		});
+
+		it("should return asset when spaceId is in allowed set", async () => {
+			const asset = mockAsset({ spaceId: 5 });
+			const mockInstance = { get: vi.fn().mockReturnValue(asset) };
+			vi.mocked(mockAssets.findOne).mockResolvedValue(mockInstance as never);
+
+			const result = await assetDao.findByS3KeyWithSpaceAccess("tenant/org/space/abc123.png", new Set([3, 5, 7]));
+
+			expect(result).toEqual(asset);
+		});
+
+		it("should return undefined when spaceId is not in allowed set", async () => {
+			const asset = mockAsset({ spaceId: 5 });
+			const mockInstance = { get: vi.fn().mockReturnValue(asset) };
+			vi.mocked(mockAssets.findOne).mockResolvedValue(mockInstance as never);
+
+			const result = await assetDao.findByS3KeyWithSpaceAccess("tenant/org/space/abc123.png", new Set([1, 2, 3]));
+
+			expect(result).toBeUndefined();
+		});
+
+		it("should return undefined when asset does not exist", async () => {
+			vi.mocked(mockAssets.findOne).mockResolvedValue(null);
+
+			const result = await assetDao.findByS3KeyWithSpaceAccess(
+				"tenant/org/space/nonexistent.png",
+				new Set([1, 2]),
+			);
 
 			expect(result).toBeUndefined();
 		});
@@ -295,6 +353,143 @@ describe("AssetDao", () => {
 			vi.mocked(mockAssets.destroy).mockResolvedValue(0 as never);
 
 			await expect(assetDao.deleteAll()).resolves.not.toThrow();
+		});
+	});
+
+	describe("listActiveAssets", () => {
+		it("should return active assets ordered by createdAt ASC", async () => {
+			const asset1 = mockAsset({ id: 1, s3Key: "a.png" });
+			const asset2 = mockAsset({ id: 2, s3Key: "b.png" });
+
+			const mockInstances = [{ get: vi.fn().mockReturnValue(asset1) }, { get: vi.fn().mockReturnValue(asset2) }];
+			vi.mocked(mockAssets.findAll).mockResolvedValue(mockInstances as never);
+
+			const result = await assetDao.listActiveAssets();
+
+			expect(mockAssets.findAll).toHaveBeenCalledWith({
+				where: { status: "active", deletedAt: null },
+				order: [["createdAt", "ASC"]],
+			});
+			expect(result).toEqual([asset1, asset2]);
+		});
+
+		it("should return empty array when no active assets exist", async () => {
+			vi.mocked(mockAssets.findAll).mockResolvedValue([]);
+
+			const result = await assetDao.listActiveAssets();
+
+			expect(result).toEqual([]);
+		});
+	});
+
+	describe("markAsOrphaned", () => {
+		it("should mark assets as orphaned and return count", async () => {
+			vi.mocked(mockAssets.update).mockResolvedValue([3] as never);
+
+			const result = await assetDao.markAsOrphaned(["a.png", "b.png", "c.png"]);
+
+			expect(mockAssets.update).toHaveBeenCalledWith(
+				{ status: "orphaned", orphanedAt: expect.any(Date) },
+				{
+					where: {
+						s3Key: { [Op.in]: ["a.png", "b.png", "c.png"] },
+						status: "active",
+						deletedAt: null,
+					},
+				},
+			);
+			expect(result).toBe(3);
+		});
+
+		it("should return 0 when empty array provided", async () => {
+			const result = await assetDao.markAsOrphaned([]);
+
+			expect(mockAssets.update).not.toHaveBeenCalled();
+			expect(result).toBe(0);
+		});
+	});
+
+	describe("restoreToActive", () => {
+		it("should restore orphaned assets to active and return count", async () => {
+			vi.mocked(mockAssets.update).mockResolvedValue([2] as never);
+
+			const result = await assetDao.restoreToActive(["a.png", "b.png"]);
+
+			expect(mockAssets.update).toHaveBeenCalledWith(
+				{ status: "active", orphanedAt: null },
+				{
+					where: {
+						s3Key: { [Op.in]: ["a.png", "b.png"] },
+						status: "orphaned",
+						deletedAt: null,
+					},
+				},
+			);
+			expect(result).toBe(2);
+		});
+
+		it("should return 0 when empty array provided", async () => {
+			const result = await assetDao.restoreToActive([]);
+
+			expect(mockAssets.update).not.toHaveBeenCalled();
+			expect(result).toBe(0);
+		});
+	});
+
+	describe("findOrphanedOlderThan", () => {
+		it("should return orphaned assets older than cutoff date", async () => {
+			const orphanDate = new Date("2024-01-01");
+			const asset = mockAsset({ status: "orphaned", orphanedAt: orphanDate });
+			const mockInstance = { get: vi.fn().mockReturnValue(asset) };
+			vi.mocked(mockAssets.findAll).mockResolvedValue([mockInstance] as never);
+
+			const cutoff = new Date("2024-01-15");
+			const result = await assetDao.findOrphanedOlderThan(cutoff);
+
+			expect(mockAssets.findAll).toHaveBeenCalledWith({
+				where: {
+					status: "orphaned",
+					orphanedAt: { [Op.lt]: cutoff },
+					deletedAt: null,
+				},
+				order: [["orphanedAt", "ASC"]],
+			});
+			expect(result).toEqual([asset]);
+		});
+
+		it("should return empty array when no orphans past cutoff", async () => {
+			vi.mocked(mockAssets.findAll).mockResolvedValue([]);
+
+			const result = await assetDao.findOrphanedOlderThan(new Date());
+
+			expect(result).toEqual([]);
+		});
+	});
+
+	describe("findRecentlyUploaded", () => {
+		it("should return assets uploaded after cutoff date", async () => {
+			const asset = mockAsset({ createdAt: new Date("2024-01-20") });
+			const mockInstance = { get: vi.fn().mockReturnValue(asset) };
+			vi.mocked(mockAssets.findAll).mockResolvedValue([mockInstance] as never);
+
+			const cutoff = new Date("2024-01-15");
+			const result = await assetDao.findRecentlyUploaded(cutoff);
+
+			expect(mockAssets.findAll).toHaveBeenCalledWith({
+				where: {
+					createdAt: { [Op.gte]: cutoff },
+					deletedAt: null,
+				},
+			});
+			expect(result).toEqual([asset]);
+		});
+
+		it("should return empty array when no recent uploads", async () => {
+			vi.mocked(mockAssets.findAll).mockResolvedValue([]);
+
+			const result = await assetDao.findRecentlyUploaded(new Date());
+
+			expect(result).toEqual([]);
 		});
 	});
 });

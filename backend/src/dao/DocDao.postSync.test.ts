@@ -70,9 +70,6 @@ describe("DocDao.postSync", () => {
 				if (sql.includes("UPDATE docs SET slug")) {
 					return Promise.resolve([]);
 				}
-				if (sql.includes("ALTER TABLE docs ALTER COLUMN slug SET NOT NULL")) {
-					return Promise.resolve([]);
-				}
 			}
 			return Promise.resolve([[]]);
 		});
@@ -95,11 +92,6 @@ describe("DocDao.postSync", () => {
 				replacements: expect.objectContaining({ id: 2 }),
 			}),
 		);
-
-		// Check ALTER TABLE was called to add NOT NULL constraint
-		expect(mockQuery).toHaveBeenCalledWith(
-			expect.stringContaining("ALTER TABLE docs ALTER COLUMN slug SET NOT NULL"),
-		);
 	});
 
 	it("should use jrn as fallback when contentMetadata has no title", async () => {
@@ -116,9 +108,6 @@ describe("DocDao.postSync", () => {
 					if (replacements?.slug?.includes("fallback-doc")) {
 						return Promise.resolve([]);
 					}
-				}
-				if (sql.includes("ALTER TABLE docs ALTER COLUMN slug SET NOT NULL")) {
-					return Promise.resolve([]);
 				}
 			}
 			return Promise.resolve([[]]);
@@ -149,35 +138,5 @@ describe("DocDao.postSync", () => {
 
 		// At least one query was attempted
 		expect(mockQuery).toHaveBeenCalled();
-	});
-
-	it("should handle ALTER TABLE failure gracefully when constraint already exists", async () => {
-		const docsWithNullSlug = [
-			{ id: 1, jrn: "doc:test", content_metadata: { title: "Test" }, doc_type: "document" },
-		];
-
-		mockQuery.mockImplementation((sql: string) => {
-			if (typeof sql === "string") {
-				if (sql.includes("SELECT id, jrn, content_metadata, doc_type FROM docs WHERE slug IS NULL")) {
-					return Promise.resolve([docsWithNullSlug]);
-				}
-				if (sql.includes("UPDATE docs SET slug")) {
-					return Promise.resolve([]);
-				}
-				if (sql.includes("ALTER TABLE docs ALTER COLUMN slug SET NOT NULL")) {
-					return Promise.reject(new Error("column is already NOT NULL"));
-				}
-			}
-			return Promise.resolve([[]]);
-		});
-
-		// Should not throw even when ALTER TABLE fails
-		await docDao.postSync(mockSequelize, mockDb);
-
-		// Wait for async migration to complete
-		await new Promise(resolve => setTimeout(resolve, 50));
-
-		// Verify migration completed (UPDATE was called)
-		expect(mockQuery).toHaveBeenCalledWith(expect.stringContaining("UPDATE docs SET slug"), expect.any(Object));
 	});
 });

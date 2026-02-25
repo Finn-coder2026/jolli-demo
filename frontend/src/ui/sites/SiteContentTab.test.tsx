@@ -4,13 +4,23 @@ import { fireEvent, screen, waitFor } from "@testing-library/preact";
 import type { Client, SiteMetadata, SiteWithUpdate } from "jolli-common";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+// Mock toast - use vi.hoisted to ensure mock functions are available when vi.mock runs
+const { mockToastSuccess, mockToastError } = vi.hoisted(() => ({
+	mockToastSuccess: vi.fn(),
+	mockToastError: vi.fn(),
+}));
+vi.mock("../../components/ui/Sonner", () => ({
+	toast: {
+		success: mockToastSuccess,
+		error: mockToastError,
+	},
+}));
+
 // Mock lucide-react icons
 vi.mock("lucide-react", async importOriginal => {
 	const actual = await importOriginal<typeof import("lucide-react")>();
 	return {
 		...actual,
-		FileText: () => <div data-testid="file-text-icon" />,
-		FolderTree: () => <div data-testid="folder-tree-icon" />,
 		Info: () => <div data-testid="info-icon" />,
 	};
 });
@@ -51,14 +61,22 @@ vi.mock("./ArticlePicker", () => ({
 			>
 				Select Article
 			</button>
+			<button
+				type="button"
+				data-testid="replace-article"
+				onClick={() => {
+					const newSet = new Set(selectedJrns);
+					const first = [...newSet][0];
+					if (first) {
+						newSet.delete(first);
+					}
+					newSet.add("jrn:article:replaced");
+					onSelectionChange(newSet);
+				}}
+			>
+				Replace Article
+			</button>
 		</div>
-	),
-}));
-
-// Mock RepositoryViewer
-vi.mock("./RepositoryViewer", () => ({
-	RepositoryViewer: ({ docsite }: { docsite: SiteWithUpdate }) => (
-		<div data-testid="repository-viewer">RepositoryViewer for {docsite.name}</div>
 	),
 }));
 
@@ -70,9 +88,14 @@ const mockSitesClient = {
 	updateSiteArticles: vi.fn(),
 };
 
+const mockSpacesClient = {
+	listSpaces: vi.fn(),
+};
+
 const mockClient = {
 	docs: () => mockDocsClient,
 	sites: () => mockSitesClient,
+	spaces: () => mockSpacesClient,
 };
 
 vi.mock("jolli-common", async () => {
@@ -85,7 +108,6 @@ vi.mock("jolli-common", async () => {
 
 describe("SiteContentTab", () => {
 	const mockOnDocsiteUpdate = vi.fn();
-	const mockOnFileSave = vi.fn();
 
 	const mockArticles = [
 		{ id: 1, jrn: "jrn:article:1", contentMetadata: { title: "Article 1" } },
@@ -118,9 +140,21 @@ describe("SiteContentTab", () => {
 		} as SiteWithUpdate;
 	}
 
+	/**
+	 * Waits for articles to load and the selection effect to fully settle.
+	 * Checks both article-count (articles loaded) and selected-count (selection initialized).
+	 */
+	async function waitForArticlesReady(expectedSelectedCount: string) {
+		await waitFor(() => {
+			expect(screen.getByTestId("article-count").textContent).toBe("3");
+			expect(screen.getByTestId("selected-count").textContent).toBe(expectedSelectedCount);
+		});
+	}
+
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mockDocsClient.listDocs.mockResolvedValue(mockArticles);
+		mockSpacesClient.listSpaces.mockResolvedValue([]);
 		mockSitesClient.updateSiteArticles.mockResolvedValue({ id: 1, name: "test-site" });
 	});
 
@@ -129,12 +163,7 @@ describe("SiteContentTab", () => {
 		props: Partial<React.ComponentProps<typeof SiteContentTab>> = {},
 	) {
 		return renderWithProviders(
-			<SiteContentTab
-				docsite={docsite}
-				onDocsiteUpdate={mockOnDocsiteUpdate}
-				onFileSave={mockOnFileSave}
-				{...props}
-			/>,
+			<SiteContentTab docsite={docsite} onDocsiteUpdate={mockOnDocsiteUpdate} {...props} />,
 			{
 				initialPath: createMockIntlayerValue("/sites/1"),
 				client: mockClient as unknown as Client,
@@ -142,37 +171,13 @@ describe("SiteContentTab", () => {
 		);
 	}
 
-	describe("tabs", () => {
-		it("should render articles and navigation tabs", () => {
-			const docsite = createMockDocsite();
-			renderContentTab(docsite);
-
-			expect(screen.getByTestId("content-tab-articles")).toBeDefined();
-			expect(screen.getByTestId("content-tab-navigation")).toBeDefined();
-		});
-
-		it("should show articles tab by default", async () => {
+	describe("articles view", () => {
+		it("should show article picker by default", async () => {
 			const docsite = createMockDocsite();
 			renderContentTab(docsite);
 
 			await waitFor(() => {
 				expect(screen.getByTestId("article-picker")).toBeDefined();
-			});
-		});
-
-		it("should switch to navigation tab when clicked", async () => {
-			const docsite = createMockDocsite({
-				metadata: {
-					githubRepo: "owner/repo",
-					githubUrl: "https://github.com/owner/repo",
-				},
-			});
-			renderContentTab(docsite);
-
-			fireEvent.click(screen.getByTestId("content-tab-navigation"));
-
-			await waitFor(() => {
-				expect(screen.getByTestId("repository-viewer")).toBeDefined();
 			});
 		});
 	});
@@ -181,6 +186,9 @@ describe("SiteContentTab", () => {
 		it("should show loading state initially", () => {
 			mockDocsClient.listDocs.mockImplementation(
 				() => new Promise(resolve => setTimeout(() => resolve(mockArticles), 100)),
+			);
+			mockSpacesClient.listSpaces.mockImplementation(
+				() => new Promise(resolve => setTimeout(() => resolve([]), 100)),
 			);
 			const docsite = createMockDocsite();
 			renderContentTab(docsite);
@@ -201,12 +209,14 @@ describe("SiteContentTab", () => {
 	});
 
 	describe("article selection state", () => {
-		it("should initialize with include all mode by default", async () => {
+		it("should initialize with all articles individually selected by default", async () => {
 			const docsite = createMockDocsite();
 			renderContentTab(docsite);
 
 			await waitFor(() => {
-				expect(screen.getByTestId("include-all").textContent).toBe("true");
+				// Include-all toggle is OFF; all articles are selected individually
+				expect(screen.getByTestId("include-all").textContent).toBe("false");
+				expect(screen.getByTestId("selected-count").textContent).toBe("3");
 			});
 		});
 
@@ -230,11 +240,9 @@ describe("SiteContentTab", () => {
 			const docsite = createMockDocsite();
 			renderContentTab(docsite);
 
-			await waitFor(() => {
-				expect(screen.getByTestId("article-picker")).toBeDefined();
-			});
+			await waitForArticlesReady("3");
 
-			// Toggle include all off
+			// Toggle include all on (was off by default)
 			fireEvent.click(screen.getByTestId("toggle-include-all"));
 
 			await waitFor(() => {
@@ -250,9 +258,7 @@ describe("SiteContentTab", () => {
 			});
 			renderContentTab(docsite);
 
-			await waitFor(() => {
-				expect(screen.getByTestId("article-picker")).toBeDefined();
-			});
+			await waitForArticlesReady("1");
 
 			// Add a new article to selection
 			fireEvent.click(screen.getByTestId("select-article"));
@@ -265,15 +271,17 @@ describe("SiteContentTab", () => {
 
 	describe("save articles", () => {
 		it("should save article selection when save button clicked", async () => {
-			const docsite = createMockDocsite();
+			const docsite = createMockDocsite({
+				metadata: {
+					selectedArticleJrns: ["jrn:article:1"],
+				},
+			});
 			renderContentTab(docsite);
 
-			await waitFor(() => {
-				expect(screen.getByTestId("article-picker")).toBeDefined();
-			});
+			await waitForArticlesReady("1");
 
-			// Make a change
-			fireEvent.click(screen.getByTestId("toggle-include-all"));
+			// Add an article to trigger a change
+			fireEvent.click(screen.getByTestId("select-article"));
 
 			await waitFor(() => {
 				expect(screen.getByTestId("save-articles-button")).toBeDefined();
@@ -291,9 +299,7 @@ describe("SiteContentTab", () => {
 			const docsite = createMockDocsite();
 			renderContentTab(docsite);
 
-			await waitFor(() => {
-				expect(screen.getByTestId("article-picker")).toBeDefined();
-			});
+			await waitForArticlesReady("3");
 
 			// Make a change
 			fireEvent.click(screen.getByTestId("toggle-include-all"));
@@ -302,7 +308,7 @@ describe("SiteContentTab", () => {
 			fireEvent.click(screen.getByTestId("save-articles-button"));
 
 			await waitFor(() => {
-				expect(screen.getByTestId("article-save-message")).toBeDefined();
+				expect(mockToastSuccess).toHaveBeenCalled();
 			});
 		});
 
@@ -313,9 +319,7 @@ describe("SiteContentTab", () => {
 			const docsite = createMockDocsite();
 			renderContentTab(docsite);
 
-			await waitFor(() => {
-				expect(screen.getByTestId("article-picker")).toBeDefined();
-			});
+			await waitForArticlesReady("3");
 
 			// Make a change
 			fireEvent.click(screen.getByTestId("toggle-include-all"));
@@ -334,9 +338,7 @@ describe("SiteContentTab", () => {
 			const docsite = createMockDocsite();
 			renderContentTab(docsite);
 
-			await waitFor(() => {
-				expect(screen.getByTestId("article-picker")).toBeDefined();
-			});
+			await waitForArticlesReady("3");
 
 			// Make a change
 			fireEvent.click(screen.getByTestId("toggle-include-all"));
@@ -345,10 +347,7 @@ describe("SiteContentTab", () => {
 			fireEvent.click(screen.getByTestId("save-articles-button"));
 
 			await waitFor(() => {
-				const message = screen.getByTestId("article-save-message");
-				expect(message.classList.contains("text-red-600") || message.textContent?.includes("Failed")).toBe(
-					true,
-				);
+				expect(mockToastError).toHaveBeenCalled();
 			});
 		});
 
@@ -356,9 +355,7 @@ describe("SiteContentTab", () => {
 			const docsite = createMockDocsite();
 			renderContentTab(docsite);
 
-			await waitFor(() => {
-				expect(screen.getByTestId("article-picker")).toBeDefined();
-			});
+			await waitForArticlesReady("3");
 
 			const saveButton = screen.getByTestId("save-articles-button") as HTMLButtonElement;
 			expect(saveButton.disabled).toBe(true);
@@ -368,9 +365,7 @@ describe("SiteContentTab", () => {
 			const docsite = createMockDocsite();
 			renderContentTab(docsite);
 
-			await waitFor(() => {
-				expect(screen.getByTestId("article-picker")).toBeDefined();
-			});
+			await waitForArticlesReady("3");
 
 			// Make a change
 			fireEvent.click(screen.getByTestId("toggle-include-all"));
@@ -382,57 +377,82 @@ describe("SiteContentTab", () => {
 		});
 	});
 
-	describe("navigation tab", () => {
-		it("should show no navigation message when no GitHub repo", async () => {
-			const docsite = createMockDocsite({
-				metadata: { githubRepo: "", githubUrl: "" },
-			});
+	describe("include all toggle behavior", () => {
+		it("should toggle include all on and back off with all articles still selected", async () => {
+			const docsite = createMockDocsite();
 			renderContentTab(docsite);
 
-			fireEvent.click(screen.getByTestId("content-tab-navigation"));
+			await waitForArticlesReady("3");
 
+			// Toggle include-all ON
+			fireEvent.click(screen.getByTestId("toggle-include-all"));
 			await waitFor(() => {
-				expect(
-					screen.getByText("No navigation file found. Create one to customize your sidebar."),
-				).toBeDefined();
+				expect(screen.getByTestId("include-all").textContent).toBe("true");
 			});
-		});
 
-		it("should show repository viewer when GitHub repo exists", async () => {
-			const docsite = createMockDocsite({
-				metadata: {
-					githubRepo: "owner/repo",
-					githubUrl: "https://github.com/owner/repo",
-				},
-			});
-			renderContentTab(docsite);
-
-			fireEvent.click(screen.getByTestId("content-tab-navigation"));
-
+			// Toggle include-all back OFF — should still have all articles selected
+			fireEvent.click(screen.getByTestId("toggle-include-all"));
 			await waitFor(() => {
-				expect(screen.getByTestId("repository-viewer")).toBeDefined();
+				expect(screen.getByTestId("include-all").textContent).toBe("false");
+				expect(screen.getByTestId("selected-count").textContent).toBe("3");
 			});
 		});
 	});
 
-	describe("include all toggle behavior", () => {
-		it("should select all articles when switching from include all to specific", async () => {
+	describe("error handling", () => {
+		it("should handle article loading error gracefully", async () => {
+			mockDocsClient.listDocs.mockRejectedValue(new Error("Network error"));
+
 			const docsite = createMockDocsite();
 			renderContentTab(docsite);
 
 			await waitFor(() => {
-				expect(screen.getByTestId("article-picker")).toBeDefined();
+				expect(screen.queryByTestId("articles-loading")).toBeNull();
 			});
 
-			// Toggle to specific selection
-			fireEvent.click(screen.getByTestId("toggle-include-all"));
+			expect(screen.getByTestId("article-count").textContent).toBe("0");
+		});
+	});
 
-			// Should now have all articles selected
+	describe("article changes detection - specific JRN diff", () => {
+		it("should detect changes when selected JRN set differs from original by content", async () => {
+			const docsite = createMockDocsite({
+				metadata: {
+					selectedArticleJrns: ["jrn:article:1"],
+				},
+			});
+			renderContentTab(docsite);
+
+			await waitForArticlesReady("1");
+
+			fireEvent.click(screen.getByTestId("select-article"));
+
 			await waitFor(() => {
-				expect(screen.getByTestId("include-all").textContent).toBe("false");
-				// Selected count should be all articles
-				expect(screen.getByTestId("selected-count").textContent).toBe("3");
+				expect(screen.getByText("Unsaved changes")).toBeDefined();
 			});
+
+			const saveButton = screen.getByTestId("save-articles-button") as HTMLButtonElement;
+			expect(saveButton.disabled).toBe(false);
+		});
+
+		it("should detect changes when JRN set has same size but different content", async () => {
+			const docsite = createMockDocsite({
+				metadata: {
+					selectedArticleJrns: ["jrn:article:1"],
+				},
+			});
+			renderContentTab(docsite);
+
+			await waitForArticlesReady("1");
+
+			fireEvent.click(screen.getByTestId("replace-article"));
+
+			await waitFor(() => {
+				expect(screen.getByText("Unsaved changes")).toBeDefined();
+			});
+
+			const saveButton = screen.getByTestId("save-articles-button") as HTMLButtonElement;
+			expect(saveButton.disabled).toBe(false);
 		});
 	});
 });

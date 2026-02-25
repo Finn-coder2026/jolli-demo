@@ -4,5 +4,161 @@
     "us-west-2b",
     "us-west-2c",
     "us-west-2d"
-  ]
+  ],
+  "vpc-provider:account=307926602659:filter.tag:Name=jolli-worker-vpc-dev:region=us-west-2:returnAsymmetricSubnets=true": {
+    "vpcId": "vpc-06522e201f11b9e06",
+    "vpcCidrBlock": "10.0.0.0/16",
+    "ownerAccountId": "307926602659",
+    "availabilityZones": [],
+    "subnetGroups": [
+      {
+        "name": "Private",
+        "type": "Private",
+        "subnets": [
+          {
+            "subnetId": "subnet-0d2f64cbedd780fbd",
+            "cidr": "10.0.2.0/24",
+            "availabilityZone": "us-west-2a",
+            "routeTableId": "rtb-0b74788ebaea8de9c"
+          },
+          {
+            "subnetId": "subnet-00fe801f848ba878f",
+            "cidr": "10.0.3.0/24",
+            "availabilityZone": "us-west-2b",
+            "routeTableId": "rtb-0e2676e3b76263e36"
+          }
+        ]
+      },
+      {
+        "name": "Public",
+        "type": "Public",
+        "subnets": [
+          {
+            "subnetId": "subnet-00aca909bde6c87db",
+            "cidr": "10.0.0.0/24",
+            "availabilityZone": "us-west-2a",
+            "routeTableId": "rtb-0f55492a282ceee31"
+          },
+          {
+            "subnetId": "subnet-01f14d57678a44da3",
+            "cidr": "10.0.1.0/24",
+            "availabilityZone": "us-west-2b",
+            "routeTableId": "rtb-0702804aca596c858"
+          }
+        ]
+      }
+    ]
+  },
+  "vpc-provider:account=307926602659:filter.tag:Name=jolli-worker-vpc-preview:region=us-west-2:returnAsymmetricSubnets=true": {
+    "vpcId": "vpc-0d54569347660efca",
+    "vpcCidrBlock": "10.0.0.0/16",
+    "ownerAccountId": "307926602659",
+    "availabilityZones": [],
+    "subnetGroups": [
+      {
+        "name": "Private",
+        "type": "Private",
+        "subnets": [
+          {
+            "subnetId": "subnet-0be41deb03b8aeaf2",
+            "cidr": "10.0.2.0/24",
+            "availabilityZone": "us-west-2a",
+            "routeTableId": "rtb-086ac3270a7ea9b2b"
+          },
+          {
+            "subnetId": "subnet-04bf81343788b4f87",
+            "cidr": "10.0.3.0/24",
+            "availabilityZone": "us-west-2b",
+            "routeTableId": "rtb-0dec87c3917d7a844"
+          }
+        ]
+      },
+      {
+        "name": "Public",
+        "type": "Public",
+        "subnets": [
+          {
+            "subnetId": "subnet-0001c459262cb26f1",
+            "cidr": "10.0.0.0/24",
+            "availabilityZone": "us-west-2a",
+            "routeTableId": "rtb-036a5f4c4af040463"
+          },
+          {
+            "subnetId": "subnet-0237f49b24586fb1c",
+            "cidr": "10.0.1.0/24",
+            "availabilityZone": "us-west-2b",
+            "routeTableId": "rtb-008a4aa19c0457ed8"
+          }
+        ]
+      }
+    ]
+  },
+  "vpc-provider:account=307926602659:filter.tag:Name=jolli-worker-vpc-prod:region=us-west-2:returnAsymmetricSubnets=true": {
+    "vpcId": "vpc-00c4d0a8247602ed1",
+    "vpcCidrBlock": "10.0.0.0/16",
+    "ownerAccountId": "307926602659",
+    "availabilityZones": [],
+    "subnetGroups": [
+      {
+        "name": "Private",
+        "type": "Private",
+        "subnets": [
+          {
+            "subnetId": "subnet-052a9587eaa952797",
+            "cidr": "10.0.2.0/24",
+            "availabilityZone": "us-west-2a",
+            "routeTableId": "rtb-05ca3ae138617080e"
+          },
+          {
+            "subnetId": "subnet-0a301828c610cb802",
+            "cidr": "10.0.3.0/24",
+            "availabilityZone": "us-west-2b",
+            "routeTableId": "rtb-01e8cea601cf0452e"
+          }
+        ]
+      },
+      {
+        "name": "Public",
+        "type": "Public",
+        "subnets": [
+          {
+            "subnetId": "subnet-080140261be6fd916",
+            "cidr": "10.0.0.0/24",
+            "availabilityZone": "us-west-2a",
+            "routeTableId": "rtb-04ea666b21a2c6c10"
+          },
+          {
+            "subnetId": "subnet-0ee377845b337296a",
+            "cidr": "10.0.1.0/24",
+            "availabilityZone": "us-west-2b",
+            "routeTableId": "rtb-0fd155d2ac3c5949a"
+          }
+        ]
+      }
+    ]
+  },
+  "security-group:account=307926602659:region=us-west-2:securityGroupName=jolli-app-instance-sg-dev:vpcId=vpc-06522e201f11b9e06": {
+    "securityGroupId": "sg-00bba1c71a72ea54c",
+    "allowAllOutbound": false
+  },
+  "security-group:account=307926602659:region=us-west-2:securityGroupName=jolli-worker-sg-dev:vpcId=vpc-06522e201f11b9e06": {
+    "securityGroupId": "sg-05678dd2390398a25",
+    "allowAllOutbound": false
+  },
+  "security-group:account=307926602659:region=us-west-2:securityGroupName=jolli-app-instance-sg-preview:vpcId=vpc-0d54569347660efca": {
+    "securityGroupId": "sg-0d62a2a7ed2eca8b7",
+    "allowAllOutbound": false
+  },
+  "security-group:account=307926602659:region=us-west-2:securityGroupName=jolli-worker-sg-preview:vpcId=vpc-0d54569347660efca": {
+    "securityGroupId": "sg-04cdb33b48670c55b",
+    "allowAllOutbound": false
+  },
+  "security-group:account=307926602659:region=us-west-2:securityGroupName=jolli-app-instance-sg-prod:vpcId=vpc-00c4d0a8247602ed1": {
+    "securityGroupId": "sg-0af1dff4cbdd2f554",
+    "allowAllOutbound": false
+  },
+  "security-group:account=307926602659:region=us-west-2:securityGroupName=jolli-worker-sg-prod:vpcId=vpc-00c4d0a8247602ed1": {
+    "securityGroupId": "sg-004b38974578352db",
+    "allowAllOutbound": false
+  }
 }

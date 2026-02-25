@@ -33,7 +33,17 @@ export async function GET(_request: Request, { params }: RouteParams) {
 			return NextResponse.json({ error: "Org not found" }, { status: 404 });
 		}
 
-		return NextResponse.json({ org });
+		// Look up the owner user for this org
+		let ownerEmail: string | null = null;
+		const ownerUserOrg = await db.userOrgDao.findOwnerByOrg(tenantId, orgId);
+		if (ownerUserOrg) {
+			const globalUser = await db.globalUserDao.findById(ownerUserOrg.userId);
+			if (globalUser) {
+				ownerEmail = globalUser.email;
+			}
+		}
+
+		return NextResponse.json({ org, ownerEmail });
 	} catch (error) {
 		const message = error instanceof Error ? error.message : "Unknown error";
 		return NextResponse.json({ error: message }, { status: 500 });

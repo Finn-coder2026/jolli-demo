@@ -1,5 +1,5 @@
 import { createMockIntlayerValue } from "../test/TestUtils";
-import { formatTimestamp } from "./DateTimeUtil";
+import { formatDateTimeOrUnknown, formatTimestamp } from "./DateTimeUtil";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
@@ -308,5 +308,16 @@ describe("formatTimestamp", () => {
 			expect(formatTimestamp(mockContent, threeHoursFortyFiveMinutes.toISOString(), "short")).toBe("3 h ago");
 			expect(formatTimestamp(mockContent, twoDaysTwelveHours.toISOString(), "short")).toBe("2 d ago");
 		});
+	});
+});
+
+describe("formatDateTimeOrUnknown", () => {
+	it("returns Unknown time for invalid timestamp", () => {
+		expect(formatDateTimeOrUnknown("not-a-date")).toBe("Unknown time");
+	});
+
+	it("returns localized datetime string for valid timestamp", () => {
+		const timestamp = "2025-01-01T10:00:00.000Z";
+		expect(formatDateTimeOrUnknown(timestamp)).toBe(new Date(timestamp).toLocaleString());
 	});
 });

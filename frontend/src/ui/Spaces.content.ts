@@ -1,4 +1,4 @@
-import { type Dictionary, t } from "intlayer";
+import { type Dictionary, insert, t } from "intlayer";
 
 const spacesContent = {
 	key: "spaces",
@@ -6,12 +6,26 @@ const spacesContent = {
 		selectDocument: t({
 			en: "No document selected",
 			es: "Ningún documento seleccionado",
-			zh: "未选择文档",
 		}),
 		selectDocumentDescription: t({
 			en: "Select a document from the tree to view and edit its content.",
 			es: "Seleccione un documento del árbol para ver y editar su contenido.",
-			zh: "从树中选择一个文档以查看和编辑其内容。",
+		}),
+		expandTree: t({
+			en: "Expand tree",
+			es: "Expandir árbol",
+		}),
+		lastEdited: t({
+			en: insert("Last edited by {{name}} on {{date}}"),
+			es: insert("Última edición por {{name}} el {{date}}"),
+		}),
+		editButton: t({
+			en: "Edit",
+			es: "Editar",
+		}),
+		historyButton: t({
+			en: "History",
+			es: "Historial",
 		}),
 	},
 } satisfies Dictionary;

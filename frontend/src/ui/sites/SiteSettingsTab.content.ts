@@ -7,6 +7,63 @@ const siteSettingsTabContent = {
 			en: "Settings",
 			es: "Configuración",
 		}),
+		// Site Info section
+		siteInfoTitle: t({
+			en: "Site Information",
+			es: "Información del Sitio",
+		}),
+		siteInfoDescription: t({
+			en: "Overview of your site's status and key metrics",
+			es: "Resumen del estado y métricas clave de tu sitio",
+		}),
+		previewLabel: t({
+			en: "Preview",
+			es: "Vista Previa",
+		}),
+		statsLabel: t({
+			en: "Statistics",
+			es: "Estadísticas",
+		}),
+		statusLabel: t({
+			en: "Status",
+			es: "Estado",
+		}),
+		articlesLabel: t({
+			en: "Articles",
+			es: "Artículos",
+		}),
+		lastBuiltLabel: t({
+			en: "Last Built",
+			es: "Última Construcción",
+		}),
+		createdLabel: t({
+			en: "Created",
+			es: "Creado",
+		}),
+		copyUrl: t({
+			en: "Copy URL",
+			es: "Copiar URL",
+		}),
+		openSite: t({
+			en: "Open site in new tab",
+			es: "Abrir sitio en nueva pestaña",
+		}),
+		statusActive: t({
+			en: "Active",
+			es: "Activo",
+		}),
+		statusBuilding: t({
+			en: "Building",
+			es: "Construyendo",
+		}),
+		statusPending: t({
+			en: "Pending",
+			es: "Pendiente",
+		}),
+		statusError: t({
+			en: "Error",
+			es: "Error",
+		}),
 		// Authentication section
 		authenticationTitle: t({
 			en: "Authentication",
@@ -16,37 +73,34 @@ const siteSettingsTabContent = {
 			en: "Control who can access your documentation site",
 			es: "Controla quién puede acceder a tu sitio de documentación",
 		}),
-		enableAuthLabel: t({
-			en: "Require Authentication",
-			es: "Requerir Autenticación",
-		}),
-		enableAuthDescription: t({
-			en: "Users must sign in before viewing this site",
-			es: "Los usuarios deben iniciar sesión antes de ver este sitio",
-		}),
-		authMethodLabel: t({
-			en: "Authentication Provider",
-			es: "Proveedor de Autenticación",
-		}),
-		authMethodJolli: t({
-			en: "Jolli",
-			es: "Jolli",
-		}),
-		authMethodJolliDescription: t({
-			en: "Authenticate users through your Jolli organization",
-			es: "Autenticar usuarios a través de tu organización Jolli",
-		}),
-		loginUrl: t({
-			en: "Login URL",
-			es: "URL de Inicio de Sesión",
-		}),
 		saving: t({
 			en: "Saving...",
 			es: "Guardando...",
 		}),
 		authRebuildNote: t({
-			en: "Authentication changes require a site rebuild to take effect.",
-			es: "Los cambios de autenticación requieren reconstruir el sitio para aplicarse.",
+			en: "Authentication changes require publishing the site to take effect.",
+			es: "Los cambios de autenticación requieren publicar el sitio para aplicarse.",
+		}),
+		// Access options for card-based UI
+		accessPublicTitle: t({
+			en: "Public",
+			es: "Público",
+		}),
+		accessPublicDescription: t({
+			en: "Anyone with the link can view your documentation site.",
+			es: "Cualquiera con el enlace puede ver tu sitio de documentación.",
+		}),
+		accessRestrictedTitle: t({
+			en: "Restricted to Jolli users",
+			es: "Restringido a usuarios de Jolli",
+		}),
+		accessRestrictedDescription: t({
+			en: "Only users with a Jolli account in your organization can access this site.",
+			es: "Solo usuarios con una cuenta de Jolli en tu organización pueden acceder a este sitio.",
+		}),
+		accessRestrictedNote: t({
+			en: "Visitors will need to sign in with their Jolli account to view the site.",
+			es: "Los visitantes necesitarán iniciar sesión con su cuenta de Jolli para ver el sitio.",
 		}),
 		// Domain section
 		domainTitle: t({
@@ -82,35 +136,71 @@ const siteSettingsTabContent = {
 			en: "Danger Zone",
 			es: "Zona de Peligro",
 		}),
+		dangerZoneDescription: t({
+			en: "Irreversible actions that affect your site",
+			es: "Acciones irreversibles que afectan tu sitio",
+		}),
+		deleteSiteLabel: t({
+			en: "Delete this site",
+			es: "Eliminar este sitio",
+		}),
 		deleteSiteButton: t({
-			en: "Delete Site",
-			es: "Eliminar Sitio",
+			en: "Delete",
+			es: "Eliminar",
 		}),
 		deleteSiteDescription: t({
-			en: "Permanently delete this site and all associated resources. This action cannot be undone.",
-			es: "Eliminar permanentemente este sitio y todos los recursos asociados. Esta acción no se puede deshacer.",
+			en: "Permanently remove this site and all associated resources",
+			es: "Eliminar permanentemente este sitio y todos los recursos asociados",
 		}),
-		// Section headers
-		sectionGeneral: t({
-			en: "General",
-			es: "General",
+		deleteConfirmWarning: t({
+			en: "This action cannot be undone.",
+			es: "Esta acción no se puede deshacer.",
 		}),
-		sectionAccess: t({
-			en: "Access Control",
-			es: "Control de Acceso",
+		// Delete confirmation
+		cancelButton: t({
+			en: "Cancel",
+			es: "Cancelar",
 		}),
-		// Unsaved changes
-		unsavedChanges: t({
-			en: "You have unsaved changes",
-			es: "Tienes cambios sin guardar",
+		deletingButton: t({
+			en: "Deleting...",
+			es: "Eliminando...",
 		}),
-		saveChanges: t({
-			en: "Save Changes",
-			es: "Guardar Cambios",
+		deletePermanentlyButton: t({
+			en: "Delete Permanently",
+			es: "Eliminar Permanentemente",
 		}),
-		changesSaved: t({
-			en: "Changes saved",
-			es: "Cambios guardados",
+		deleteFailedMessage: t({
+			en: "Failed to delete site. Please try again.",
+			es: "Error al eliminar el sitio. Inténtalo de nuevo.",
+		}),
+		authUpdateFailedMessage: t({
+			en: "Failed to update authentication settings. Please try again.",
+			es: "Error al actualizar la configuración de autenticación. Inténtalo de nuevo.",
+		}),
+		folderStructureUpdateFailedMessage: t({
+			en: "Failed to update navigation structure. Please try again.",
+			es: "Error al actualizar la estructura de navegación. Inténtalo de nuevo.",
+		}),
+		// Folder structure
+		folderStructureTitle: t({
+			en: "Navigation Structure",
+			es: "Estructura de Navegación",
+		}),
+		folderStructureDescription: t({
+			en: "Choose how the site navigation is organized",
+			es: "Elige cómo se organiza la navegación del sitio",
+		}),
+		useSpaceFolderStructureLabel: t({
+			en: "Auto-sync navigation from spaces",
+			es: "Sincronizar navegación desde espacios",
+		}),
+		useSpaceFolderStructureDescription: t({
+			en: "Navigation is automatically derived from how articles are organized in your spaces. When disabled, you can edit the navigation manually.",
+			es: "La navegación se deriva automáticamente de cómo están organizados los artículos en tus espacios. Cuando está desactivado, puedes editar la navegación manualmente.",
+		}),
+		folderStructureRebuildNote: t({
+			en: "Changes take effect after publishing.",
+			es: "Los cambios se aplican después de publicar.",
 		}),
 	},
 } satisfies Dictionary;

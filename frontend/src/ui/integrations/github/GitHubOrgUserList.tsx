@@ -136,7 +136,11 @@ export function GitHubOrgUserList({ appId }: GitHubOrgUserListProps): ReactEleme
 			if (response.success && response.redirectUrl) {
 				redirect(response.redirectUrl);
 			} else {
-				setError(response.error || flowContent.failedSetup.value);
+				setError(
+					response.error === "installation_not_available"
+						? flowContent.installationNotAvailable.value
+						: response.error || flowContent.failedSetup.value,
+				);
 				setIsConnecting(false);
 			}
 		} catch (err) {
@@ -208,7 +212,7 @@ export function GitHubOrgUserList({ appId }: GitHubOrgUserListProps): ReactEleme
 
 	const breadcrumbItems: Array<BreadcrumbItem> = useMemo(() => {
 		const items: Array<BreadcrumbItem> = [
-			{ label: content.breadcrumbs.integrations.value, path: "/integrations" },
+			{ label: content.breadcrumbs.sources.value, path: "/integrations" },
 			{ label: content.breadcrumbs.github.value },
 		];
 		return items;
@@ -415,7 +419,7 @@ export function GitHubOrgUserList({ appId }: GitHubOrgUserListProps): ReactEleme
 					</Button>
 				</div>
 			) : (
-				<div className="flex-1 overflow-auto min-h-0 space-y-8">
+				<div className="flex-1 overflow-auto min-h-0 space-y-8 scrollbar-thin">
 					{orgs.length > 0 && (
 						<div>
 							<h2 className="text-lg font-semibold mb-3 flex items-center gap-2">

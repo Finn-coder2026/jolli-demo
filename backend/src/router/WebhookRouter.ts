@@ -25,6 +25,65 @@ interface WebhookRouterDependencies {
 	schedulerManager?: MultiTenantJobSchedulerManager | undefined;
 }
 
+/** Resolved (non-optional) dependencies for multi-tenant routing. */
+interface ResolvedWebhookDependencies {
+	registryClient: TenantRegistryClient;
+	schedulerManager: MultiTenantJobSchedulerManager;
+}
+
+/**
+ * Route a webhook event to the correct tenant in multi-tenant mode.
+ * Returns true if the event was handled (response sent), false to fall through to single-tenant mode.
+ */
+async function routeMultiTenant(
+	req: WebhookRequest,
+	res: express.Response,
+	eventName: string,
+	deps: ResolvedWebhookDependencies,
+): Promise<boolean> {
+	const event = req.headers["x-github-event"];
+
+	// Extract installation ID from webhook payload
+	const installationId = req.body?.installation?.id as number | undefined;
+	if (!installationId) {
+		log.warn({ event }, "No installation ID in webhook payload, skipping multi-tenant routing");
+		res.status(200).json({ received: true, warning: "no_installation_id" });
+		return true;
+	}
+
+	// Look up the tenant/org for this installation
+	const tenantOrg = await deps.registryClient.getTenantOrgByInstallationId(installationId);
+	if (!tenantOrg) {
+		log.warn({ installationId, event }, "No tenant/org mapping for installation %d, skipping", installationId);
+		res.status(200).json({ received: true, warning: "installation_not_mapped" });
+		return true;
+	}
+
+	const { tenant, org } = tenantOrg;
+	log.debug(
+		{ tenantId: tenant.id, orgId: org.id, installationId, event },
+		"Routing webhook to tenant %s, org %s",
+		tenant.slug,
+		org.slug,
+	);
+
+	// Emit events for job processing to the tenant-specific event emitter
+	if (GITHUB_WEBHOOK_EVENT_NAMES.has(eventName)) {
+		try {
+			const tenantScheduler = await deps.schedulerManager.getScheduler(tenant, org);
+			const tenantEventEmitter = tenantScheduler.scheduler.getEventEmitter();
+			log.info("Emitting event %s to tenant %s", eventName, tenant.slug);
+			tenantEventEmitter.emit(eventName, req.body);
+		} catch (error) {
+			log.error({ error, tenantId: tenant.id, orgId: org.id }, "Failed to get scheduler for tenant.");
+			res.status(500).json({ error: "Failed to find tenant for webhook" });
+			return true;
+		}
+	}
+	res.status(200).json({ received: true });
+	return true;
+}
+
 export function createWebhookRouter(eventEmitter: JobEventEmitter, deps?: WebhookRouterDependencies): Router {
 	const router = express.Router();
 
@@ -78,70 +137,32 @@ export function createWebhookRouter(eventEmitter: JobEventEmitter, deps?: Webhoo
 				return;
 			}
 
-			log.debug(
+			log.info(
 				{
 					event,
 					delivery,
-					signatureVerified: true,
-					payload: req.body,
+					action: req.body.action,
 				},
-				"Received GitHub webhook event",
+				"Received GitHub webhook: %s",
+				req.body.action ? `${event}:${req.body.action}` : event,
 			);
 
 			// Construct event name - some events have actions, some don't
 			const eventName = req.body.action ? `github:${event}:${req.body.action}` : `github:${event}`;
 
-			// Check if we should route to a specific tenant in multi-tenant mode
+			// Route to tenant-specific handler in multi-tenant mode
 			const config = getConfig();
 			if (config.MULTI_TENANT_ENABLED && deps?.registryClient && deps?.schedulerManager) {
-				// Extract installation ID from webhook payload
-				const installationId = req.body?.installation?.id as number | undefined;
-				if (!installationId) {
-					log.warn({ event }, "No installation ID in webhook payload, skipping multi-tenant routing");
-					res.status(200).json({ received: true, warning: "no_installation_id" });
-					return;
-				}
-
-				// Look up the tenant/org for this installation
-				const tenantOrg = await deps.registryClient.getTenantOrgByInstallationId(installationId);
-				if (!tenantOrg) {
-					log.warn(
-						{ installationId, event },
-						"No tenant/org mapping for installation %d, skipping",
-						installationId,
-					);
-					res.status(200).json({ received: true, warning: "installation_not_mapped" });
-					return;
-				}
-
-				const { tenant, org } = tenantOrg;
-				log.debug(
-					{ tenantId: tenant.id, orgId: org.id, installationId, event },
-					"Routing webhook to tenant %s, org %s",
-					tenant.slug,
-					org.slug,
-				);
-
-				// Emit events for job processing to the tenant-specific event emitter
-				if (GITHUB_WEBHOOK_EVENT_NAMES.has(eventName)) {
-					try {
-						const tenantScheduler = await deps.schedulerManager.getScheduler(tenant, org);
-						const tenantEventEmitter = tenantScheduler.scheduler.getEventEmitter();
-						log.debug("Emitting event %s to tenant %s", eventName, tenant.slug);
-						tenantEventEmitter.emit(eventName, req.body);
-					} catch (error) {
-						log.error({ error, tenantId: tenant.id, orgId: org.id }, "Failed to get scheduler for tenant.");
-						res.status(500).json({ error: "Failed to find tenant for webhook" });
-						return;
-					}
-				}
-				res.status(200).json({ received: true });
+				await routeMultiTenant(req, res, eventName, {
+					registryClient: deps.registryClient,
+					schedulerManager: deps.schedulerManager,
+				});
 				return;
 			}
 
 			// Single-tenant mode: emit events for job processing to the shared event emitter
 			if (GITHUB_WEBHOOK_EVENT_NAMES.has(eventName)) {
-				log.debug("Emitting event: %s", eventName);
+				log.info("Emitting event: %s", eventName);
 				eventEmitter.emit(eventName, req.body);
 			}
 			res.status(200).json({ received: true });

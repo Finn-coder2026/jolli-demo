@@ -1,6 +1,6 @@
 /**
  * Workflow runner for E2B mode execution
- * This module extracts workflow functionality from jolli.ts to run in E2B sandbox mode
+ * This module provides workflow functionality for E2B sandbox mode.
  * Designed to be called from job runners or other automated systems
  */
 
@@ -55,6 +55,10 @@ const createConsoleLogger = (debug: boolean) => ({
 	},
 });
 
+const DEFAULT_E2B_SANDBOX_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+// Keep command timeout below sandbox TTL so long-running steps have headroom.
+const DEFAULT_JOB_STEP_COMMAND_TIMEOUT_MS = 25 * 60 * 1000; // 25 minutes
+
 /**
  * Create E2B sandbox with timeout protection
  */
@@ -67,7 +71,7 @@ async function createE2BSandbox(
 	log.info(`Connecting to E2B sandbox...`);
 	log.debug(`E2B config: template=${templateId.slice(0, 8)}... timeout=${timeoutMs}ms`);
 
-	const connect = Sandbox.create(templateId, { apiKey });
+	const connect = Sandbox.create(templateId, { apiKey, timeoutMs: DEFAULT_E2B_SANDBOX_TIMEOUT_MS });
 	const timeout = new Promise<never>((_, reject) =>
 		setTimeout(
 			() => reject(new Error(`E2B connection timed out after ${Math.round(timeoutMs / 1000)}s`)),
@@ -204,6 +208,8 @@ function initializeRunState(
 	// Add optional environment variables
 	if (config.githubToken) {
 		envVars.GH_PAT = config.githubToken;
+		envVars.GH_TOKEN = config.githubToken;
+		envVars.GITHUB_TOKEN = config.githubToken;
 	}
 	if (githubDetails?.org) {
 		envVars.GH_ORG = githubDetails.org;
@@ -219,6 +225,17 @@ function initializeRunState(
 	}
 	if (config.tavilyApiKey) {
 		envVars.TAVILY_API_KEY = config.tavilyApiKey;
+	}
+	if (config.syncServerUrl) {
+		envVars.SYNC_SERVER_URL = config.syncServerUrl;
+		// Also set JOLLI_URL (base URL without /api) so CLI can derive SYNC_SERVER_URL
+		envVars.JOLLI_URL = config.syncServerUrl.replace(/\/api\/?$/, "");
+	}
+	if (config.jolliAuthToken) {
+		envVars.JOLLI_AUTH_TOKEN = config.jolliAuthToken;
+	}
+	if (config.jolliSpace) {
+		envVars.JOLLI_SPACE = config.jolliSpace;
 	}
 
 	const runState: RunState = {
@@ -589,7 +606,7 @@ async function executeRunPromptStep(
 async function executeJobStep(
 	options: JobStepExecutionOptions,
 ): Promise<{ success: boolean; exitCode: number; stdout: string; stderr: string }> {
-	const { sandbox, step, internalLog, log } = options;
+	const { sandbox, step, internalLog, log, runState } = options;
 	const stepName = step.name || "(unnamed step)";
 
 	// Handle run_prompt steps
@@ -619,7 +636,8 @@ async function executeJobStep(
 	try {
 		// Execute the run command as a bash script
 		const proc = await sandbox.commands.run(`bash -lc '${step.run.replace(/'/g, "'\\''")}'`, {
-			timeoutMs: 300_000, // 5 minute timeout per step
+			...(runState?.env_vars ? { envs: runState.env_vars } : {}),
+			timeoutMs: DEFAULT_JOB_STEP_COMMAND_TIMEOUT_MS,
 		});
 
 		const stdout = proc.stdout || "";
@@ -755,7 +773,7 @@ async function executeJobSteps(
 export async function runWorkflow(
 	workflowType: WorkflowType,
 	config: WorkflowConfig,
-	workflowArgs?: {
+	initialWorkflowArgs?: {
 		/** For code-docs workflow: GitHub URL to process */
 		githubUrl?: string;
 		/** For citations-graph/run-jolliscript workflows: Markdown content to process */
@@ -809,12 +827,19 @@ export async function runWorkflow(
 		githubBranch?: string;
 		/** Job steps to execute before the agent runs (from front matter job.steps) */
 		jobSteps?: Array<JobStep>;
+		/** Source event JRN for workflows that react to source updates (e.g., cli-impact) */
+		eventJrn?: string;
+		/** Canonical attention source name for docs updated by cli-impact (for example "org/repo"). */
+		sourceName?: string;
+		/** Cursor SHA for incremental diffs — last successfully processed commit */
+		cursorSha?: string;
 		/** Resource attachments from front matter attend field */
 		attend?: Array<AttendResource>;
 	},
 	log?: JolliAgentLogger,
 ): Promise<WorkflowResult> {
 	const internalLog = createConsoleLogger(config.debug || false);
+	let workflowArgs = initialWorkflowArgs;
 
 	let sandboxRef: Sandbox | undefined;
 	try {
@@ -851,6 +876,106 @@ export async function runWorkflow(
 					}
 				: undefined;
 		const runState = initializeRunState(sandbox, config, githubDetails);
+
+		if (workflowType === "cli-impact") {
+			const githubOrg = workflowArgs?.githubOrg?.trim();
+			const githubRepo = workflowArgs?.githubRepo?.trim();
+			const githubBranch = workflowArgs?.githubBranch?.trim() || "main";
+			if (!githubOrg || !githubRepo) {
+				throw new Error("cli-impact workflow requires githubOrg and githubRepo arguments");
+			}
+
+			const eventJrn = workflowArgs?.eventJrn;
+			const attentionSourceName =
+				typeof workflowArgs?.sourceName === "string" && workflowArgs.sourceName.trim().length > 0
+					? workflowArgs.sourceName.trim()
+					: `${githubOrg}/${githubRepo}`;
+			const codeRoot = `~/workspace/${githubRepo}/${githubBranch}`;
+			const docsRoot = `~/docs/${githubRepo}/${githubBranch}`;
+			const agentPrompt = [
+				"You are analyzing code changes and documentation impact for this repository.",
+				eventJrn ? `Git source event: ${eventJrn}` : undefined,
+				`Code repository root: ${codeRoot}`,
+				`Documentation workspace root: ${docsRoot}`,
+				`Default attention source: ${attentionSourceName}`,
+				"",
+				"Tasks:",
+				"1. Review /tmp/impact-report.json and relevant changed files.",
+				`2. Update documentation files in ${docsRoot} where needed.`,
+				`3. Read code from ${codeRoot} for verification, but do not edit files there.`,
+				`4. Treat ${codeRoot} as read-only and write/update docs only under ${docsRoot}.`,
+				"5. Keep updates minimal, concrete, and aligned with the code.",
+				"6. When a doc change is based on code sources, update frontmatter attention dependencies in that doc.",
+				'7. For each attention entry you add/update, use: { op: "file", source: "<default attention source>", path: "<repo-relative path>" }.',
+				"8. Keep attention[].path repo-relative (never ~/..., /..., or workspace/<repo>/<branch>/...).",
+				"9. Merge with existing attention entries, avoid duplicates, and keep valid existing entries unless obsolete.",
+				"10. Do not invent attention entries for files you did not use as evidence.",
+				'11. Write /tmp/changeset-metadata.json using the write_file tool with JSON object: {"message":"...","mergePrompt":"..."}',
+				"12. message: concise one-line summary of the docs changes (or why no docs changed).",
+				"13. mergePrompt: concise semantic merge guidance for later publish-time merge resolution.",
+				"14. The metadata file must be strict JSON (no markdown, no comments).",
+			]
+				.filter(Boolean)
+				.join("\n");
+
+			workflowArgs = {
+				...workflowArgs,
+				githubOrg,
+				githubRepo,
+				githubBranch,
+				jobSteps: [
+					{
+						name: "Initialize docs workspace",
+						run: "mkdir -p ~/docs/$GH_REPO/$GH_BRANCH && cd ~/docs/$GH_REPO/$GH_BRANCH && jolli init",
+					},
+					{
+						name: "Pull docs from server",
+						run: "cd ~/docs/$GH_REPO/$GH_BRANCH && jolli sync down",
+					},
+					{
+						name: "Analyze impact",
+						run: `cd ~/workspace/$GH_REPO/$GH_BRANCH && jolli impact extract \${GIT_CURSOR_SHA:+--base $GIT_CURSOR_SHA} --json > /tmp/impact-report.json`,
+					},
+					{
+						name: "Agent analysis",
+						run_prompt: agentPrompt,
+						include_summary: true,
+					},
+					{
+						name: "Push updated docs",
+						run: [
+							"cd ~/docs/$GH_REPO/$GH_BRANCH",
+							'MESSAGE=$(node -e \'const fs=require("fs"); try { const data=JSON.parse(fs.readFileSync("/tmp/changeset-metadata.json","utf8")); const value=typeof data.message==="string" ? data.message.replace(/\\s+/g," ").trim() : ""; process.stdout.write(value); } catch { process.stdout.write(""); }\')',
+							'MERGE_PROMPT=$(node -e \'const fs=require("fs"); try { const data=JSON.parse(fs.readFileSync("/tmp/changeset-metadata.json","utf8")); const value=typeof data.mergePrompt==="string" ? data.mergePrompt.replace(/\\s+/g," ").trim() : ""; process.stdout.write(value); } catch { process.stdout.write(""); }\')',
+							'if [ -n "$MESSAGE" ] && [ -n "$MERGE_PROMPT" ]; then',
+							'  jolli sync up --message "$MESSAGE" --merge-prompt "$MERGE_PROMPT"',
+							'elif [ -n "$MESSAGE" ]; then',
+							'  jolli sync up --message "$MESSAGE"',
+							'elif [ -n "$MERGE_PROMPT" ]; then',
+							'  jolli sync up --merge-prompt "$MERGE_PROMPT"',
+							"else",
+							"  jolli sync up",
+							"fi",
+						].join("\n"),
+					},
+				],
+			};
+
+			if (runState.env_vars) {
+				runState.env_vars.GH_ORG = githubOrg;
+				runState.env_vars.GH_REPO = githubRepo;
+				runState.env_vars.GH_BRANCH = githubBranch;
+				const cursorSha = typeof workflowArgs?.cursorSha === "string" ? workflowArgs.cursorSha : undefined;
+				if (cursorSha) {
+					runState.env_vars.GIT_CURSOR_SHA = cursorSha;
+				}
+			}
+
+			internalLog.info(`[workflow] cli-impact: prepared 5-step workflow for ${githubOrg}/${githubRepo}`);
+			if (log) {
+				log.agentLog(`[workflow] cli-impact: prepared 5-step workflow for ${githubOrg}/${githubRepo}`);
+			}
+		}
 
 		// FS adapter for syncIt hooks (both pre and post phases)
 		const { writeFileExecutor } = await import("./tools/tools/write_file");
@@ -1049,6 +1174,12 @@ export async function runWorkflow(
 				runState.env_vars.MARKDOWN_INPUT = workflowArgs.markdownContent;
 				runState.env_vars.MARKDOWN_FILE = workflowArgs.filename || "input.md";
 			}
+		} else if (workflowType === "cli-impact") {
+			internalLog.info("[workflow] cli-impact: executing fixed job steps and prompt analysis");
+			if (log) {
+				log.agentLog("[workflow] cli-impact: executing fixed job steps and prompt analysis");
+			}
+			skipAgent = true;
 		} else {
 			agentFactory = await createWorkflowAgent(workflowType, runState, workflowArgs);
 			seedChatOpts = setupMarkdownSeedOptions(workflowType, workflowArgs, runState);
@@ -1348,4 +1479,5 @@ export const WORKFLOW_TYPES: Array<WorkflowType> = [
 	"architecture-update",
 	"citations-graph",
 	"run-jolliscript",
+	"cli-impact",
 ];

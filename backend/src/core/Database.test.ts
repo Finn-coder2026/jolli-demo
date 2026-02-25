@@ -7,6 +7,25 @@ vi.mock("../util/UmzugMigrationRunner", () => ({
 	runMigrations: vi.fn().mockResolvedValue(undefined),
 }));
 
+/**
+ * Create a mock Sequelize model with all methods needed by postSync hooks.
+ * RoleDao's postSync requires findOne, create, count methods on models.
+ */
+function createMockModel(name: string) {
+	return {
+		sync: vi.fn().mockResolvedValue(undefined),
+		tableName: name,
+		// Methods needed by RoleDao postSync
+		findOne: vi.fn().mockResolvedValue(null),
+		findAll: vi.fn().mockResolvedValue([]),
+		findByPk: vi.fn().mockResolvedValue(null),
+		create: vi.fn().mockResolvedValue({ get: vi.fn().mockReturnValue({}) }),
+		count: vi.fn().mockResolvedValue(0),
+		destroy: vi.fn().mockResolvedValue(0),
+		update: vi.fn().mockResolvedValue([0]),
+	};
+}
+
 describe("Database", () => {
 	let mockSequelize: Sequelize;
 	let database: Database;
@@ -15,17 +34,13 @@ describe("Database", () => {
 		// Disable logging during tests to avoid logger initialization overhead
 		process.env.DISABLE_LOGGING = "true";
 
-		// Create mock model with sync method
-		const mockModel = {
-			sync: vi.fn().mockResolvedValue(undefined),
-		};
-
 		// Track defined models so we can populate sequelize.models
-		const definedModels: Record<string, typeof mockModel> = {};
+		// Use createMockModel to include all methods needed by postSync hooks
+		const definedModels: Record<string, ReturnType<typeof createMockModel>> = {};
 
 		mockSequelize = {
 			define: vi.fn().mockImplementation((name: string) => {
-				definedModels[name] = { sync: vi.fn().mockResolvedValue(undefined) };
+				definedModels[name] = createMockModel(name);
 				return definedModels[name];
 			}),
 			sync: vi.fn().mockResolvedValue(undefined),
@@ -76,11 +91,12 @@ describe("Database", () => {
 
 		it("should sync database with alter for existing schema", async () => {
 			// Track defined models so we can populate sequelize.models
-			const definedModels: Record<string, { sync: ReturnType<typeof vi.fn>; tableName: string }> = {};
+			// Use createMockModel to include all methods needed by postSync hooks
+			const definedModels: Record<string, ReturnType<typeof createMockModel>> = {};
 
 			const existingSchemaSequelize = {
 				define: vi.fn().mockImplementation((name: string) => {
-					definedModels[name] = { sync: vi.fn().mockResolvedValue(undefined), tableName: name };
+					definedModels[name] = createMockModel(name);
 					return definedModels[name];
 				}),
 				sync: vi.fn().mockResolvedValue(undefined),
@@ -131,11 +147,11 @@ describe("Database", () => {
 			process.env.SKIP_SEQUELIZE_SYNC = "true";
 
 			// Track defined models so we can populate sequelize.models
-			const definedModels: Record<string, { sync: ReturnType<typeof vi.fn> }> = {};
+			const definedModels: Record<string, ReturnType<typeof createMockModel>> = {};
 
 			const freshSequelize = {
 				define: vi.fn().mockImplementation((name: string) => {
-					definedModels[name] = { sync: vi.fn().mockResolvedValue(undefined) };
+					definedModels[name] = createMockModel(name);
 					return definedModels[name];
 				}),
 				sync: vi.fn().mockResolvedValue(undefined),
@@ -180,70 +196,16 @@ describe("Database", () => {
 			}
 		});
 
-		it("should skip sync in Vercel environment", async () => {
-			const originalVercel = process.env.VERCEL;
-			process.env.VERCEL = "1";
+		it("should skip sync with explicit forceSync false", async () => {
+			const originalSkipSync = process.env.SKIP_SEQUELIZE_SYNC;
+			process.env.SKIP_SEQUELIZE_SYNC = "true";
 
 			// Track defined models so we can populate sequelize.models
-			const definedModels: Record<string, { sync: ReturnType<typeof vi.fn> }> = {};
+			const definedModels: Record<string, ReturnType<typeof createMockModel>> = {};
 
-			const vercelSequelize = {
+			const skipSyncSequelize = {
 				define: vi.fn().mockImplementation((name: string) => {
-					definedModels[name] = { sync: vi.fn().mockResolvedValue(undefined) };
-					return definedModels[name];
-				}),
-				sync: vi.fn().mockResolvedValue(undefined),
-				models: definedModels,
-				query: vi.fn().mockImplementation((sql: string) => {
-					if (sql.includes("information_schema.tables")) {
-						return Promise.resolve([[{ table_count: "0" }], {}]);
-					}
-					if (sql.includes("current_schema()")) {
-						return Promise.resolve([[{ current_schema: "public" }], {}]);
-					}
-					if (sql.includes("search_path")) {
-						return Promise.resolve([[{ search_path: "public" }], {}]);
-					}
-					return Promise.resolve([[], {}]);
-				}),
-				getQueryInterface: vi.fn().mockReturnValue({
-					sequelize: {
-						query: vi.fn().mockResolvedValue([]),
-						transaction: vi.fn().mockResolvedValue({
-							commit: vi.fn(),
-							rollback: vi.fn(),
-						}),
-						QueryTypes: {
-							SELECT: "SELECT",
-						},
-					},
-				}),
-			} as unknown as Sequelize;
-
-			await createDatabase(vercelSequelize);
-			// Verify no individual model sync() was called
-			for (const model of Object.values(definedModels)) {
-				expect(model.sync).not.toHaveBeenCalled();
-			}
-
-			// Restore
-			if (originalVercel) {
-				process.env.VERCEL = originalVercel;
-			} else {
-				delete process.env.VERCEL;
-			}
-		});
-
-		it("should skip sync in Vercel with explicit forceSync false", async () => {
-			const originalVercel = process.env.VERCEL;
-			process.env.VERCEL = "1";
-
-			// Track defined models so we can populate sequelize.models
-			const definedModels: Record<string, { sync: ReturnType<typeof vi.fn> }> = {};
-
-			const vercelSequelize = {
-				define: vi.fn().mockImplementation((name: string) => {
-					definedModels[name] = { sync: vi.fn().mockResolvedValue(undefined) };
+					definedModels[name] = createMockModel(name);
 					return definedModels[name];
 				}),
 				sync: vi.fn().mockResolvedValue(undefined),
@@ -275,30 +237,30 @@ describe("Database", () => {
 			} as unknown as Sequelize;
 
 			// Explicitly pass forceSync: false to cover the branch in logging
-			await createDatabase(vercelSequelize, { forceSync: false });
+			await createDatabase(skipSyncSequelize, { forceSync: false });
 			// Verify no individual model sync() was called
 			for (const model of Object.values(definedModels)) {
 				expect(model.sync).not.toHaveBeenCalled();
 			}
 
 			// Restore
-			if (originalVercel) {
-				process.env.VERCEL = originalVercel;
+			if (originalSkipSync) {
+				process.env.SKIP_SEQUELIZE_SYNC = originalSkipSync;
 			} else {
-				delete process.env.VERCEL;
+				delete process.env.SKIP_SEQUELIZE_SYNC;
 			}
 		});
 
-		it("should skip sync when VERCEL_DEPLOYMENT is true", async () => {
-			const originalVercelDeployment = process.env.VERCEL_DEPLOYMENT;
-			process.env.VERCEL_DEPLOYMENT = "true";
+		it("should force sync when forceSync option is true even when SKIP_SEQUELIZE_SYNC is set", async () => {
+			const originalSkipSync = process.env.SKIP_SEQUELIZE_SYNC;
+			process.env.SKIP_SEQUELIZE_SYNC = "true";
 
 			// Track defined models so we can populate sequelize.models
-			const definedModels: Record<string, { sync: ReturnType<typeof vi.fn> }> = {};
+			const definedModels: Record<string, ReturnType<typeof createMockModel>> = {};
 
-			const vercelDeploymentSequelize = {
+			const forceSyncSequelize = {
 				define: vi.fn().mockImplementation((name: string) => {
-					definedModels[name] = { sync: vi.fn().mockResolvedValue(undefined) };
+					definedModels[name] = createMockModel(name);
 					return definedModels[name];
 				}),
 				sync: vi.fn().mockResolvedValue(undefined),
@@ -329,62 +291,8 @@ describe("Database", () => {
 				}),
 			} as unknown as Sequelize;
 
-			await createDatabase(vercelDeploymentSequelize);
-			// Verify no individual model sync() was called
-			for (const model of Object.values(definedModels)) {
-				expect(model.sync).not.toHaveBeenCalled();
-			}
-
-			// Restore
-			if (originalVercelDeployment) {
-				process.env.VERCEL_DEPLOYMENT = originalVercelDeployment;
-			} else {
-				delete process.env.VERCEL_DEPLOYMENT;
-			}
-		});
-
-		it("should force sync when forceSync option is true even in Vercel environment", async () => {
-			const originalVercel = process.env.VERCEL;
-			process.env.VERCEL = "1";
-
-			// Track defined models so we can populate sequelize.models
-			const definedModels: Record<string, { sync: ReturnType<typeof vi.fn> }> = {};
-
-			const vercelSequelize = {
-				define: vi.fn().mockImplementation((name: string) => {
-					definedModels[name] = { sync: vi.fn().mockResolvedValue(undefined) };
-					return definedModels[name];
-				}),
-				sync: vi.fn().mockResolvedValue(undefined),
-				models: definedModels,
-				query: vi.fn().mockImplementation((sql: string) => {
-					if (sql.includes("information_schema.tables")) {
-						return Promise.resolve([[{ table_count: "0" }], {}]);
-					}
-					if (sql.includes("current_schema()")) {
-						return Promise.resolve([[{ current_schema: "public" }], {}]);
-					}
-					if (sql.includes("search_path")) {
-						return Promise.resolve([[{ search_path: "public" }], {}]);
-					}
-					return Promise.resolve([[], {}]);
-				}),
-				getQueryInterface: vi.fn().mockReturnValue({
-					sequelize: {
-						query: vi.fn().mockResolvedValue([]),
-						transaction: vi.fn().mockResolvedValue({
-							commit: vi.fn(),
-							rollback: vi.fn(),
-						}),
-						QueryTypes: {
-							SELECT: "SELECT",
-						},
-					},
-				}),
-			} as unknown as Sequelize;
-
-			await createDatabase(vercelSequelize, { forceSync: true });
-			// Verify model sync() WAS called despite Vercel environment
+			await createDatabase(forceSyncSequelize, { forceSync: true });
+			// Verify model sync() WAS called despite SKIP_SEQUELIZE_SYNC
 			for (const [name, model] of Object.entries(definedModels)) {
 				if (name !== "audit_event") {
 					expect(model.sync).toHaveBeenCalled();
@@ -392,22 +300,21 @@ describe("Database", () => {
 			}
 
 			// Restore
-			if (originalVercel) {
-				process.env.VERCEL = originalVercel;
+			if (originalSkipSync) {
+				process.env.SKIP_SEQUELIZE_SYNC = originalSkipSync;
 			} else {
-				delete process.env.VERCEL;
+				delete process.env.SKIP_SEQUELIZE_SYNC;
 			}
 		});
 
 		it("should call postSync hooks on DAOs when not skipped", async () => {
 			// Track defined models so we can populate sequelize.models
-			const definedModels: Record<string, { sync: ReturnType<typeof vi.fn> }> = {};
+			// Use createMockModel to include all methods needed by postSync hooks
+			const definedModels: Record<string, ReturnType<typeof createMockModel>> = {};
 
 			const sequelizeForPostSync = {
 				define: vi.fn().mockImplementation((name: string) => {
-					definedModels[name] = {
-						sync: vi.fn().mockResolvedValue(undefined),
-					};
+					definedModels[name] = createMockModel(name);
 					return definedModels[name];
 				}),
 				sync: vi.fn().mockResolvedValue(undefined),
@@ -449,13 +356,12 @@ describe("Database", () => {
 
 		it("should skip postSync hooks when skipPostSync option is true", async () => {
 			// Track defined models so we can populate sequelize.models
-			const definedModels: Record<string, { sync: ReturnType<typeof vi.fn> }> = {};
+			// Use createMockModel to include all methods needed by postSync hooks
+			const definedModels: Record<string, ReturnType<typeof createMockModel>> = {};
 
 			const sequelizeWithPostSyncSkip = {
 				define: vi.fn().mockImplementation((name: string) => {
-					definedModels[name] = {
-						sync: vi.fn().mockResolvedValue(undefined),
-					};
+					definedModels[name] = createMockModel(name);
 					return definedModels[name];
 				}),
 				sync: vi.fn().mockResolvedValue(undefined),
@@ -496,19 +402,16 @@ describe("Database", () => {
 			const definedModels = vi.mocked(mockSequelize.define).mock.calls.map(call => call[0]);
 
 			// Check that all required models were defined
-			expect(definedModels).toContain("auth");
 			expect(definedModels).toContain("doc");
-			expect(definedModels).toContain("user");
+			expect(definedModels).toContain("active_user");
 			expect(definedModels).toContain("visit");
 			expect(definedModels).toContain("github_installations");
 			expect(definedModels).toContain("integrations");
-			expect(definedModels).toContain("convo");
 		});
 
 		it("should return database interface with DAOs", () => {
-			expect(database).toHaveProperty("authDao");
 			expect(database).toHaveProperty("docDao");
-			expect(database).toHaveProperty("userDao");
+			expect(database).toHaveProperty("activeUserDao");
 			expect(database).toHaveProperty("visitDao");
 			expect(database).toHaveProperty("githubInstallationDao");
 			expect(database).toHaveProperty("integrationDao");
@@ -527,7 +430,7 @@ describe("Database", () => {
 
 			const undefinedTableCheckSequelize = {
 				define: vi.fn().mockImplementation((name: string) => {
-					definedModels[name] = { sync: vi.fn().mockResolvedValue(undefined), tableName: name };
+					definedModels[name] = createMockModel(name);
 					return definedModels[name];
 				}),
 				sync: vi.fn().mockResolvedValue(undefined),
@@ -536,6 +439,14 @@ describe("Database", () => {
 					if (sql.includes("table_count")) {
 						// Return non-empty schema (10 tables) to trigger syncModelsWithMissingTableCheck
 						return Promise.resolve([[{ table_count: "10" }], {}]);
+					}
+					if (sql.includes("information_schema.table_constraints")) {
+						// Return empty constraints array for FK checks in postSync hooks
+						return Promise.resolve([[], {}]);
+					}
+					if (sql.includes("information_schema.columns")) {
+						// Return empty columns array for migration checks in postSync hooks
+						return Promise.resolve([[], {}]);
 					}
 					if (sql.includes("table_name")) {
 						// Simulate the error case where tableCheck is undefined
@@ -576,11 +487,12 @@ describe("Database", () => {
 
 		it("should handle postSync hooks being called multiple times (idempotency)", async () => {
 			// Track defined models so we can populate sequelize.models
-			const definedModels: Record<string, { sync: ReturnType<typeof vi.fn> }> = {};
+			// Use createMockModel to include all methods needed by postSync hooks (e.g., findOne, create, count)
+			const definedModels: Record<string, ReturnType<typeof createMockModel>> = {};
 
 			const idempotentSequelize = {
 				define: vi.fn().mockImplementation((name: string) => {
-					definedModels[name] = { sync: vi.fn().mockResolvedValue(undefined) };
+					definedModels[name] = createMockModel(name);
 					return definedModels[name];
 				}),
 				sync: vi.fn().mockResolvedValue(undefined),
@@ -627,16 +539,161 @@ describe("Database", () => {
 			}
 		});
 
+		it("should handle undefined table_count from query result", async () => {
+			// Track defined models so we can populate sequelize.models
+			const definedModels: Record<string, ReturnType<typeof createMockModel>> = {};
+
+			const undefinedCountSequelize = {
+				define: vi.fn().mockImplementation((name: string) => {
+					definedModels[name] = createMockModel(name);
+					return definedModels[name];
+				}),
+				sync: vi.fn().mockResolvedValue(undefined),
+				models: definedModels,
+				query: vi.fn().mockImplementation((sql: string) => {
+					if (sql.includes("COUNT(*)::text as table_count")) {
+						// Return result where table_count is undefined (tests ?? "0" fallback on line 202)
+						return Promise.resolve([[{ table_count: undefined }], {}]);
+					}
+					if (sql.includes("current_schema()")) {
+						return Promise.resolve([[{ current_schema: "public" }], {}]);
+					}
+					if (sql.includes("search_path")) {
+						return Promise.resolve([[{ search_path: "public" }], {}]);
+					}
+					return Promise.resolve([[], {}]);
+				}),
+				getQueryInterface: vi.fn().mockReturnValue({
+					sequelize: {
+						query: vi.fn().mockResolvedValue([]),
+						transaction: vi.fn().mockResolvedValue({
+							commit: vi.fn(),
+							rollback: vi.fn(),
+						}),
+						QueryTypes: {
+							SELECT: "SELECT",
+						},
+					},
+				}),
+			} as unknown as Sequelize;
+
+			// Should treat undefined table_count as 0 (empty schema) and sync without alter
+			const db = await createDatabase(undefinedCountSequelize);
+			expect(db).toBeDefined();
+			// Verify that sync() was called without alter (empty schema behavior)
+			for (const [name, model] of Object.entries(definedModels)) {
+				if (name !== "audit_event") {
+					expect(model.sync).toHaveBeenCalledWith();
+				}
+			}
+		});
+
+		it("should handle null table_count from query result", async () => {
+			// Track defined models so we can populate sequelize.models
+			const definedModels: Record<string, ReturnType<typeof createMockModel>> = {};
+
+			const nullCountSequelize = {
+				define: vi.fn().mockImplementation((name: string) => {
+					definedModels[name] = createMockModel(name);
+					return definedModels[name];
+				}),
+				sync: vi.fn().mockResolvedValue(undefined),
+				models: definedModels,
+				query: vi.fn().mockImplementation((sql: string) => {
+					if (sql.includes("COUNT(*)::text as table_count")) {
+						// Return result where table_count is null (tests ?? "0" fallback on line 202)
+						return Promise.resolve([[{ table_count: null }], {}]);
+					}
+					if (sql.includes("current_schema()")) {
+						return Promise.resolve([[{ current_schema: "public" }], {}]);
+					}
+					if (sql.includes("search_path")) {
+						return Promise.resolve([[{ search_path: "public" }], {}]);
+					}
+					return Promise.resolve([[], {}]);
+				}),
+				getQueryInterface: vi.fn().mockReturnValue({
+					sequelize: {
+						query: vi.fn().mockResolvedValue([]),
+						transaction: vi.fn().mockResolvedValue({
+							commit: vi.fn(),
+							rollback: vi.fn(),
+						}),
+						QueryTypes: {
+							SELECT: "SELECT",
+						},
+					},
+				}),
+			} as unknown as Sequelize;
+
+			// Should treat null table_count as 0 (empty schema) and sync without alter
+			const db = await createDatabase(nullCountSequelize);
+			expect(db).toBeDefined();
+			// Verify that sync() was called without alter (empty schema behavior)
+			for (const [name, model] of Object.entries(definedModels)) {
+				if (name !== "audit_event") {
+					expect(model.sync).toHaveBeenCalledWith();
+				}
+			}
+		});
+
+		it("should handle empty results array from table count query", async () => {
+			// Track defined models so we can populate sequelize.models
+			const definedModels: Record<string, ReturnType<typeof createMockModel>> = {};
+
+			const emptyResultsSequelize = {
+				define: vi.fn().mockImplementation((name: string) => {
+					definedModels[name] = createMockModel(name);
+					return definedModels[name];
+				}),
+				sync: vi.fn().mockResolvedValue(undefined),
+				models: definedModels,
+				query: vi.fn().mockImplementation((sql: string) => {
+					if (sql.includes("COUNT(*)::text as table_count")) {
+						// Return empty results array (tests results[0]?.table_count handling)
+						return Promise.resolve([[], {}]);
+					}
+					if (sql.includes("current_schema()")) {
+						return Promise.resolve([[{ current_schema: "public" }], {}]);
+					}
+					if (sql.includes("search_path")) {
+						return Promise.resolve([[{ search_path: "public" }], {}]);
+					}
+					return Promise.resolve([[], {}]);
+				}),
+				getQueryInterface: vi.fn().mockReturnValue({
+					sequelize: {
+						query: vi.fn().mockResolvedValue([]),
+						transaction: vi.fn().mockResolvedValue({
+							commit: vi.fn(),
+							rollback: vi.fn(),
+						}),
+						QueryTypes: {
+							SELECT: "SELECT",
+						},
+					},
+				}),
+			} as unknown as Sequelize;
+
+			// Should treat empty results as 0 tables (empty schema) and sync without alter
+			const db = await createDatabase(emptyResultsSequelize);
+			expect(db).toBeDefined();
+			// Verify that sync() was called without alter (empty schema behavior)
+			for (const [name, model] of Object.entries(definedModels)) {
+				if (name !== "audit_event") {
+					expect(model.sync).toHaveBeenCalledWith();
+				}
+			}
+		});
+
 		it("should create missing tables in existing schema", async () => {
 			// Track defined models so we can populate sequelize.models
-			const definedModels: Record<string, { sync: ReturnType<typeof vi.fn>; tableName: string }> = {};
+			// Use createMockModel to include all methods needed by postSync hooks (e.g., findOne, create, count)
+			const definedModels: Record<string, ReturnType<typeof createMockModel>> = {};
 
 			const schemaWithMissingTableSequelize = {
 				define: vi.fn().mockImplementation((name: string) => {
-					definedModels[name] = {
-						sync: vi.fn().mockResolvedValue(undefined),
-						tableName: name,
-					};
+					definedModels[name] = createMockModel(name);
 					return definedModels[name];
 				}),
 				sync: vi.fn().mockResolvedValue(undefined),

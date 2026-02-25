@@ -193,6 +193,81 @@ More content after thematic break
 		});
 	});
 
+	describe("markdown formatting preservation", () => {
+		it("preserves unordered list formatting in section content", () => {
+			const markdown = `# Features
+
+The platform provides:
+
+- Automated article creation
+- Documentation enhancement
+- Code-to-documentation conversion
+
+More details below.
+`;
+
+			const sections = parseSections(markdown);
+			const featuresSection = sections.find(s => s.title === "Features");
+
+			expect(featuresSection).toBeDefined();
+			expect(featuresSection?.content).toContain("- Automated article creation");
+			expect(featuresSection?.content).toContain("- Documentation enhancement");
+			expect(featuresSection?.content).toContain("- Code-to-documentation conversion");
+		});
+
+		it("preserves ordered list formatting in section content", () => {
+			const markdown = `# Steps
+
+Follow these steps:
+
+1. Install dependencies
+2. Configure the project
+3. Run the application
+`;
+
+			const sections = parseSections(markdown);
+			const stepsSection = sections.find(s => s.title === "Steps");
+
+			expect(stepsSection).toBeDefined();
+			expect(stepsSection?.content).toContain("1.");
+			expect(stepsSection?.content).toContain("Install dependencies");
+			expect(stepsSection?.content).toContain("2.");
+			expect(stepsSection?.content).toContain("3.");
+		});
+
+		it("preserves blockquote formatting in section content", () => {
+			const markdown = `# Quote
+
+> This is a blockquote
+> with multiple lines
+`;
+
+			const sections = parseSections(markdown);
+			const quoteSection = sections.find(s => s.title === "Quote");
+
+			expect(quoteSection).toBeDefined();
+			expect(quoteSection?.content).toContain("> This is a blockquote");
+		});
+
+		it("preserves nested list formatting in section content", () => {
+			const markdown = `# Overview
+
+- Item 1
+  - Sub-item A
+  - Sub-item B
+- Item 2
+`;
+
+			const sections = parseSections(markdown);
+			const overviewSection = sections.find(s => s.title === "Overview");
+
+			expect(overviewSection).toBeDefined();
+			expect(overviewSection?.content).toContain("- Item 1");
+			expect(overviewSection?.content).toContain("- Sub-item A");
+			expect(overviewSection?.content).toContain("- Item 2");
+		});
+	});
+
 	describe("existing functionality preserved", () => {
 		it("parses sections by headings", () => {
 			const markdown = `# First
@@ -386,5 +461,91 @@ Content here
 		const result = sectionsToMarkdown(sections, markdown);
 
 		expect(result).toContain("### Deep Heading");
+	});
+});
+
+describe("image and link preservation", () => {
+	it("preserves inline image in heading through round-trip", () => {
+		const markdown = `## Title ![img](https://example.com/img.png)
+
+Content below heading.
+`;
+
+		const sections = parseSections(markdown);
+		// mdastToString extracts plain text, so the image alt text becomes part of the title
+		const headingSection = sections.find(s => s.title === "Title img");
+		expect(headingSection).toBeDefined();
+		if (!headingSection) {
+			return;
+		}
+
+		const result = sectionToMarkdown(headingSection);
+		expect(result).toContain("![img](https://example.com/img.png)");
+	});
+
+	it("preserves link in paragraph content", () => {
+		const markdown = `# Section
+
+Check out [this link](https://example.com) for more info.
+`;
+
+		const sections = parseSections(markdown);
+		const section = sections.find(s => s.title === "Section");
+
+		expect(section).toBeDefined();
+		expect(section?.content).toContain("[this link](https://example.com)");
+	});
+
+	it("preserves image in paragraph content", () => {
+		const markdown = `# Gallery
+
+![screenshot](https://example.com/screenshot.png)
+`;
+
+		const sections = parseSections(markdown);
+		const section = sections.find(s => s.title === "Gallery");
+
+		expect(section).toBeDefined();
+		expect(section?.content).toContain("![screenshot](https://example.com/screenshot.png)");
+	});
+
+	it("populates headingNode for heading sections and not for preamble", () => {
+		const markdown = `Preamble text.
+
+# First Section
+
+Content.
+`;
+
+		const sections = parseSections(markdown);
+
+		const preamble = sections.find(s => s.title === null);
+		expect(preamble).toBeDefined();
+		expect(preamble?.headingNode).toBeUndefined();
+
+		const headed = sections.find(s => s.title === "First Section");
+		expect(headed).toBeDefined();
+		expect(headed?.headingNode).toBeDefined();
+		expect(headed?.headingNode?.type).toBe("heading");
+	});
+
+	it("sectionToMarkdown uses headingNode to preserve image in heading", () => {
+		const markdown = `## Features ![badge](https://img.shields.io/badge.svg)
+
+Some features listed here.
+`;
+
+		const sections = parseSections(markdown);
+		const section = sections.find(s => s.title !== null);
+
+		expect(section).toBeDefined();
+		if (!section) {
+			return;
+		}
+		expect(section.headingNode).toBeDefined();
+
+		const result = sectionToMarkdown(section);
+		expect(result).toContain("## Features ![badge](https://img.shields.io/badge.svg)");
+		expect(result).toContain("Some features listed here.");
 	});
 });

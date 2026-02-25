@@ -2,6 +2,7 @@ import type { DaoProvider } from "../dao/DaoProvider";
 import type { DocDao } from "../dao/DocDao";
 import type { IntegrationsManager } from "../integrations/IntegrationsManager";
 import { createMockIntegrationsManager } from "../integrations/IntegrationsManager.mock";
+import type { PermissionMiddlewareFactory } from "../middleware/PermissionMiddleware";
 import type { NewIntegration } from "../model/Integration";
 import { mockIntegration } from "../model/Integration.mock";
 import { createAuthHandler } from "../util/AuthHandler";
@@ -21,6 +22,18 @@ function expectedJrn(integrationName: string, filename: string): string {
 /** Helper to wrap a DAO in a mock provider */
 function mockDaoProvider<T>(dao: T): DaoProvider<T> {
 	return { getDao: () => dao };
+}
+
+/** Create a mock permission middleware that allows all requests through */
+function createMockPermissionMiddleware(): PermissionMiddlewareFactory {
+	const passthrough = vi.fn().mockReturnValue((_req: unknown, _res: unknown, next: () => void) => next());
+	return {
+		requireAuth: passthrough,
+		requirePermission: passthrough,
+		requireAllPermissions: passthrough,
+		requireRole: passthrough,
+		loadPermissions: passthrough,
+	} as unknown as PermissionMiddlewareFactory;
 }
 
 describe("IntegrationRouter", () => {
@@ -82,6 +95,7 @@ CsPGsHjRQP31pfVTFrZp5ywg
 			createIntegrationRouter({
 				manager: mockManager,
 				docDaoProvider: mockDaoProvider(mockDocDao),
+				permissionMiddleware: createMockPermissionMiddleware(),
 			}),
 		);
 
@@ -172,6 +186,33 @@ CsPGsHjRQP31pfVTFrZp5ywg
 			expect(response.status).toBe(403);
 			expect(response.body).toEqual({ error: "create integration not allowed." });
 			expect(mockManager.createIntegration).toHaveBeenCalledWith(newIntegration);
+		});
+	});
+
+	describe("GET /exists", () => {
+		it("should return 401 when not authenticated", async () => {
+			const response = await request(app).get("/integrations/exists");
+
+			expect(response.status).toBe(401);
+			expect(response.body).toEqual({ error: "Not authorized" });
+		});
+
+		it("should return { exists: true } when integrations exist", async () => {
+			mockManager.countIntegrations = vi.fn().mockResolvedValue(3);
+
+			const response = await request(app).get("/integrations/exists").set("Cookie", `authToken=${authToken}`);
+
+			expect(response.status).toBe(200);
+			expect(response.body).toEqual({ exists: true });
+		});
+
+		it("should return { exists: false } when no integrations exist", async () => {
+			mockManager.countIntegrations = vi.fn().mockResolvedValue(0);
+
+			const response = await request(app).get("/integrations/exists").set("Cookie", `authToken=${authToken}`);
+
+			expect(response.status).toBe(200);
+			expect(response.body).toEqual({ exists: false });
 		});
 	});
 
@@ -533,6 +574,7 @@ CsPGsHjRQP31pfVTFrZp5ywg
 				createIntegrationRouter({
 					manager: mockManager,
 					docDaoProvider: mockDaoProvider(mockDocDao as unknown as DocDao),
+					permissionMiddleware: createMockPermissionMiddleware(),
 				}),
 			);
 		});

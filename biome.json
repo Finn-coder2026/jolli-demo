@@ -246,6 +246,11 @@
 			"selfCloseVoidElements": "always"
 		}
 	},
+	"css": {
+		"parser": {
+			"cssModules": true
+		}
+	},
 	"assist": {
 		"enabled": true,
 		"actions": {
@@ -363,6 +368,16 @@
 		},
 		{
 			"includes": ["deploy/**"],
+			"linter": {
+				"rules": {
+					"suspicious": {
+						"noConsole": "off"
+					}
+				}
+			}
+		},
+		{
+			"includes": ["sandbox/**"],
 			"linter": {
 				"rules": {
 					"suspicious": {

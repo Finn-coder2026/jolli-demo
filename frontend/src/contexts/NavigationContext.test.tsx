@@ -6,23 +6,6 @@ import type { UserInfo } from "jolli-common";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Create stable mock APIs
-const mockIntegrationsApi = {
-	listIntegrations: vi.fn(),
-	enableIntegration: vi.fn(),
-	disableIntegration: vi.fn(),
-};
-
-const mockGitHubApi = {
-	syncGitHubInstallations: vi.fn(),
-	getGitHubApps: vi.fn(),
-	getGitHubInstallations: vi.fn(),
-	getGitHubInstallationRepos: vi.fn(),
-	enableGitHubRepo: vi.fn(),
-	disableGitHubRepo: vi.fn(),
-	getGitHubOrgRepos: vi.fn(),
-	getGitHubUserRepos: vi.fn(),
-};
-
 const mockAuthApi = {
 	getCliToken: vi.fn(),
 };
@@ -33,11 +16,51 @@ const mockDevToolsApi = {
 	triggerDemoJob: vi.fn(),
 };
 
+/** All owner permissions — the default for most tests */
+const ALL_PERMISSIONS = [
+	"users.view",
+	"users.edit",
+	"spaces.view",
+	"spaces.edit",
+	"integrations.view",
+	"integrations.edit",
+	"sites.view",
+	"sites.edit",
+	"roles.view",
+	"roles.edit",
+	"dashboard.view",
+	"articles.view",
+	"articles.edit",
+];
+
+const mockRolesApi = {
+	listRoles: vi.fn().mockResolvedValue([]),
+	getRole: vi.fn().mockResolvedValue(null),
+	cloneRole: vi.fn().mockResolvedValue(null),
+	updateRole: vi.fn().mockResolvedValue(null),
+	deleteRole: vi.fn().mockResolvedValue(undefined),
+	setRolePermissions: vi.fn().mockResolvedValue(null),
+	listPermissions: vi.fn().mockResolvedValue([]),
+	listPermissionsGrouped: vi.fn().mockResolvedValue({
+		sites: [],
+		users: [],
+		profile: [],
+		tenant: [],
+		spaces: [],
+		integrations: [],
+		roles: [],
+		dashboard: [],
+		articles: [],
+		analytics: [],
+		devtools: [],
+	}),
+	getCurrentUserPermissions: vi.fn(),
+};
+
 const mockClient = createMockClient();
-mockClient.integrations = vi.fn(() => mockIntegrationsApi) as unknown as typeof mockClient.integrations;
-mockClient.github = vi.fn(() => mockGitHubApi) as unknown as typeof mockClient.github;
 mockClient.auth = vi.fn(() => mockAuthApi) as unknown as typeof mockClient.auth;
 mockClient.devTools = vi.fn(() => mockDevToolsApi) as unknown as typeof mockClient.devTools;
+mockClient.roles = vi.fn(() => mockRolesApi) as unknown as typeof mockClient.roles;
 
 vi.mock("jolli-common", async () => {
 	const actual = await vi.importActual<typeof import("jolli-common")>("jolli-common");
@@ -49,15 +72,28 @@ vi.mock("jolli-common", async () => {
 
 describe("NavigationContext", () => {
 	beforeEach(() => {
-		// Reset mock implementations
-		mockIntegrationsApi.listIntegrations.mockClear();
-		mockIntegrationsApi.listIntegrations.mockResolvedValue([]);
-		mockGitHubApi.getGitHubInstallations.mockClear();
-		mockGitHubApi.getGitHubInstallations.mockResolvedValue([]);
+		sessionStorage.clear();
 		mockAuthApi.getCliToken.mockClear();
-		mockAuthApi.getCliToken.mockResolvedValue("mock-token");
+		mockAuthApi.getCliToken.mockResolvedValue({ token: "mock-token", space: "default" });
 		mockDevToolsApi.getDevToolsInfo.mockClear();
 		mockDevToolsApi.getDevToolsInfo.mockResolvedValue({ enabled: true });
+		mockRolesApi.getCurrentUserPermissions.mockClear();
+		mockRolesApi.getCurrentUserPermissions.mockResolvedValue({
+			role: {
+				id: 1,
+				name: "Owner",
+				slug: "owner",
+				description: null,
+				isBuiltIn: true,
+				isDefault: false,
+				priority: 100,
+				clonedFrom: null,
+				createdAt: "2024-01-01",
+				updatedAt: "2024-01-01",
+				permissions: [],
+			},
+			permissions: ALL_PERMISSIONS,
+		});
 	});
 
 	it("should provide tabs from navigation", async () => {
@@ -74,10 +110,11 @@ describe("NavigationContext", () => {
 			pathname: createMockIntlayerValue("/articles/doc:test-123"),
 		});
 
-		// With devtools enabled (default in beforeEach), we expect 7 tabs
+		// Navigation now only shows 1 tab (Dashboard)
+		// Other tabs (Articles, Sites, Analytics, Settings, Dev Tools) are accessible via direct URLs
 		// Wait for devtools to load async
 		await waitFor(() => {
-			expect(container.textContent).toContain("tabs: 7");
+			expect(container.textContent).toContain("tabs: 1");
 		});
 	});
 
@@ -157,7 +194,7 @@ describe("NavigationContext", () => {
 
 		expect(() => {
 			render(<TestComponent />);
-		}).toThrow("userNavigation must be used within a NavigationProvider");
+		}).toThrow("useNavigation must be used within a NavigationProvider");
 	});
 
 	it("should update when popstate event is fired", () => {
@@ -210,6 +247,23 @@ describe("NavigationContext", () => {
 
 		// activeTab should NOT update because pathname prop was provided
 		expect(activeTab).toBe("articles");
+	});
+
+	it("should set activeTab to 'agent' for /agent path", () => {
+		let activeTab = "";
+
+		function TestComponent() {
+			const params = useNavigation();
+			activeTab = params.activeTab;
+			return <div>Test</div>;
+		}
+
+		renderWithProviders(<TestComponent />, {
+			initialPath: createMockIntlayerValue("/agent"),
+			pathname: createMockIntlayerValue("/agent"),
+		});
+
+		expect(activeTab).toBe("agent");
 	});
 
 	it("should set articleView to 'list' for /articles", () => {
@@ -336,122 +390,6 @@ describe("NavigationContext", () => {
 		expect(typeof navigateFn).toBe("function");
 	});
 
-	it("should refresh integrations when refreshIntegrations is called", () => {
-		let refreshFn: (() => void) | undefined;
-		let hasIntegrations: boolean | undefined;
-
-		function TestComponent() {
-			const params = useNavigation();
-			refreshFn = params.refreshIntegrations;
-			hasIntegrations = params.hasIntegrations;
-			return <div>Test</div>;
-		}
-
-		renderWithProviders(<TestComponent />, {
-			initialPath: createMockIntlayerValue("/dashboard"),
-			pathname: createMockIntlayerValue("/dashboard"),
-		});
-
-		expect(refreshFn).toBeDefined();
-		refreshFn?.();
-
-		// After refresh, hasIntegrations should be undefined
-		expect(hasIntegrations).toBeUndefined();
-	});
-
-	it("should handle wizard completion when handleWizardComplete is called", async () => {
-		let handleWizardCompleteFn: (() => void) | undefined;
-
-		function TestComponent() {
-			const params = useNavigation();
-			handleWizardCompleteFn = params.integrationSetupComplete;
-			return (
-				<div>
-					hasIntegrations: {String(params.hasIntegrations)} githubSetupComplete:{" "}
-					{String(params.githubSetupComplete)}
-				</div>
-			);
-		}
-
-		const { container, rerender } = renderWithProviders(<TestComponent />, {
-			initialPath: createMockIntlayerValue("/dashboard"),
-			pathname: createMockIntlayerValue("/dashboard"),
-		});
-
-		expect(handleWizardCompleteFn).toBeDefined();
-		handleWizardCompleteFn?.();
-
-		// Force a rerender to pick up state change
-		rerender(<TestComponent />);
-
-		// After calling integrationSetupComplete, hasIntegrations should be true and githubSetupComplete should be false
-		await waitFor(() => {
-			expect(container.textContent).toContain("hasIntegrations: true");
-			expect(container.textContent).toContain("githubSetupComplete: false");
-		});
-	});
-
-	it("should handle GitHub setup success URL parameter", async () => {
-		const userInfo: UserInfo = {
-			email: createMockIntlayerValue("test@example.com"),
-			name: createMockIntlayerValue("Test User"),
-			picture: undefined,
-			userId: 123,
-		};
-
-		function TestComponent() {
-			const params = useNavigation();
-			return (
-				<div>
-					githubSetupComplete: {String(params.githubSetupComplete)} hasIntegrations:{" "}
-					{String(params.hasIntegrations)}
-				</div>
-			);
-		}
-
-		const { container } = renderWithProviders(<TestComponent />, {
-			initialPath: createMockIntlayerValue("/?github_setup=success"),
-			userInfo,
-		});
-
-		// Wait for both states to update after GitHub setup success
-		await waitFor(() => {
-			expect(container.textContent).toContain("githubSetupComplete: true");
-			expect(container.textContent).toContain("hasIntegrations: true");
-		});
-	});
-
-	it("should handle checkIntegrations error", async () => {
-		// Mock listIntegrations to fail
-		mockIntegrationsApi.listIntegrations.mockRejectedValue(new Error("Failed to list integrations"));
-
-		const userInfo: UserInfo = {
-			email: createMockIntlayerValue("test@example.com"),
-			name: createMockIntlayerValue("Test User"),
-			picture: undefined,
-			userId: 123,
-		};
-
-		function TestComponent() {
-			const params = useNavigation();
-			return <div>hasIntegrations: {String(params.hasIntegrations)}</div>;
-		}
-
-		const { container } = renderWithProviders(<TestComponent />, {
-			initialPath: createMockIntlayerValue("/dashboard"),
-			pathname: createMockIntlayerValue("/dashboard"),
-			userInfo,
-		});
-
-		// Wait for hasIntegrations to be set to false after error
-		await waitFor(
-			() => {
-				expect(container.textContent).toContain("hasIntegrations: false");
-			},
-			{ timeout: 2000 },
-		);
-	});
-
 	it("should set integrationView to 'github' for /integrations/github", () => {
 		let integrationView: string | undefined;
 
@@ -535,109 +473,6 @@ describe("NavigationContext", () => {
 		expect(staticFileIntegrationId).toBe(123);
 	});
 
-	it("should redirect to first installation when no integrations but installations exist", async () => {
-		mockGitHubApi.getGitHubInstallations.mockResolvedValue([
-			{
-				containerType: createMockIntlayerValue("org"),
-				name: createMockIntlayerValue("test-org"),
-				appId: 123,
-				installationId: 456,
-				repos: [],
-			},
-		]);
-
-		mockIntegrationsApi.listIntegrations.mockResolvedValue([]);
-
-		const userInfo: UserInfo = {
-			email: createMockIntlayerValue("test@example.com"),
-			name: createMockIntlayerValue("Test User"),
-			picture: undefined,
-			userId: 123,
-		};
-
-		function TestComponent() {
-			const params = useNavigation();
-			return <div>hasIntegrations: {String(params.hasIntegrations)}</div>;
-		}
-
-		const { container } = renderWithProviders(<TestComponent />, {
-			initialPath: createMockIntlayerValue("/dashboard"),
-			pathname: createMockIntlayerValue("/dashboard"),
-			userInfo,
-		});
-
-		// Wait for hasIntegrations to be set to true (installations exist)
-		// Note: The actual navigation redirect is handled by the router and tested elsewhere
-		await waitFor(
-			() => {
-				expect(container.textContent).toContain("hasIntegrations: true");
-			},
-			{ timeout: 2000 },
-		);
-	});
-
-	it("should handle no installations and set hasIntegrations to false", async () => {
-		mockGitHubApi.getGitHubInstallations.mockResolvedValue([]);
-		mockIntegrationsApi.listIntegrations.mockResolvedValue([]);
-
-		const userInfo: UserInfo = {
-			email: createMockIntlayerValue("test@example.com"),
-			name: createMockIntlayerValue("Test User"),
-			picture: undefined,
-			userId: 123,
-		};
-
-		function TestComponent() {
-			const params = useNavigation();
-			return <div>hasIntegrations: {String(params.hasIntegrations)}</div>;
-		}
-
-		const { container } = renderWithProviders(<TestComponent />, {
-			initialPath: createMockIntlayerValue("/dashboard"),
-			pathname: createMockIntlayerValue("/dashboard"),
-			userInfo,
-		});
-
-		// Wait for hasIntegrations to be set to false when no installations exist
-		await waitFor(
-			() => {
-				expect(container.textContent).toContain("hasIntegrations: false");
-			},
-			{ timeout: 2000 },
-		);
-	});
-
-	it("should handle error fetching installations and set hasIntegrations to false", async () => {
-		mockGitHubApi.getGitHubInstallations.mockRejectedValue(new Error("Failed to fetch installations"));
-		mockIntegrationsApi.listIntegrations.mockResolvedValue([]);
-
-		const userInfo: UserInfo = {
-			email: createMockIntlayerValue("test@example.com"),
-			name: createMockIntlayerValue("Test User"),
-			picture: undefined,
-			userId: 123,
-		};
-
-		function TestComponent() {
-			const params = useNavigation();
-			return <div>hasIntegrations: {String(params.hasIntegrations)}</div>;
-		}
-
-		const { container } = renderWithProviders(<TestComponent />, {
-			initialPath: createMockIntlayerValue("/dashboard"),
-			pathname: createMockIntlayerValue("/dashboard"),
-			userInfo,
-		});
-
-		// Wait for hasIntegrations to be set to false after error
-		await waitFor(
-			() => {
-				expect(container.textContent).toContain("hasIntegrations: false");
-			},
-			{ timeout: 2000 },
-		);
-	});
-
 	it("should include devtools tab when devtools are enabled", async () => {
 		mockDevToolsApi.getDevToolsInfo.mockResolvedValue({ enabled: true });
 
@@ -663,87 +498,11 @@ describe("NavigationContext", () => {
 		});
 
 		// Wait for dev tools check to complete
+		// Navigation now only shows 1 tab (Dashboard)
+		// Other tabs (Articles, Sites, Analytics, Settings, Dev Tools) are accessible via direct URLs
 		await waitFor(() => {
-			expect(tabsLength).toBe(7); // 6 base tabs + devtools tab
+			expect(tabsLength).toBe(1);
 		});
-	});
-
-	it("should not redirect from devtools tab when installations exist but no integrations", async () => {
-		mockIntegrationsApi.listIntegrations.mockResolvedValue([]); // No integrations
-		mockGitHubApi.getGitHubInstallations.mockResolvedValue([
-			{
-				id: 1,
-				name: createMockIntlayerValue("test-org"),
-				containerType: createMockIntlayerValue("org"),
-			},
-		]);
-
-		function TestComponent() {
-			const params = useNavigation();
-			return <div>hasIntegrations: {String(params.hasIntegrations)}</div>;
-		}
-
-		const userInfo: UserInfo = {
-			userId: 123,
-			email: createMockIntlayerValue("test@example.com"),
-			name: createMockIntlayerValue("Test User"),
-			picture: undefined,
-		};
-
-		const { container } = renderWithProviders(<TestComponent />, {
-			initialPath: createMockIntlayerValue("/devtools"),
-			pathname: createMockIntlayerValue("/devtools"),
-			userInfo,
-		});
-
-		// Wait for hasIntegrations to be checked and set to true (due to installations)
-		await waitFor(
-			() => {
-				expect(container.textContent).toContain("hasIntegrations: true");
-			},
-			{ timeout: 2000 },
-		);
-	});
-
-	it("should treat empty path as dashboard when checking installations", async () => {
-		mockGitHubApi.getGitHubInstallations.mockResolvedValue([
-			{
-				containerType: createMockIntlayerValue("org"),
-				name: createMockIntlayerValue("test-org"),
-				appId: 123,
-				installationId: 456,
-				repos: [],
-			},
-		]);
-
-		mockIntegrationsApi.listIntegrations.mockResolvedValue([]);
-
-		const userInfo: UserInfo = {
-			email: createMockIntlayerValue("test@example.com"),
-			name: createMockIntlayerValue("Test User"),
-			picture: undefined,
-			userId: 123,
-		};
-
-		function TestComponent() {
-			const params = useNavigation();
-			return <div>hasIntegrations: {String(params.hasIntegrations)}</div>;
-		}
-
-		const { container } = renderWithProviders(<TestComponent />, {
-			initialPath: createMockIntlayerValue("/"),
-			pathname: createMockIntlayerValue("/"),
-			userInfo,
-		});
-
-		// Wait for hasIntegrations to be set to true - "/"  is treated as "dashboard", not "devtools",
-		// so it should trigger redirect logic (tested by checking hasIntegrations gets set)
-		await waitFor(
-			() => {
-				expect(container.textContent).toContain("hasIntegrations: true");
-			},
-			{ timeout: 2000 },
-		);
 	});
 
 	it("should handle intlayer values with .key property", async () => {
@@ -764,12 +523,14 @@ describe("NavigationContext", () => {
 		});
 
 		// Wait for component to render
+		// Navigation now only shows 1 tab (Dashboard)
+		// Other tabs (Articles, Sites, Analytics, Settings, Dev Tools) are accessible via direct URLs
 		await waitFor(() => {
-			expect(container.textContent).toContain("tabs: 7");
+			expect(container.textContent).toContain("tabs: 1");
 		});
 
 		// Verify that tabs were created successfully (which means getStringValue worked)
-		expect(tabsLength).toBe(7);
+		expect(tabsLength).toBe(1);
 	});
 
 	it("should set siteView to 'list' for /sites", () => {
@@ -827,5 +588,536 @@ describe("NavigationContext", () => {
 
 		expect(siteView).toBe("none");
 		expect(siteId).toBeUndefined();
+	});
+
+	describe("Space Settings Route", () => {
+		it("should set spaceSettingsView to 'general' for /spaces/:id/settings", () => {
+			let spaceSettingsView: string | undefined;
+			let spaceSettingsSpaceId: number | undefined;
+
+			function TestComponent() {
+				const params = useNavigation();
+				spaceSettingsView = params.spaceSettingsView;
+				spaceSettingsSpaceId = params.spaceSettingsSpaceId;
+				return <div>Test</div>;
+			}
+
+			renderWithProviders(<TestComponent />, {
+				initialPath: createMockIntlayerValue("/spaces/42/settings"),
+				pathname: createMockIntlayerValue("/spaces/42/settings"),
+			});
+
+			expect(spaceSettingsView).toBe("general");
+			expect(spaceSettingsSpaceId).toBe(42);
+		});
+
+		it("should set spaceSettingsView to 'general' for /spaces/:id/settings/general", () => {
+			let spaceSettingsView: string | undefined;
+			let spaceSettingsSpaceId: number | undefined;
+
+			function TestComponent() {
+				const params = useNavigation();
+				spaceSettingsView = params.spaceSettingsView;
+				spaceSettingsSpaceId = params.spaceSettingsSpaceId;
+				return <div>Test</div>;
+			}
+
+			renderWithProviders(<TestComponent />, {
+				initialPath: createMockIntlayerValue("/spaces/7/settings/general"),
+				pathname: createMockIntlayerValue("/spaces/7/settings/general"),
+			});
+
+			expect(spaceSettingsView).toBe("general");
+			expect(spaceSettingsSpaceId).toBe(7);
+		});
+
+		it("should set spaceSettingsView to 'none' for non-matching routes", () => {
+			let spaceSettingsView: string | undefined;
+			let spaceSettingsSpaceId: number | undefined;
+
+			function TestComponent() {
+				const params = useNavigation();
+				spaceSettingsView = params.spaceSettingsView;
+				spaceSettingsSpaceId = params.spaceSettingsSpaceId;
+				return <div>Test</div>;
+			}
+
+			renderWithProviders(<TestComponent />, {
+				initialPath: createMockIntlayerValue("/spaces/42"),
+				pathname: createMockIntlayerValue("/spaces/42"),
+			});
+
+			expect(spaceSettingsView).toBe("none");
+			expect(spaceSettingsSpaceId).toBeUndefined();
+		});
+	});
+
+	it("should set siteView to 'create' for /sites/new", () => {
+		let siteView = "none";
+
+		function TestComponent() {
+			const params = useNavigation();
+			siteView = params.siteView;
+			return <div>Test</div>;
+		}
+
+		renderWithProviders(<TestComponent />, {
+			initialPath: createMockIntlayerValue("/sites/new"),
+			pathname: createMockIntlayerValue("/sites/new"),
+		});
+
+		expect(siteView).toBe("create");
+	});
+
+	describe("Site Settings Route", () => {
+		it("should set siteView to 'none' and siteSettingsView to 'general' for /sites/:id/settings", () => {
+			let siteView = "list";
+			let siteSettingsView: string | undefined;
+			let siteSettingsSiteId: number | undefined;
+
+			function TestComponent() {
+				const params = useNavigation();
+				siteView = params.siteView;
+				siteSettingsView = params.siteSettingsView;
+				siteSettingsSiteId = params.siteSettingsSiteId;
+				return <div>Test</div>;
+			}
+
+			renderWithProviders(<TestComponent />, {
+				initialPath: createMockIntlayerValue("/sites/42/settings"),
+				pathname: createMockIntlayerValue("/sites/42/settings"),
+			});
+
+			// parseSiteRoute returns early for settings routes, so siteView is "none"
+			expect(siteView).toBe("none");
+			expect(siteSettingsView).toBe("general");
+			expect(siteSettingsSiteId).toBe(42);
+		});
+
+		it("should set siteSettingsView to 'general' for /sites/:id/settings/general", () => {
+			let siteSettingsView: string | undefined;
+			let siteSettingsSiteId: number | undefined;
+
+			function TestComponent() {
+				const params = useNavigation();
+				siteSettingsView = params.siteSettingsView;
+				siteSettingsSiteId = params.siteSettingsSiteId;
+				return <div>Test</div>;
+			}
+
+			renderWithProviders(<TestComponent />, {
+				initialPath: createMockIntlayerValue("/sites/7/settings/general"),
+				pathname: createMockIntlayerValue("/sites/7/settings/general"),
+			});
+
+			expect(siteSettingsView).toBe("general");
+			expect(siteSettingsSiteId).toBe(7);
+		});
+
+		it("should set siteSettingsView to 'none' for non-settings site routes", () => {
+			let siteSettingsView = "general";
+			let siteSettingsSiteId: number | undefined = 99;
+
+			function TestComponent() {
+				const params = useNavigation();
+				siteSettingsView = params.siteSettingsView;
+				siteSettingsSiteId = params.siteSettingsSiteId;
+				return <div>Test</div>;
+			}
+
+			renderWithProviders(<TestComponent />, {
+				initialPath: createMockIntlayerValue("/sites/42"),
+				pathname: createMockIntlayerValue("/sites/42"),
+			});
+
+			expect(siteSettingsView).toBe("none");
+			expect(siteSettingsSiteId).toBeUndefined();
+		});
+	});
+
+	it("should set spaceSettingsView to 'sources' for /spaces/:id/settings/sources", () => {
+		let spaceSettingsView: string | undefined;
+		let spaceSettingsSpaceId: number | undefined;
+
+		function TestComponent() {
+			const params = useNavigation();
+			spaceSettingsView = params.spaceSettingsView;
+			spaceSettingsSpaceId = params.spaceSettingsSpaceId;
+			return <div>Test</div>;
+		}
+
+		renderWithProviders(<TestComponent />, {
+			initialPath: createMockIntlayerValue("/spaces/5/settings/sources"),
+			pathname: createMockIntlayerValue("/spaces/5/settings/sources"),
+		});
+
+		expect(spaceSettingsView).toBe("sources");
+		expect(spaceSettingsSpaceId).toBe(5);
+	});
+
+	describe("Query param parsing", () => {
+		it("should parse inlineEditDraftId and selectedDocId from ?edit= and ?doc= params", () => {
+			let inlineEditDraftId: number | undefined;
+			let selectedDocId: number | undefined;
+
+			function TestComponent() {
+				const params = useNavigation();
+				inlineEditDraftId = params.inlineEditDraftId;
+				selectedDocId = params.selectedDocId;
+				return <div>Test</div>;
+			}
+
+			renderWithProviders(<TestComponent />, {
+				initialPath: "/articles?edit=42&doc=99",
+				pathname: createMockIntlayerValue("/articles"),
+			});
+
+			expect(inlineEditDraftId).toBe(42);
+			expect(selectedDocId).toBe(99);
+		});
+
+		it("should return undefined for inlineEditDraftId and selectedDocId when params are not valid numbers", () => {
+			let inlineEditDraftId: number | undefined = 1;
+			let selectedDocId: number | undefined = 1;
+
+			function TestComponent() {
+				const params = useNavigation();
+				inlineEditDraftId = params.inlineEditDraftId;
+				selectedDocId = params.selectedDocId;
+				return <div>Test</div>;
+			}
+
+			renderWithProviders(<TestComponent />, {
+				initialPath: "/articles?edit=abc&doc=xyz",
+				pathname: createMockIntlayerValue("/articles"),
+			});
+
+			expect(inlineEditDraftId).toBeUndefined();
+			expect(selectedDocId).toBeUndefined();
+		});
+	});
+
+	it("should include settings tab in tabs when permission is not required", () => {
+		let tabs: Array<{ name: string }> = [];
+
+		function TestComponent() {
+			const params = useNavigation();
+			tabs = params.tabs;
+			return <div>tabs: {tabs.length}</div>;
+		}
+
+		renderWithProviders(<TestComponent />, {
+			initialPath: createMockIntlayerValue("/settings"),
+			pathname: createMockIntlayerValue("/settings"),
+		});
+
+		expect(tabs.length).toBeGreaterThanOrEqual(1);
+	});
+
+	describe("Route Permission Guard", () => {
+		it("should redirect from /integrations to /dashboard without integrations.view", async () => {
+			mockRolesApi.getCurrentUserPermissions.mockResolvedValue({
+				role: {
+					id: 2,
+					name: "Viewer",
+					slug: "viewer",
+					description: null,
+					isBuiltIn: true,
+					isDefault: false,
+					priority: 10,
+					clonedFrom: null,
+					createdAt: "2024-01-01",
+					updatedAt: "2024-01-01",
+					permissions: [],
+				},
+				permissions: ["dashboard.view", "articles.view"],
+			});
+
+			function TestComponent() {
+				const params = useNavigation();
+				return <div>activeTab: {params.activeTab}</div>;
+			}
+
+			renderWithProviders(<TestComponent />, {
+				initialPath: createMockIntlayerValue("/integrations"),
+				pathname: createMockIntlayerValue("/integrations"),
+			});
+
+			await waitFor(() => {
+				expect(window.location.pathname).toBe("/dashboard");
+			});
+		});
+
+		it("should redirect from /settings/sources to /dashboard without integrations.view", async () => {
+			mockRolesApi.getCurrentUserPermissions.mockResolvedValue({
+				role: {
+					id: 2,
+					name: "Viewer",
+					slug: "viewer",
+					description: null,
+					isBuiltIn: true,
+					isDefault: false,
+					priority: 10,
+					clonedFrom: null,
+					createdAt: "2024-01-01",
+					updatedAt: "2024-01-01",
+					permissions: [],
+				},
+				permissions: ["dashboard.view", "articles.view"],
+			});
+
+			function TestComponent() {
+				const params = useNavigation();
+				return <div>activeTab: {params.activeTab}</div>;
+			}
+
+			renderWithProviders(<TestComponent />, {
+				initialPath: createMockIntlayerValue("/settings/sources"),
+				pathname: createMockIntlayerValue("/settings/sources"),
+			});
+
+			await waitFor(() => {
+				expect(window.location.pathname).toBe("/dashboard");
+			});
+		});
+
+		it("should redirect from /users to /dashboard without users.view", async () => {
+			mockRolesApi.getCurrentUserPermissions.mockResolvedValue({
+				role: {
+					id: 2,
+					name: "Viewer",
+					slug: "viewer",
+					description: null,
+					isBuiltIn: true,
+					isDefault: false,
+					priority: 10,
+					clonedFrom: null,
+					createdAt: "2024-01-01",
+					updatedAt: "2024-01-01",
+					permissions: [],
+				},
+				permissions: ["dashboard.view", "articles.view"],
+			});
+
+			function TestComponent() {
+				const params = useNavigation();
+				return <div>activeTab: {params.activeTab}</div>;
+			}
+
+			renderWithProviders(<TestComponent />, {
+				initialPath: createMockIntlayerValue("/users"),
+				pathname: createMockIntlayerValue("/users"),
+			});
+
+			await waitFor(() => {
+				expect(window.location.pathname).toBe("/dashboard");
+			});
+		});
+
+		it("should redirect from /roles to /dashboard without roles.view", async () => {
+			mockRolesApi.getCurrentUserPermissions.mockResolvedValue({
+				role: {
+					id: 2,
+					name: "Viewer",
+					slug: "viewer",
+					description: null,
+					isBuiltIn: true,
+					isDefault: false,
+					priority: 10,
+					clonedFrom: null,
+					createdAt: "2024-01-01",
+					updatedAt: "2024-01-01",
+					permissions: [],
+				},
+				permissions: ["dashboard.view", "articles.view"],
+			});
+
+			function TestComponent() {
+				const params = useNavigation();
+				return <div>activeTab: {params.activeTab}</div>;
+			}
+
+			renderWithProviders(<TestComponent />, {
+				initialPath: createMockIntlayerValue("/roles"),
+				pathname: createMockIntlayerValue("/roles"),
+			});
+
+			await waitFor(() => {
+				expect(window.location.pathname).toBe("/dashboard");
+			});
+		});
+
+		it("should redirect from /articles to /dashboard without articles.view", async () => {
+			mockRolesApi.getCurrentUserPermissions.mockResolvedValue({
+				role: {
+					id: 2,
+					name: "Viewer",
+					slug: "viewer",
+					description: null,
+					isBuiltIn: true,
+					isDefault: false,
+					priority: 10,
+					clonedFrom: null,
+					createdAt: "2024-01-01",
+					updatedAt: "2024-01-01",
+					permissions: [],
+				},
+				permissions: ["dashboard.view", "integrations.view"],
+			});
+
+			function TestComponent() {
+				const params = useNavigation();
+				return <div>activeTab: {params.activeTab}</div>;
+			}
+
+			renderWithProviders(<TestComponent />, {
+				initialPath: createMockIntlayerValue("/articles"),
+				pathname: createMockIntlayerValue("/articles"),
+			});
+
+			await waitFor(() => {
+				expect(window.location.pathname).toBe("/dashboard");
+			});
+		});
+
+		it("should redirect from /sites to /dashboard without sites.view", async () => {
+			mockRolesApi.getCurrentUserPermissions.mockResolvedValue({
+				role: {
+					id: 2,
+					name: "Viewer",
+					slug: "viewer",
+					description: null,
+					isBuiltIn: true,
+					isDefault: false,
+					priority: 10,
+					clonedFrom: null,
+					createdAt: "2024-01-01",
+					updatedAt: "2024-01-01",
+					permissions: [],
+				},
+				permissions: ["dashboard.view", "articles.view"],
+			});
+
+			function TestComponent() {
+				const params = useNavigation();
+				return <div>activeTab: {params.activeTab}</div>;
+			}
+
+			renderWithProviders(<TestComponent />, {
+				initialPath: createMockIntlayerValue("/sites"),
+				pathname: createMockIntlayerValue("/sites"),
+			});
+
+			await waitFor(() => {
+				expect(window.location.pathname).toBe("/dashboard");
+			});
+		});
+
+		it("should NOT redirect from /integrations when user has integrations.view", async () => {
+			mockRolesApi.getCurrentUserPermissions.mockResolvedValue({
+				role: {
+					id: 1,
+					name: "Owner",
+					slug: "owner",
+					description: null,
+					isBuiltIn: true,
+					isDefault: false,
+					priority: 100,
+					clonedFrom: null,
+					createdAt: "2024-01-01",
+					updatedAt: "2024-01-01",
+					permissions: [],
+				},
+				permissions: ALL_PERMISSIONS,
+			});
+
+			let activeTab = "";
+
+			function TestComponent() {
+				const params = useNavigation();
+				activeTab = params.activeTab;
+				return <div>activeTab: {activeTab}</div>;
+			}
+
+			// Set window.location to /integrations before render
+			window.history.pushState({}, "", "/integrations");
+
+			renderWithProviders(<TestComponent />, {
+				initialPath: createMockIntlayerValue("/integrations"),
+				pathname: createMockIntlayerValue("/integrations"),
+			});
+
+			// Wait for permissions to load — should stay on integrations
+			await waitFor(() => {
+				expect(activeTab).toBe("integrations");
+			});
+			expect(window.location.pathname).toBe("/integrations");
+		});
+
+		it("should NOT redirect while permissions are still loading", () => {
+			// Use a never-resolving promise to simulate loading state
+			// biome-ignore lint/suspicious/noEmptyBlockStatements: intentionally never-resolving promise to simulate perpetual loading
+			mockRolesApi.getCurrentUserPermissions.mockReturnValue(new Promise(() => {}));
+
+			let activeTab = "";
+
+			function TestComponent() {
+				const params = useNavigation();
+				activeTab = params.activeTab;
+				return <div>activeTab: {activeTab}</div>;
+			}
+
+			// Set window.location to /integrations before render
+			window.history.pushState({}, "", "/integrations");
+
+			renderWithProviders(<TestComponent />, {
+				initialPath: createMockIntlayerValue("/integrations"),
+				pathname: createMockIntlayerValue("/integrations"),
+			});
+
+			// Should stay on integrations while loading (no redirect flash)
+			expect(activeTab).toBe("integrations");
+			expect(window.location.pathname).toBe("/integrations");
+		});
+
+		it("should NOT redirect from /dashboard even without dashboard.view", async () => {
+			mockRolesApi.getCurrentUserPermissions.mockResolvedValue({
+				role: {
+					id: 2,
+					name: "Viewer",
+					slug: "viewer",
+					description: null,
+					isBuiltIn: true,
+					isDefault: false,
+					priority: 10,
+					clonedFrom: null,
+					createdAt: "2024-01-01",
+					updatedAt: "2024-01-01",
+					permissions: [],
+				},
+				permissions: [], // No permissions at all
+			});
+
+			let activeTab = "";
+
+			function TestComponent() {
+				const params = useNavigation();
+				activeTab = params.activeTab;
+				return <div>activeTab: {activeTab}</div>;
+			}
+
+			window.history.pushState({}, "", "/dashboard");
+
+			renderWithProviders(<TestComponent />, {
+				initialPath: createMockIntlayerValue("/dashboard"),
+				pathname: createMockIntlayerValue("/dashboard"),
+			});
+
+			// Wait for permissions to load — should NOT redirect from dashboard
+			await waitFor(() => {
+				expect(activeTab).toBe("dashboard");
+			});
+			expect(window.location.pathname).toBe("/dashboard");
+		});
 	});
 });

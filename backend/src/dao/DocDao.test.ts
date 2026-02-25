@@ -29,7 +29,7 @@ describe("DocDao", () => {
 	});
 
 	describe("createDoc", () => {
-		it("should create a doc with version 1 and calculated path", async () => {
+		it("should create a doc with version 1", async () => {
 			const newDoc: NewDoc = {
 				jrn: "jrn:doc:123",
 				slug: "test-slug",
@@ -50,7 +50,6 @@ describe("DocDao", () => {
 			const createdDoc = mockDoc({
 				...newDoc,
 				id: 1,
-				path: "/test-slug",
 				version: 1,
 			});
 
@@ -58,10 +57,9 @@ describe("DocDao", () => {
 
 			const result = await docDao.createDoc(newDoc);
 
-			// Empty path is falsy, so it gets calculated as /{slug}
 			expect(mockDocs.create).toHaveBeenCalledWith({
 				...newDoc,
-				path: "/test-slug",
+				path: "/test-slug", // Auto-calculated when empty
 				version: 1,
 			});
 			expect(result).toEqual(createdDoc);
@@ -88,7 +86,6 @@ describe("DocDao", () => {
 			const createdDoc = mockDoc({
 				...newDoc,
 				id: 2,
-				path: "/test-slug",
 				version: 1,
 			});
 
@@ -116,9 +113,9 @@ describe("DocDao", () => {
 
 			const createdDoc = mockDoc({
 				id: 3,
-				jrn: "jrn:/global:docs:document/test-article-12345",
+				jrn: "doc:test-article-12345",
 				slug: "test-article-12345",
-				path: "/test-article-12345",
+				path: "",
 				version: 1,
 			});
 
@@ -128,9 +125,9 @@ describe("DocDao", () => {
 
 			expect(mockDocs.create).toHaveBeenCalledWith(
 				expect.objectContaining({
-					slug: expect.stringMatching(/^test-article-\d+$/),
-					jrn: expect.stringMatching(/^jrn:\/global:docs:document\/test-article-\d+$/),
-					path: expect.stringMatching(/^\/test-article-\d+$/),
+					slug: expect.stringMatching(/^test-article-[a-z0-9]+$/),
+					jrn: expect.stringMatching(/^jrn:\/global:docs:document\/test-article-[a-z0-9]+$/),
+					path: expect.stringMatching(/^\/test-article-[a-z0-9]+$/),
 					version: 1,
 				}),
 			);
@@ -153,9 +150,9 @@ describe("DocDao", () => {
 
 			const createdDoc = mockDoc({
 				id: 4,
-				jrn: "jrn:/global:docs:folder/my-folder-12345",
+				jrn: "folder:my-folder-12345",
 				slug: "my-folder-12345",
-				path: "/my-folder-12345",
+				path: "",
 				docType: "folder",
 				version: 1,
 			});
@@ -166,9 +163,9 @@ describe("DocDao", () => {
 
 			expect(mockDocs.create).toHaveBeenCalledWith(
 				expect.objectContaining({
-					slug: expect.stringMatching(/^my-folder-\d+$/),
-					jrn: expect.stringMatching(/^jrn:\/global:docs:folder\/my-folder-\d+$/),
-					path: expect.stringMatching(/^\/my-folder-\d+$/),
+					slug: expect.stringMatching(/^my-folder-[a-z0-9]+$/),
+					jrn: expect.stringMatching(/^jrn:\/global:docs:folder\/my-folder-[a-z0-9]+$/),
+					path: expect.stringMatching(/^\/my-folder-[a-z0-9]+$/),
 					version: 1,
 				}),
 			);
@@ -191,9 +188,9 @@ describe("DocDao", () => {
 
 			const createdDoc = mockDoc({
 				id: 5,
-				jrn: "jrn:/global:docs:document/untitled-12345",
+				jrn: "doc:untitled-12345",
 				slug: "untitled-12345",
-				path: "/untitled-12345",
+				path: "",
 				version: 1,
 			});
 
@@ -203,126 +200,10 @@ describe("DocDao", () => {
 
 			expect(mockDocs.create).toHaveBeenCalledWith(
 				expect.objectContaining({
-					slug: expect.stringMatching(/^untitled-\d+$/),
-					jrn: expect.stringMatching(/^jrn:\/global:docs:document\/untitled-\d+$/),
-					path: expect.stringMatching(/^\/untitled-\d+$/),
+					slug: expect.stringMatching(/^untitled-[a-z0-9]+$/),
+					jrn: expect.stringMatching(/^jrn:\/global:docs:document\/untitled-[a-z0-9]+$/),
 				}),
 			);
-		});
-
-		it("should calculate path based on parent when parentId is provided", async () => {
-			const parentDoc = mockDoc({
-				id: 1,
-				slug: "parent-folder",
-				path: "/parent-folder",
-				docType: "folder",
-			});
-
-			const newDoc: NewDoc = {
-				updatedBy: "user:789",
-				source: undefined,
-				sourceMetadata: undefined,
-				content: "test content",
-				contentType: "text/markdown",
-				contentMetadata: { title: "Child Doc" },
-				spaceId: 1,
-				parentId: 1,
-				docType: "document",
-				sortOrder: 0,
-				createdBy: "user:789",
-			};
-
-			const createdDoc = mockDoc({
-				id: 2,
-				jrn: "jrn:/global:docs:document/child-doc-12345",
-				slug: "child-doc-12345",
-				path: "/parent-folder/child-doc-12345",
-				version: 1,
-			});
-
-			vi.mocked(mockDocs.findByPk).mockResolvedValue({ path: parentDoc.path } as never);
-			vi.mocked(mockDocs.create).mockResolvedValue(createdDoc as never);
-
-			await docDao.createDoc(newDoc);
-
-			expect(mockDocs.findByPk).toHaveBeenCalledWith(1);
-			expect(mockDocs.create).toHaveBeenCalledWith(
-				expect.objectContaining({
-					path: expect.stringMatching(/^\/parent-folder\/child-doc-\d+$/),
-				}),
-			);
-		});
-
-		it("should calculate root path when parent does not exist", async () => {
-			const newDoc: NewDoc = {
-				updatedBy: "user:789",
-				source: undefined,
-				sourceMetadata: undefined,
-				content: "test content",
-				contentType: "text/markdown",
-				contentMetadata: { title: "Orphan Doc" },
-				spaceId: 1,
-				parentId: 999, // Non-existent parent
-				docType: "document",
-				sortOrder: 0,
-				createdBy: "user:789",
-			};
-
-			const createdDoc = mockDoc({
-				id: 2,
-				jrn: "jrn:/global:docs:document/orphan-doc-12345",
-				slug: "orphan-doc-12345",
-				path: "/orphan-doc-12345",
-				version: 1,
-			});
-
-			vi.mocked(mockDocs.findByPk).mockResolvedValue(null);
-			vi.mocked(mockDocs.create).mockResolvedValue(createdDoc as never);
-
-			await docDao.createDoc(newDoc);
-
-			expect(mockDocs.findByPk).toHaveBeenCalledWith(999);
-			expect(mockDocs.create).toHaveBeenCalledWith(
-				expect.objectContaining({
-					path: expect.stringMatching(/^\/orphan-doc-\d+$/),
-				}),
-			);
-		});
-
-		it("should use provided path when explicitly set", async () => {
-			const newDoc: NewDoc = {
-				jrn: "jrn:doc:123",
-				slug: "test-slug",
-				path: "/custom/path/test-slug",
-				updatedBy: "user:456",
-				source: undefined,
-				sourceMetadata: undefined,
-				content: "test content",
-				contentType: "text/plain",
-				contentMetadata: undefined,
-				spaceId: undefined,
-				parentId: undefined,
-				docType: "document",
-				sortOrder: 0,
-				createdBy: "user:456",
-			};
-
-			const createdDoc = mockDoc({
-				...newDoc,
-				id: 1,
-				version: 1,
-			});
-
-			vi.mocked(mockDocs.create).mockResolvedValue(createdDoc as never);
-
-			const result = await docDao.createDoc(newDoc);
-
-			expect(mockDocs.create).toHaveBeenCalledWith(
-				expect.objectContaining({
-					path: "/custom/path/test-slug",
-				}),
-			);
-			expect(result).toEqual(createdDoc);
 		});
 	});
 
@@ -411,9 +292,12 @@ describe("DocDao", () => {
 
 			const result = await docDao.listDocs();
 
-			expect(mockDocs.findAll).toHaveBeenCalledWith({
-				order: [["updatedAt", "DESC"]],
-			});
+			expect(mockDocs.findAll).toHaveBeenCalledWith(
+				expect.objectContaining({
+					where: expect.objectContaining({ deletedAt: expect.anything() }),
+					order: [["updatedAt", "DESC"]],
+				}),
+			);
 			expect(result).toEqual([doc1, doc2]);
 		});
 
@@ -458,9 +342,12 @@ describe("DocDao", () => {
 
 			const result = await docDao.listDocs({ startsWithJrn: "jrn:doc:test" });
 
-			expect(mockDocs.findAll).toHaveBeenCalledWith({
-				order: [["updatedAt", "DESC"]],
-			});
+			expect(mockDocs.findAll).toHaveBeenCalledWith(
+				expect.objectContaining({
+					where: expect.objectContaining({ deletedAt: expect.anything() }),
+					order: [["updatedAt", "DESC"]],
+				}),
+			);
 			expect(result).toEqual([doc1, doc2]);
 		});
 
@@ -937,6 +824,229 @@ describe("DocDao", () => {
 
 			expect(result).toEqual([]);
 		});
+
+		it("should add personal space filter when userId is provided", async () => {
+			vi.mocked(mockDocs.findAll).mockResolvedValue([]);
+
+			await docDao.searchDocsByTitle("test", 42);
+
+			expect(mockDocs.findAll).toHaveBeenCalledWith(
+				expect.objectContaining({
+					where: expect.objectContaining({
+						jrn: expect.objectContaining({}),
+					}),
+				}),
+			);
+			// Verify the where clause includes the personal space subquery filter
+			const call = vi.mocked(mockDocs.findAll).mock.calls[0][0] as Record<string, unknown>;
+			const where = call.where as Record<symbol, unknown>;
+			// Op.and should be set with a literal SQL condition
+			expect(where[Symbol.for("and")]).toBeDefined();
+		});
+
+		it("should not add personal space filter when userId is omitted", async () => {
+			vi.mocked(mockDocs.findAll).mockResolvedValue([]);
+
+			await docDao.searchDocsByTitle("test");
+
+			const call = vi.mocked(mockDocs.findAll).mock.calls[0][0] as Record<string, unknown>;
+			const where = call.where as Record<symbol, unknown>;
+			expect(where[Symbol.for("and")]).toBeUndefined();
+		});
+	});
+
+	describe("searchArticlesForLink", () => {
+		it("should search articles by title with iLike and return results with parent folder name", async () => {
+			const doc1 = mockDoc({
+				id: 1,
+				jrn: "jrn:prod:global:docs:article/test",
+				slug: "test",
+				path: "/test",
+				parentId: 10,
+				contentMetadata: { title: "Test Article" } as never,
+				updatedAt: new Date("2024-01-01"),
+			});
+
+			const parentDoc = mockDoc({
+				id: 10,
+				slug: "parent-folder",
+				contentMetadata: { title: "My Folder" } as never,
+			});
+
+			vi.mocked(mockDocs.findAll)
+				.mockResolvedValueOnce([{ get: vi.fn().mockReturnValue(doc1) }] as never)
+				.mockResolvedValueOnce([{ get: vi.fn().mockReturnValue(parentDoc) }] as never);
+
+			const result = await docDao.searchArticlesForLink("Test");
+
+			expect(mockDocs.findAll).toHaveBeenCalledWith(
+				expect.objectContaining({
+					where: expect.objectContaining({
+						docType: "document",
+						"contentMetadata.title": expect.objectContaining({}),
+					}),
+					order: [["updatedAt", "DESC"]],
+					limit: 10,
+				}),
+			);
+			expect(result).toHaveLength(1);
+			expect(result[0].id).toBe(1);
+			expect(result[0].parentFolderName).toBe("My Folder");
+		});
+
+		it("should return articles without title filter when title is empty", async () => {
+			const doc1 = mockDoc({
+				id: 1,
+				jrn: "jrn:prod:global:docs:article/recent",
+				slug: "recent",
+				path: "/recent",
+				updatedAt: new Date("2024-01-01"),
+			});
+
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([{ get: vi.fn().mockReturnValue(doc1) }] as never);
+
+			const result = await docDao.searchArticlesForLink("");
+
+			expect(mockDocs.findAll).toHaveBeenCalledWith(
+				expect.objectContaining({
+					where: expect.not.objectContaining({
+						"contentMetadata.title": expect.anything(),
+					}),
+				}),
+			);
+			expect(result).toHaveLength(1);
+			expect(result[0].parentFolderName).toBeNull();
+		});
+
+		it("should filter by spaceId when provided", async () => {
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([] as never);
+
+			await docDao.searchArticlesForLink("test", 5);
+
+			expect(mockDocs.findAll).toHaveBeenCalledWith(
+				expect.objectContaining({
+					where: expect.objectContaining({
+						spaceId: 5,
+					}),
+				}),
+			);
+		});
+
+		it("should escape wildcard characters in title", async () => {
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([] as never);
+
+			await docDao.searchArticlesForLink("100% done_now");
+
+			expect(mockDocs.findAll).toHaveBeenCalledWith(
+				expect.objectContaining({
+					where: expect.objectContaining({
+						"contentMetadata.title": expect.objectContaining({}),
+					}),
+				}),
+			);
+		});
+
+		it("should use parent slug as fallback when parent has no contentMetadata title", async () => {
+			const doc1 = mockDoc({
+				id: 1,
+				jrn: "jrn:prod:global:docs:article/child",
+				slug: "child",
+				path: "/child",
+				parentId: 20,
+				updatedAt: new Date("2024-01-01"),
+			});
+
+			const parentDoc = mockDoc({
+				id: 20,
+				slug: "parent-slug",
+				contentMetadata: undefined,
+			});
+
+			vi.mocked(mockDocs.findAll)
+				.mockResolvedValueOnce([{ get: vi.fn().mockReturnValue(doc1) }] as never)
+				.mockResolvedValueOnce([{ get: vi.fn().mockReturnValue(parentDoc) }] as never);
+
+			const result = await docDao.searchArticlesForLink("child");
+
+			expect(result[0].parentFolderName).toBe("parent-slug");
+		});
+
+		it("should return null parentFolderName when parent is not found in map", async () => {
+			const doc1 = mockDoc({
+				id: 1,
+				jrn: "jrn:prod:global:docs:article/orphan",
+				slug: "orphan",
+				path: "/orphan",
+				parentId: 999,
+				updatedAt: new Date("2024-01-01"),
+			});
+
+			vi.mocked(mockDocs.findAll)
+				.mockResolvedValueOnce([{ get: vi.fn().mockReturnValue(doc1) }] as never)
+				.mockResolvedValueOnce([] as never);
+
+			const result = await docDao.searchArticlesForLink("orphan");
+
+			expect(result[0].parentFolderName).toBeNull();
+		});
+
+		it("should return empty array when no articles match", async () => {
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([] as never);
+
+			const result = await docDao.searchArticlesForLink("nonexistent");
+
+			expect(result).toEqual([]);
+		});
+
+		it("should not fetch parents when no docs have parentId", async () => {
+			const doc1 = mockDoc({
+				id: 1,
+				jrn: "jrn:prod:global:docs:article/root-doc",
+				slug: "root-doc",
+				path: "/root-doc",
+				parentId: undefined,
+				updatedAt: new Date("2024-01-01"),
+			});
+
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([{ get: vi.fn().mockReturnValue(doc1) }] as never);
+
+			const result = await docDao.searchArticlesForLink("root");
+
+			// findAll should only be called once (for docs, not for parents)
+			expect(mockDocs.findAll).toHaveBeenCalledTimes(1);
+			expect(result[0].parentFolderName).toBeNull();
+		});
+
+		it("should add personal space filter when userId is provided", async () => {
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([] as never);
+
+			await docDao.searchArticlesForLink("test", undefined, 42);
+
+			const call = vi.mocked(mockDocs.findAll).mock.calls[0][0] as Record<string, unknown>;
+			const where = call.where as Record<symbol, unknown>;
+			// Op.and should be set with a literal SQL condition
+			expect(where[Symbol.for("and")]).toBeDefined();
+		});
+
+		it("should add personal space filter with spaceId when userId is provided", async () => {
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([] as never);
+
+			await docDao.searchArticlesForLink("test", 5, 42);
+
+			const call = vi.mocked(mockDocs.findAll).mock.calls[0][0] as Record<string, unknown>;
+			const where = call.where as Record<symbol, unknown>;
+			expect(where[Symbol.for("and")]).toBeDefined();
+		});
+
+		it("should not add personal space filter when userId is omitted", async () => {
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([] as never);
+
+			await docDao.searchArticlesForLink("test");
+
+			const call = vi.mocked(mockDocs.findAll).mock.calls[0][0] as Record<string, unknown>;
+			const where = call.where as Record<symbol, unknown>;
+			expect(where[Symbol.for("and")]).toBeUndefined();
+		});
 	});
 
 	describe("softDelete", () => {
@@ -1002,15 +1112,12 @@ describe("DocDao", () => {
 	});
 
 	describe("restore", () => {
-		it("should reset explicitlyDeleted=false and update path when restoring root-level doc", async () => {
+		it("should reset explicitlyDeleted=false when restoring", async () => {
 			const deletedDoc = mockDoc({
 				id: 1,
-				slug: "test-doc",
-				path: "/test-doc",
 				deletedAt: new Date(),
 				explicitlyDeleted: true,
 				parentId: undefined,
-				docType: "document",
 			});
 
 			const mockDocInstance = {
@@ -1018,6 +1125,7 @@ describe("DocDao", () => {
 			};
 
 			vi.mocked(mockDocs.findByPk).mockResolvedValue(mockDocInstance as never);
+			vi.mocked(mockDocs.findAll).mockResolvedValue([]); // no children
 
 			await docDao.restore(1);
 
@@ -1025,8 +1133,8 @@ describe("DocDao", () => {
 				expect.objectContaining({
 					deletedAt: null,
 					explicitlyDeleted: false,
-					path: "/test-doc",
 					parentId: null,
+					path: "/",
 				}),
 				{ where: { id: 1 } },
 			);
@@ -1050,67 +1158,16 @@ describe("DocDao", () => {
 			expect(mockDocs.update).not.toHaveBeenCalled();
 		});
 
-		it("should update path based on parent's current path when parent exists", async () => {
+		it("should move to root when parent is deleted", async () => {
 			const deletedDoc = mockDoc({
 				id: 2,
-				slug: "child-doc",
-				path: "/old-parent/child-doc", // old path
 				deletedAt: new Date(),
 				explicitlyDeleted: true,
-				parentId: 1,
-				docType: "document",
-			});
-
-			const parentDoc = mockDoc({
-				id: 1,
-				slug: "parent-folder",
-				path: "/new-location/parent-folder", // parent's path has changed
-				deletedAt: undefined,
-				docType: "folder",
-			});
-
-			const mockDocInstance = {
-				get: vi.fn().mockReturnValue(deletedDoc),
-			};
-
-			const mockParentInstance = {
-				get: vi.fn().mockReturnValue(parentDoc),
-			};
-
-			// First call returns the doc to restore, second call returns the parent
-			vi.mocked(mockDocs.findByPk)
-				.mockResolvedValueOnce(mockDocInstance as never)
-				.mockResolvedValueOnce(mockParentInstance as never);
-
-			await docDao.restore(2);
-
-			// Should update path based on parent's current path
-			expect(mockDocs.update).toHaveBeenCalledWith(
-				expect.objectContaining({
-					deletedAt: null,
-					explicitlyDeleted: false,
-					path: "/new-location/parent-folder/child-doc",
-					parentId: 1,
-				}),
-				{ where: { id: 2 } },
-			);
-		});
-
-		it("should move to root and update path when parent is deleted", async () => {
-			const deletedDoc = mockDoc({
-				id: 2,
-				slug: "child-doc",
-				path: "/deleted-parent/child-doc",
-				deletedAt: new Date(),
-				explicitlyDeleted: true,
-				parentId: 1,
-				docType: "document",
+				parentId: 1, // has a parent
 			});
 
 			const deletedParent = mockDoc({
 				id: 1,
-				slug: "deleted-parent",
-				path: "/deleted-parent",
 				deletedAt: new Date(), // parent is also deleted
 				explicitlyDeleted: true,
 			});
@@ -1127,30 +1184,28 @@ describe("DocDao", () => {
 			vi.mocked(mockDocs.findByPk)
 				.mockResolvedValueOnce(mockDocInstance as never)
 				.mockResolvedValueOnce(mockParentInstance as never);
+			vi.mocked(mockDocs.findAll).mockResolvedValue([]); // no children
 
 			await docDao.restore(2);
 
-			// Should move to root and update path
+			// Should restore the document and move to root in a single update
 			expect(mockDocs.update).toHaveBeenCalledWith(
 				expect.objectContaining({
 					deletedAt: null,
 					explicitlyDeleted: false,
-					path: "/child-doc",
 					parentId: null,
+					path: "/",
 				}),
 				{ where: { id: 2 } },
 			);
 		});
 
-		it("should move to root and update path when parent does not exist", async () => {
+		it("should move to root when parent does not exist", async () => {
 			const deletedDoc = mockDoc({
 				id: 2,
-				slug: "orphan-doc",
-				path: "/nonexistent-parent/orphan-doc",
 				deletedAt: new Date(),
 				explicitlyDeleted: true,
 				parentId: 999, // parent that doesn't exist
-				docType: "document",
 			});
 
 			const mockDocInstance = {
@@ -1161,39 +1216,50 @@ describe("DocDao", () => {
 			vi.mocked(mockDocs.findByPk)
 				.mockResolvedValueOnce(mockDocInstance as never)
 				.mockResolvedValueOnce(null as never);
+			vi.mocked(mockDocs.findAll).mockResolvedValue([]); // no children
 
 			await docDao.restore(2);
 
-			// Should move to root and update path
+			// Should restore the document and move to root in a single update
 			expect(mockDocs.update).toHaveBeenCalledWith(
 				expect.objectContaining({
 					deletedAt: null,
 					explicitlyDeleted: false,
-					path: "/orphan-doc",
 					parentId: null,
+					path: "/",
 				}),
 				{ where: { id: 2 } },
 			);
 		});
 
-		it("should recursively restore and update paths for folder descendants", async () => {
+		it("should recursively restore nested folders with their children", async () => {
 			const deletedFolder = mockDoc({
 				id: 1,
-				slug: "my-folder",
-				path: "/my-folder",
+				slug: "parent-folder",
+				path: "/parent-folder",
 				deletedAt: new Date(),
 				explicitlyDeleted: true,
 				parentId: undefined,
 				docType: "folder",
 			});
 
-			const childDoc = mockDoc({
+			const childFolder = mockDoc({
 				id: 2,
-				slug: "child-doc",
-				path: "/my-folder/child-doc",
+				slug: "child-folder",
+				path: "/parent-folder/child-folder",
 				deletedAt: new Date(),
 				explicitlyDeleted: false, // cascade deleted
 				parentId: 1,
+				docType: "folder",
+			});
+
+			const grandchildDoc = mockDoc({
+				id: 3,
+				slug: "grandchild-doc",
+				path: "/parent-folder/child-folder/grandchild-doc",
+				deletedAt: new Date(),
+				explicitlyDeleted: false, // cascade deleted
+				parentId: 2,
 				docType: "document",
 			});
 
@@ -1201,37 +1267,51 @@ describe("DocDao", () => {
 				get: vi.fn().mockReturnValue(deletedFolder),
 			};
 
-			const mockChildInstance = {
-				get: vi.fn().mockReturnValue(childDoc),
+			const mockChildFolderInstance = {
+				get: vi.fn().mockReturnValue(childFolder),
 			};
 
-			// First findByPk returns the folder to restore
+			const mockGrandchildInstance = {
+				get: vi.fn().mockReturnValue(grandchildDoc),
+			};
+
+			// First findByPk returns the parent folder to restore
 			vi.mocked(mockDocs.findByPk).mockResolvedValue(mockFolderInstance as never);
 
-			// findAll returns cascade-deleted children
+			// findAll returns cascade-deleted children at each level
 			vi.mocked(mockDocs.findAll)
-				.mockResolvedValueOnce([mockChildInstance] as never)
-				.mockResolvedValue([]);
+				.mockResolvedValueOnce([mockChildFolderInstance] as never) // children of parent-folder
+				.mockResolvedValueOnce([mockGrandchildInstance] as never) // children of child-folder
+				.mockResolvedValueOnce([] as never); // grandchild-doc has no children
 
 			await docDao.restore(1);
 
-			// Should restore the folder with updated path
+			// Should restore the parent folder with updated path
 			expect(mockDocs.update).toHaveBeenCalledWith(
 				expect.objectContaining({
 					deletedAt: null,
 					explicitlyDeleted: false,
-					path: "/my-folder",
+					path: "/parent-folder",
 				}),
 				{ where: { id: 1 } },
 			);
 
-			// Should restore and update path for child
+			// Should restore child folder
 			expect(mockDocs.update).toHaveBeenCalledWith(
 				expect.objectContaining({
 					deletedAt: null,
-					path: "/my-folder/child-doc",
+					path: "/parent-folder/child-folder",
 				}),
 				{ where: { id: 2 } },
+			);
+
+			// Should restore grandchild doc
+			expect(mockDocs.update).toHaveBeenCalledWith(
+				expect.objectContaining({
+					deletedAt: null,
+					path: "/parent-folder/child-folder/grandchild-doc",
+				}),
+				{ where: { id: 3 } },
 			);
 		});
 	});
@@ -1489,75 +1569,1244 @@ describe("DocDao", () => {
 		});
 	});
 
-	describe("renameDoc", () => {
-		it("should update document title and increment version", async () => {
-			const existingDoc = mockDoc({
+	describe("findFolderByName", () => {
+		it("should find folder by name at root level when parentId is null", async () => {
+			const folder = mockDoc({
 				id: 1,
-				version: 1,
-				contentMetadata: { title: "Old Title" },
-			});
-
-			const updatedDoc = mockDoc({
-				id: 1,
-				version: 2,
-				contentMetadata: { title: "New Title" },
+				spaceId: 1,
+				docType: "folder",
+				parentId: undefined,
+				contentMetadata: { title: "My Folder" },
 			});
 
 			const mockDocInstance = {
-				get: vi.fn().mockReturnValue(existingDoc),
+				get: vi.fn().mockReturnValue(folder),
 			};
 
-			const mockUpdatedDocInstance = {
-				get: vi.fn().mockReturnValue(updatedDoc),
+			vi.mocked(mockDocs.findAll).mockResolvedValue([mockDocInstance] as never);
+
+			const result = await docDao.findFolderByName(1, null, "My Folder");
+
+			expect(mockDocs.findAll).toHaveBeenCalledWith(
+				expect.objectContaining({
+					where: expect.objectContaining({
+						spaceId: 1,
+						docType: "folder",
+						parentId: expect.objectContaining({}), // Op.is null
+					}),
+				}),
+			);
+			expect(result).toEqual(folder);
+		});
+
+		it("should find folder by name under specific parent", async () => {
+			const folder = mockDoc({
+				id: 2,
+				spaceId: 1,
+				docType: "folder",
+				parentId: 1,
+				contentMetadata: { title: "Subfolder" },
+			});
+
+			const mockDocInstance = {
+				get: vi.fn().mockReturnValue(folder),
 			};
 
-			// First call returns existing doc, second call returns updated doc
+			vi.mocked(mockDocs.findAll).mockResolvedValue([mockDocInstance] as never);
+
+			const result = await docDao.findFolderByName(1, 1, "Subfolder");
+
+			expect(mockDocs.findAll).toHaveBeenCalledWith(
+				expect.objectContaining({
+					where: expect.objectContaining({
+						spaceId: 1,
+						docType: "folder",
+						parentId: 1,
+					}),
+				}),
+			);
+			expect(result).toEqual(folder);
+		});
+
+		it("should return undefined when folder is not found", async () => {
+			vi.mocked(mockDocs.findAll).mockResolvedValue([]);
+
+			const result = await docDao.findFolderByName(1, null, "Nonexistent");
+
+			expect(result).toBeUndefined();
+		});
+
+		it("should return undefined when name does not match any folder", async () => {
+			const folder = mockDoc({
+				id: 1,
+				spaceId: 1,
+				docType: "folder",
+				parentId: undefined,
+				contentMetadata: { title: "Different Name" },
+			});
+
+			const mockDocInstance = {
+				get: vi.fn().mockReturnValue(folder),
+			};
+
+			vi.mocked(mockDocs.findAll).mockResolvedValue([mockDocInstance] as never);
+
+			const result = await docDao.findFolderByName(1, null, "My Folder");
+
+			expect(result).toBeUndefined();
+		});
+
+		it("should match exact folder name among multiple folders", async () => {
+			const folder1 = mockDoc({
+				id: 1,
+				spaceId: 1,
+				docType: "folder",
+				parentId: undefined,
+				contentMetadata: { title: "Folder A" },
+			});
+			const folder2 = mockDoc({
+				id: 2,
+				spaceId: 1,
+				docType: "folder",
+				parentId: undefined,
+				contentMetadata: { title: "Folder B" },
+			});
+
+			const mockDocInstances = [
+				{ get: vi.fn().mockReturnValue(folder1) },
+				{ get: vi.fn().mockReturnValue(folder2) },
+			];
+
+			vi.mocked(mockDocs.findAll).mockResolvedValue(mockDocInstances as never);
+
+			const result = await docDao.findFolderByName(1, null, "Folder B");
+
+			expect(result).toEqual(folder2);
+		});
+
+		it("should handle folder with undefined contentMetadata", async () => {
+			const folder = mockDoc({
+				id: 1,
+				spaceId: 1,
+				docType: "folder",
+				parentId: undefined,
+				contentMetadata: undefined,
+			});
+
+			const mockDocInstance = {
+				get: vi.fn().mockReturnValue(folder),
+			};
+
+			vi.mocked(mockDocs.findAll).mockResolvedValue([mockDocInstance] as never);
+
+			const result = await docDao.findFolderByName(1, null, "My Folder");
+
+			expect(result).toBeUndefined();
+		});
+	});
+
+	describe("moveDoc", () => {
+		let mockTransaction: {
+			commit: ReturnType<typeof vi.fn>;
+			rollback: ReturnType<typeof vi.fn>;
+		};
+		let mockSequelize: Sequelize;
+
+		beforeEach(() => {
+			mockTransaction = {
+				commit: vi.fn().mockResolvedValue(undefined),
+				rollback: vi.fn().mockResolvedValue(undefined),
+			};
+
+			mockSequelize = {
+				define: vi.fn().mockReturnValue(mockDocs),
+				transaction: vi.fn().mockResolvedValue(mockTransaction),
+			} as unknown as Sequelize;
+
+			docDao = createDocDao(mockSequelize);
+		});
+
+		it("should move document to root level", async () => {
+			const parentDoc = mockDoc({ id: 1, docType: "folder", path: "/parent", slug: "parent" });
+			const doc = mockDoc({ id: 2, docType: "document", parentId: 1, path: "/parent/doc", slug: "doc" });
+
+			const _parentDocInstance = { get: vi.fn().mockReturnValue(parentDoc) };
+			const docInstance = { get: vi.fn().mockReturnValue(doc) };
+
+			// readDocById for doc to move
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(docInstance as never);
+
+			// findAll for siblings in root (empty - this will be the first item at root)
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([] as never);
+
+			// readDocById after update
+			const movedDoc = mockDoc({
+				...doc,
+				parentId: undefined,
+				path: "/doc",
+				sortOrder: 1.0,
+				version: doc.version + 1,
+			});
+			const movedDocInstance = { get: vi.fn().mockReturnValue(movedDoc) };
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(movedDocInstance as never);
+
+			vi.mocked(mockDocs.update).mockResolvedValue([1] as never);
+
+			const result = await docDao.moveDoc(2, undefined);
+
+			expect(mockSequelize.transaction).toHaveBeenCalled();
+			expect(mockDocs.findAll).toHaveBeenCalledWith(
+				expect.objectContaining({
+					where: expect.anything(),
+					order: [["sortOrder", "DESC"]],
+					limit: 1,
+				}),
+			);
+			expect(mockDocs.update).toHaveBeenCalledWith(
+				expect.objectContaining({
+					parentId: null,
+					path: "/doc",
+					sortOrder: 1.0,
+					version: doc.version + 1,
+				}),
+				expect.objectContaining({ where: { id: 2 } }),
+			);
+			expect(mockTransaction.commit).toHaveBeenCalled();
+			expect(result).toEqual(movedDoc);
+		});
+
+		it("should move document to another folder", async () => {
+			const _folderA = mockDoc({ id: 1, docType: "folder", path: "/folder-a", slug: "folder-a" });
+			const folderB = mockDoc({ id: 3, docType: "folder", path: "/folder-b", slug: "folder-b" });
+			const doc = mockDoc({ id: 2, docType: "document", parentId: 1, path: "/folder-a/doc", slug: "doc" });
+			const existingSibling = mockDoc({
+				id: 4,
+				docType: "document",
+				parentId: 3,
+				path: "/folder-b/existing",
+				sortOrder: 5.0,
+			});
+
+			const docInstance = { get: vi.fn().mockReturnValue(doc) };
+			const folderBInstance = { get: vi.fn().mockReturnValue(folderB) };
+			const existingSiblingInstance = { get: vi.fn().mockReturnValue(existingSibling) };
+
+			// readDocById for doc to move
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(docInstance as never);
+			// readDocById for new parent
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(folderBInstance as never);
+
+			// findAll for siblings in folder B (has existing sibling with sortOrder 5.0)
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([existingSiblingInstance] as never);
+
+			// readDocById after update
+			const movedDoc = mockDoc({
+				...doc,
+				parentId: 3,
+				path: "/folder-b/doc",
+				sortOrder: 6.0,
+				version: doc.version + 1,
+			});
+			const movedDocInstance = { get: vi.fn().mockReturnValue(movedDoc) };
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(movedDocInstance as never);
+
+			vi.mocked(mockDocs.update).mockResolvedValue([1] as never);
+
+			const result = await docDao.moveDoc(2, 3);
+
+			expect(mockSequelize.transaction).toHaveBeenCalled();
+			expect(mockDocs.findAll).toHaveBeenCalledWith(
+				expect.objectContaining({
+					where: expect.anything(),
+					order: [["sortOrder", "DESC"]],
+					limit: 1,
+				}),
+			);
+			expect(mockDocs.update).toHaveBeenCalledWith(
+				expect.objectContaining({
+					parentId: 3,
+					path: "/folder-b/doc",
+					sortOrder: 6.0,
+					version: doc.version + 1,
+				}),
+				expect.objectContaining({ where: { id: 2 } }),
+			);
+			expect(mockTransaction.commit).toHaveBeenCalled();
+			expect(result).toEqual(movedDoc);
+		});
+
+		it("should move folder and update descendant paths", async () => {
+			const folderA = mockDoc({
+				id: 1,
+				docType: "folder",
+				path: "/folder-a",
+				slug: "folder-a",
+				parentId: undefined,
+			});
+			const childDoc = mockDoc({
+				id: 3,
+				docType: "document",
+				path: "/folder-a/child",
+				slug: "child",
+				parentId: 1,
+			});
+			const folderB = mockDoc({
+				id: 2,
+				docType: "folder",
+				path: "/folder-b",
+				slug: "folder-b",
+				parentId: undefined,
+			});
+
+			const folderAInstance = { get: vi.fn().mockReturnValue(folderA) };
+			const folderBInstance = { get: vi.fn().mockReturnValue(folderB) };
+			const childDocInstance = { get: vi.fn().mockReturnValue(childDoc) };
+
+			// readDocById for folder to move
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(folderAInstance as never);
+			// isDescendantOf calls Promise.all([readDocById(newParentId=2), readDocById(id=1)])
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(folderBInstance as never); // newParentId
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(folderAInstance as never); // id
+			// readDocById for new parent validation
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(folderBInstance as never);
+
+			// findAll for siblings in folder B (empty - folderA will be the first child)
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([] as never);
+
+			// findAll for children of folderA
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([childDocInstance] as never);
+
+			// readDocById after update
+			const movedFolder = mockDoc({
+				...folderA,
+				parentId: 2,
+				path: "/folder-b/folder-a",
+				sortOrder: 1.0,
+				version: folderA.version + 1,
+			});
+			const movedFolderInstance = { get: vi.fn().mockReturnValue(movedFolder) };
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(movedFolderInstance as never);
+
+			vi.mocked(mockDocs.update).mockResolvedValue([1] as never);
+
+			const result = await docDao.moveDoc(1, 2);
+
+			expect(mockSequelize.transaction).toHaveBeenCalled();
+			// Should update folder itself
+			expect(mockDocs.update).toHaveBeenCalledWith(
+				expect.objectContaining({
+					parentId: 2,
+					path: "/folder-b/folder-a",
+					sortOrder: 1.0,
+				}),
+				expect.objectContaining({ where: { id: 1 } }),
+			);
+			// Should update child path
+			expect(mockDocs.update).toHaveBeenCalledWith(
+				expect.objectContaining({
+					path: "/folder-b/folder-a/child",
+				}),
+				expect.objectContaining({ where: { id: 3 } }),
+			);
+			expect(mockTransaction.commit).toHaveBeenCalled();
+			expect(result).toEqual(movedFolder);
+		});
+
+		it("should move folder with nested subfolders and update all descendant paths", async () => {
+			const folderA = mockDoc({
+				id: 1,
+				docType: "folder",
+				path: "/folder-a",
+				slug: "folder-a",
+				parentId: undefined,
+			});
+			const subFolder = mockDoc({
+				id: 3,
+				docType: "folder",
+				path: "/folder-a/sub-folder",
+				slug: "sub-folder",
+				parentId: 1,
+			});
+			const nestedDoc = mockDoc({
+				id: 4,
+				docType: "document",
+				path: "/folder-a/sub-folder/nested-doc",
+				slug: "nested-doc",
+				parentId: 3,
+			});
+			const folderB = mockDoc({
+				id: 2,
+				docType: "folder",
+				path: "/folder-b",
+				slug: "folder-b",
+				parentId: undefined,
+			});
+
+			const folderAInstance = { get: vi.fn().mockReturnValue(folderA) };
+			const folderBInstance = { get: vi.fn().mockReturnValue(folderB) };
+			const subFolderInstance = { get: vi.fn().mockReturnValue(subFolder) };
+			const nestedDocInstance = { get: vi.fn().mockReturnValue(nestedDoc) };
+
+			// readDocById for folder to move
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(folderAInstance as never);
+			// isDescendantOf calls Promise.all([readDocById(newParentId=2), readDocById(id=1)])
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(folderBInstance as never); // newParentId
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(folderAInstance as never); // id
+			// readDocById for new parent validation
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(folderBInstance as never);
+
+			// findAll for siblings in folder B (empty)
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([] as never);
+
+			// findAll for children of folderA - contains subFolder
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([subFolderInstance] as never);
+
+			// findAll for children of subFolder - contains nestedDoc
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([nestedDocInstance] as never);
+
+			// readDocById after update
+			const movedFolder = mockDoc({
+				...folderA,
+				parentId: 2,
+				path: "/folder-b/folder-a",
+				sortOrder: 1.0,
+				version: folderA.version + 1,
+			});
+			const movedFolderInstance = { get: vi.fn().mockReturnValue(movedFolder) };
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(movedFolderInstance as never);
+
+			vi.mocked(mockDocs.update).mockResolvedValue([1] as never);
+
+			const result = await docDao.moveDoc(1, 2);
+
+			expect(mockSequelize.transaction).toHaveBeenCalled();
+			// Should update folder itself
+			expect(mockDocs.update).toHaveBeenCalledWith(
+				expect.objectContaining({
+					parentId: 2,
+					path: "/folder-b/folder-a",
+				}),
+				expect.objectContaining({ where: { id: 1 } }),
+			);
+			// Should update subFolder path
+			expect(mockDocs.update).toHaveBeenCalledWith(
+				expect.objectContaining({
+					path: "/folder-b/folder-a/sub-folder",
+				}),
+				expect.objectContaining({ where: { id: 3 } }),
+			);
+			// Should update nested doc path
+			expect(mockDocs.update).toHaveBeenCalledWith(
+				expect.objectContaining({
+					path: "/folder-b/folder-a/sub-folder/nested-doc",
+				}),
+				expect.objectContaining({ where: { id: 4 } }),
+			);
+			expect(mockTransaction.commit).toHaveBeenCalled();
+			expect(result).toEqual(movedFolder);
+		});
+
+		it("should reject moving folder to itself", async () => {
+			const folder = mockDoc({ id: 1, docType: "folder", path: "/folder", slug: "folder" });
+			const folderInstance = { get: vi.fn().mockReturnValue(folder) };
+
+			vi.mocked(mockDocs.findByPk).mockResolvedValue(folderInstance as never);
+
+			await expect(docDao.moveDoc(1, 1)).rejects.toThrow("Cannot move item to itself");
+			expect(mockSequelize.transaction).not.toHaveBeenCalled();
+		});
+
+		it("should reject moving folder to its descendant", async () => {
+			const folder1 = mockDoc({
+				id: 1,
+				docType: "folder",
+				path: "/folder1",
+				slug: "folder1",
+				parentId: undefined,
+			});
+			const folder2 = mockDoc({
+				id: 2,
+				docType: "folder",
+				path: "/folder1/folder2",
+				slug: "folder2",
+				parentId: 1,
+			});
+
+			const folder1Instance = { get: vi.fn().mockReturnValue(folder1) };
+			const folder2Instance = { get: vi.fn().mockReturnValue(folder2) };
+
+			// readDocById for folder to move
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(folder1Instance as never);
+			// readDocById for checking parent chain (folder2 -> folder1)
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(folder2Instance as never);
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(folder1Instance as never);
+
+			await expect(docDao.moveDoc(1, 2)).rejects.toThrow("Cannot move folder to its descendant");
+			expect(mockSequelize.transaction).not.toHaveBeenCalled();
+		});
+
+		it("should reject moving to non-existent parent", async () => {
+			const doc = mockDoc({ id: 1, docType: "document", path: "/doc", slug: "doc" });
+			const docInstance = { get: vi.fn().mockReturnValue(doc) };
+
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(docInstance as never);
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(null);
+
+			await expect(docDao.moveDoc(1, 999)).rejects.toThrow("Target folder not found or has been deleted");
+			expect(mockSequelize.transaction).not.toHaveBeenCalled();
+		});
+
+		it("should reject moving to deleted parent", async () => {
+			const doc = mockDoc({ id: 1, docType: "document", path: "/doc", slug: "doc" });
+			const deletedFolder = mockDoc({ id: 2, docType: "folder", deletedAt: new Date() });
+
+			const docInstance = { get: vi.fn().mockReturnValue(doc) };
+			const deletedFolderInstance = { get: vi.fn().mockReturnValue(deletedFolder) };
+
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(docInstance as never);
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(deletedFolderInstance as never);
+
+			await expect(docDao.moveDoc(1, 2)).rejects.toThrow("Target folder not found or has been deleted");
+			expect(mockSequelize.transaction).not.toHaveBeenCalled();
+		});
+
+		it("should reject moving to non-folder parent", async () => {
+			const doc = mockDoc({ id: 1, docType: "document", path: "/doc", slug: "doc" });
+			const documentParent = mockDoc({ id: 2, docType: "document", path: "/other-doc", slug: "other-doc" });
+
+			const docInstance = { get: vi.fn().mockReturnValue(doc) };
+			const documentParentInstance = { get: vi.fn().mockReturnValue(documentParent) };
+
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(docInstance as never);
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(documentParentInstance as never);
+
+			await expect(docDao.moveDoc(1, 2)).rejects.toThrow("Target must be a folder");
+			expect(mockSequelize.transaction).not.toHaveBeenCalled();
+		});
+
+		it("should return undefined when document is not found", async () => {
+			vi.mocked(mockDocs.findByPk).mockResolvedValue(null);
+
+			const result = await docDao.moveDoc(999, 1);
+
+			expect(result).toBeUndefined();
+			expect(mockSequelize.transaction).not.toHaveBeenCalled();
+		});
+
+		it("should return unchanged document when already in target location", async () => {
+			// Document is already at root (parentId: undefined)
+			const doc = mockDoc({ id: 1, docType: "document", path: "/doc", slug: "doc", parentId: undefined });
+			const docInstance = { get: vi.fn().mockReturnValue(doc) };
+
+			vi.mocked(mockDocs.findByPk).mockResolvedValue(docInstance as never);
+
+			// Try to move to root (same location)
+			const result = await docDao.moveDoc(1, undefined);
+
+			// Should return the original document without any database operations
+			expect(result).toEqual(doc);
+			expect(mockSequelize.transaction).not.toHaveBeenCalled();
+			expect(mockDocs.update).not.toHaveBeenCalled();
+		});
+
+		it("should return unchanged document when already in target parent folder", async () => {
+			// Document is already in folder 5
+			const doc = mockDoc({ id: 1, docType: "document", path: "/folder/doc", slug: "doc", parentId: 5 });
+			const docInstance = { get: vi.fn().mockReturnValue(doc) };
+
+			vi.mocked(mockDocs.findByPk).mockResolvedValue(docInstance as never);
+
+			// Try to move to folder 5 (same location)
+			const result = await docDao.moveDoc(1, 5);
+
+			// Should return the original document without any database operations
+			expect(result).toEqual(doc);
+			expect(mockSequelize.transaction).not.toHaveBeenCalled();
+			expect(mockDocs.update).not.toHaveBeenCalled();
+		});
+
+		it("should rollback transaction when update fails", async () => {
+			// Document is in folder 2, trying to move to folder 3
+			const doc = mockDoc({ id: 1, docType: "document", path: "/folder2/doc", slug: "doc", parentId: 2 });
+			const docInstance = { get: vi.fn().mockReturnValue(doc) };
+			const targetFolder = mockDoc({ id: 3, docType: "folder", path: "/folder3", slug: "folder3" });
+			const targetFolderInstance = { get: vi.fn().mockReturnValue(targetFolder) };
+
+			// readDocById for doc to move
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(docInstance as never);
+			// readDocById for target parent folder
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(targetFolderInstance as never);
+
+			// findAll for siblings in target folder
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([] as never);
+
+			const testError = new Error("Database error");
+			vi.mocked(mockDocs.update).mockRejectedValue(testError);
+
+			await expect(docDao.moveDoc(1, 3)).rejects.toThrow("Database error");
+			expect(mockTransaction.rollback).toHaveBeenCalled();
+			expect(mockTransaction.commit).not.toHaveBeenCalled();
+		});
+
+		it("should move document before a reference document", async () => {
+			const doc = mockDoc({ id: 1, docType: "document", path: "/folder/doc1", slug: "doc1", parentId: 2 });
+			const existingDoc = mockDoc({
+				id: 4,
+				docType: "document",
+				path: "/folder/doc3",
+				slug: "doc3",
+				parentId: 2,
+				sortOrder: 2.0,
+			});
+			const referenceDoc = mockDoc({
+				id: 3,
+				docType: "document",
+				path: "/folder/doc2",
+				slug: "doc2",
+				parentId: 2,
+				sortOrder: 5.0,
+			});
+			const targetFolder = mockDoc({ id: 2, docType: "folder", path: "/folder", slug: "folder" });
+
+			const docInstance = { get: vi.fn().mockReturnValue(doc) };
+			const existingDocInstance = { get: vi.fn().mockReturnValue(existingDoc) };
+			const referenceDocInstance = { get: vi.fn().mockReturnValue(referenceDoc) };
+			const targetFolderInstance = { get: vi.fn().mockReturnValue(targetFolder) };
+
+			// readDocById for doc to move
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(docInstance as never);
+			// readDocById for target parent folder
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(targetFolderInstance as never);
+
+			// findAll for siblings (for calculateSortOrderBeforeDoc) - multiple siblings with reference doc NOT first
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([existingDocInstance, referenceDocInstance] as never);
+
+			// readDocById after update
+			const movedDoc = mockDoc({
+				...doc,
+				parentId: 2,
+				path: "/folder/doc1",
+				sortOrder: 3.5, // Between existingDoc (2.0) and referenceDoc (5.0)
+				version: doc.version + 1,
+			});
+			const movedDocInstance = { get: vi.fn().mockReturnValue(movedDoc) };
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(movedDocInstance as never);
+
+			vi.mocked(mockDocs.update).mockResolvedValue([1] as never);
+
+			const result = await docDao.moveDoc(1, 2, 3, "before");
+
+			expect(result).toEqual(movedDoc);
+			expect(mockTransaction.commit).toHaveBeenCalled();
+		});
+
+		it("should move document after a reference document", async () => {
+			const doc = mockDoc({ id: 1, docType: "document", path: "/folder/doc1", slug: "doc1", parentId: 2 });
+			const referenceDoc = mockDoc({
+				id: 3,
+				docType: "document",
+				path: "/folder/doc2",
+				slug: "doc2",
+				parentId: 2,
+				sortOrder: 5.0,
+			});
+			const afterDoc = mockDoc({
+				id: 5,
+				docType: "document",
+				path: "/folder/doc4",
+				slug: "doc4",
+				parentId: 2,
+				sortOrder: 8.0,
+			});
+			const targetFolder = mockDoc({ id: 2, docType: "folder", path: "/folder", slug: "folder" });
+
+			const docInstance = { get: vi.fn().mockReturnValue(doc) };
+			const referenceDocInstance = { get: vi.fn().mockReturnValue(referenceDoc) };
+			const afterDocInstance = { get: vi.fn().mockReturnValue(afterDoc) };
+			const targetFolderInstance = { get: vi.fn().mockReturnValue(targetFolder) };
+
+			// readDocById for doc to move
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(docInstance as never);
+			// readDocById for target parent folder
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(targetFolderInstance as never);
+
+			// findAll for siblings (for calculateSortOrderAfterDoc) - reference doc has another doc after it
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([referenceDocInstance, afterDocInstance] as never);
+
+			// readDocById after update
+			const movedDoc = mockDoc({
+				...doc,
+				parentId: 2,
+				path: "/folder/doc1",
+				sortOrder: 6.5, // Between referenceDoc (5.0) and afterDoc (8.0)
+				version: doc.version + 1,
+			});
+			const movedDocInstance = { get: vi.fn().mockReturnValue(movedDoc) };
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(movedDocInstance as never);
+
+			vi.mocked(mockDocs.update).mockResolvedValue([1] as never);
+
+			const result = await docDao.moveDoc(1, 2, 3, "after");
+
+			expect(result).toEqual(movedDoc);
+			expect(mockTransaction.commit).toHaveBeenCalled();
+		});
+
+		it("should throw error when referenceDocId is not in target folder for moveDoc", async () => {
+			const doc = mockDoc({ id: 1, docType: "document", path: "/folder-a/doc1", slug: "doc1", parentId: 2 });
+			const targetFolder = mockDoc({ id: 3, docType: "folder", path: "/folder-b", slug: "folder-b" });
+			const existingDoc = mockDoc({
+				id: 4,
+				docType: "document",
+				path: "/folder-b/doc2",
+				slug: "doc2",
+				parentId: 3,
+				sortOrder: 1.0,
+			});
+
+			const docInstance = { get: vi.fn().mockReturnValue(doc) };
+			const targetFolderInstance = { get: vi.fn().mockReturnValue(targetFolder) };
+			const existingDocInstance = { get: vi.fn().mockReturnValue(existingDoc) };
+
+			// readDocById for doc to move
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(docInstance as never);
+			// readDocById for target parent folder
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(targetFolderInstance as never);
+
+			// findAll for siblings - only existingDoc (id=4) is in folder-b, but we're trying to place relative to doc 999
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([existingDocInstance] as never);
+
+			await expect(docDao.moveDoc(1, 3, 999, "before")).rejects.toThrow(
+				"referenceDocId must be in the target folder",
+			);
+			expect(mockTransaction.rollback).toHaveBeenCalled();
+		});
+	});
+
+	describe("reorderAt", () => {
+		let mockTransaction: {
+			commit: ReturnType<typeof vi.fn>;
+			rollback: ReturnType<typeof vi.fn>;
+		};
+		let mockSequelize: Sequelize;
+
+		beforeEach(() => {
+			mockTransaction = {
+				commit: vi.fn().mockResolvedValue(undefined),
+				rollback: vi.fn().mockResolvedValue(undefined),
+			};
+
+			mockSequelize = {
+				define: vi.fn().mockReturnValue(mockDocs),
+				transaction: vi.fn().mockResolvedValue(mockTransaction),
+			} as unknown as Sequelize;
+
+			docDao = createDocDao(mockSequelize);
+		});
+
+		it("should reorder document to end when referenceDocId is null", async () => {
+			const doc1 = mockDoc({ id: 1, parentId: undefined, spaceId: 1, sortOrder: 1.0 });
+			const doc2 = mockDoc({ id: 2, parentId: undefined, spaceId: 1, sortOrder: 2.0 });
+			const docInstance1 = { get: vi.fn().mockReturnValue(doc1) };
+			const docInstance2 = { get: vi.fn().mockReturnValue(doc2) };
+
+			// doc1 is first, moving to end (after doc2)
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(docInstance1 as never);
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([docInstance1, docInstance2] as never); // siblings
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([] as never); // No docs after end
+			vi.mocked(mockDocs.update).mockResolvedValueOnce([1] as never);
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(docInstance1 as never); // readDocById after update
+
+			const result = await docDao.reorderAt(1, null);
+
+			expect(result).toEqual(doc1);
+			expect(mockTransaction.commit).toHaveBeenCalled();
+		});
+
+		it("should reorder document before another document", async () => {
+			const doc1 = mockDoc({ id: 1, parentId: undefined, spaceId: 1, sortOrder: 1.0 });
+			const doc2 = mockDoc({ id: 2, parentId: undefined, spaceId: 1, sortOrder: 2.0 });
+			const doc3 = mockDoc({ id: 3, parentId: undefined, spaceId: 1, sortOrder: 3.0 });
+			const docInstance1 = { get: vi.fn().mockReturnValue(doc1) };
+			const docInstance2 = { get: vi.fn().mockReturnValue(doc2) };
+			const docInstance3 = { get: vi.fn().mockReturnValue(doc3) };
+
+			// Moving doc3 before doc2: [doc1, doc2, doc3] -> [doc1, doc3, doc2]
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(docInstance3 as never);
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([docInstance1, docInstance2, docInstance3] as never);
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([docInstance2] as never); // reference doc
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([docInstance1] as never); // before reference
+			vi.mocked(mockDocs.update).mockResolvedValueOnce([1] as never);
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(docInstance3 as never);
+
+			const result = await docDao.reorderAt(3, 2, "before");
+
+			expect(result).toEqual(doc3);
+			expect(mockTransaction.commit).toHaveBeenCalled();
+		});
+
+		it("should reorder document after another document", async () => {
+			const doc1 = mockDoc({ id: 1, parentId: undefined, spaceId: 1, sortOrder: 1.0 });
+			const doc2 = mockDoc({ id: 2, parentId: undefined, spaceId: 1, sortOrder: 2.0 });
+			const docInstance1 = { get: vi.fn().mockReturnValue(doc1) };
+			const docInstance2 = { get: vi.fn().mockReturnValue(doc2) };
+
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(docInstance1 as never);
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([docInstance1, docInstance2] as never);
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([docInstance2] as never); // reference doc
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([] as never); // after reference
+			vi.mocked(mockDocs.update).mockResolvedValueOnce([1] as never);
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(docInstance1 as never);
+
+			const result = await docDao.reorderAt(1, 2, "after");
+
+			expect(result).toEqual(doc1);
+			expect(mockTransaction.commit).toHaveBeenCalled();
+		});
+
+		it("should return undefined when document not found", async () => {
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(null);
+
+			const result = await docDao.reorderAt(999, 1);
+
+			expect(result).toBeUndefined();
+		});
+
+		it("should return document when already at target position", async () => {
+			const doc1 = mockDoc({ id: 1, parentId: undefined, spaceId: 1, sortOrder: 1.0 });
+			const doc2 = mockDoc({ id: 2, parentId: undefined, spaceId: 1, sortOrder: 2.0 });
+			const docInstance1 = { get: vi.fn().mockReturnValue(doc1) };
+			const docInstance2 = { get: vi.fn().mockReturnValue(doc2) };
+
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(docInstance1 as never);
+			// Already immediately after doc2
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([docInstance2, docInstance1] as never);
+
+			const result = await docDao.reorderAt(1, 2, "after");
+
+			expect(result).toEqual(doc1);
+			expect(mockTransaction.commit).not.toHaveBeenCalled(); // No update needed
+		});
+
+		it("should return document when trying to reorder relative to itself", async () => {
+			const doc = mockDoc({ id: 1, parentId: undefined, spaceId: 1, sortOrder: 1.0 });
+			const docInstance = { get: vi.fn().mockReturnValue(doc) };
+
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(docInstance as never);
+
+			const result = await docDao.reorderAt(1, 1);
+
+			expect(result).toEqual(doc);
+		});
+
+		it("should rollback transaction on error", async () => {
+			const doc1 = mockDoc({ id: 1, parentId: undefined, spaceId: 1, sortOrder: 1.0 });
+			const doc2 = mockDoc({ id: 2, parentId: undefined, spaceId: 1, sortOrder: 2.0 });
+			const docInstance1 = { get: vi.fn().mockReturnValue(doc1) };
+			const docInstance2 = { get: vi.fn().mockReturnValue(doc2) };
+
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(docInstance1 as never);
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([docInstance1, docInstance2] as never);
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([] as never);
+
+			const testError = new Error("Database error");
+			vi.mocked(mockDocs.update).mockRejectedValue(testError);
+
+			await expect(docDao.reorderAt(1, null)).rejects.toThrow("Database error");
+			expect(mockTransaction.rollback).toHaveBeenCalled();
+			expect(mockTransaction.commit).not.toHaveBeenCalled();
+		});
+
+		it("should throw error when referenceDocId is not a sibling", async () => {
+			const doc1 = mockDoc({ id: 1, parentId: undefined, spaceId: 1, sortOrder: 1.0 });
+			const doc2 = mockDoc({ id: 2, parentId: undefined, spaceId: 1, sortOrder: 2.0 });
+			const docInstance1 = { get: vi.fn().mockReturnValue(doc1) };
+			const docInstance2 = { get: vi.fn().mockReturnValue(doc2) };
+
+			// doc1 is trying to reorder relative to doc 999 which is not in siblings
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(docInstance1 as never);
+			// Siblings only contain doc1 and doc2
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([docInstance1, docInstance2] as never);
+			// When calculating sortOrder, it will query siblings again
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([docInstance1, docInstance2] as never);
+
+			await expect(docDao.reorderAt(1, 999, "after")).rejects.toThrow(
+				"referenceDocId must be a sibling of the document",
+			);
+		});
+
+		it("should handle when document is already at end position", async () => {
+			const doc1 = mockDoc({ id: 1, parentId: undefined, spaceId: 1, sortOrder: 1.0 });
+			const doc2 = mockDoc({ id: 2, parentId: undefined, spaceId: 1, sortOrder: 2.0 });
+			const docInstance1 = { get: vi.fn().mockReturnValue(doc1) };
+			const docInstance2 = { get: vi.fn().mockReturnValue(doc2) };
+
+			// doc2 is already at the end
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(docInstance2 as never);
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([docInstance1, docInstance2] as never);
+
+			const result = await docDao.reorderAt(2, null);
+
+			expect(result).toEqual(doc2);
+			expect(mockTransaction.commit).not.toHaveBeenCalled(); // No update needed
+		});
+	});
+
+	describe("findFolderByName", () => {
+		it("should find folder by name at root level", async () => {
+			const folder = mockDoc({ id: 1, docType: "folder", contentMetadata: { title: "Test Folder" } });
+			const folderInstance = { get: vi.fn().mockReturnValue(folder) };
+
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([folderInstance] as never);
+
+			const result = await docDao.findFolderByName(1, null, "Test Folder");
+
+			expect(result).toEqual(folder);
+			expect(vi.mocked(mockDocs.findAll)).toHaveBeenCalledWith(
+				expect.objectContaining({
+					where: expect.objectContaining({
+						spaceId: 1,
+						docType: "folder",
+					}),
+				}),
+			);
+		});
+
+		it("should find folder by name under a parent", async () => {
+			const folder = mockDoc({ id: 2, docType: "folder", parentId: 1, contentMetadata: { title: "Sub Folder" } });
+			const folderInstance = { get: vi.fn().mockReturnValue(folder) };
+
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([folderInstance] as never);
+
+			const result = await docDao.findFolderByName(1, 1, "Sub Folder");
+
+			expect(result).toEqual(folder);
+			expect(vi.mocked(mockDocs.findAll)).toHaveBeenCalledWith(
+				expect.objectContaining({
+					where: expect.objectContaining({
+						spaceId: 1,
+						docType: "folder",
+						parentId: 1,
+					}),
+				}),
+			);
+		});
+
+		it("should return undefined when folder not found", async () => {
+			const folder = mockDoc({ id: 1, docType: "folder", contentMetadata: { title: "Other Folder" } });
+			const folderInstance = { get: vi.fn().mockReturnValue(folder) };
+
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([folderInstance] as never);
+
+			const result = await docDao.findFolderByName(1, null, "Test Folder");
+
+			expect(result).toBeUndefined();
+		});
+
+		it("should return undefined when no folders exist", async () => {
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([] as never);
+
+			const result = await docDao.findFolderByName(1, null, "Test Folder");
+
+			expect(result).toBeUndefined();
+		});
+	});
+
+	describe("renameDoc", () => {
+		it("should rename document and update version", async () => {
+			const existingDoc = mockDoc({
+				id: 1,
+				contentMetadata: { title: "Old Title" },
+				version: 1,
+			});
+			const renamedDoc = mockDoc({
+				id: 1,
+				contentMetadata: { title: "New Title" },
+				version: 2,
+			});
+
 			vi.mocked(mockDocs.findByPk)
-				.mockResolvedValueOnce(mockDocInstance as never)
-				.mockResolvedValueOnce(mockUpdatedDocInstance as never);
+				.mockResolvedValueOnce({ get: () => existingDoc } as never)
+				.mockResolvedValueOnce({ get: () => renamedDoc } as never);
+			vi.mocked(mockDocs.update).mockResolvedValueOnce([1] as never);
 
 			const result = await docDao.renameDoc(1, "New Title");
 
 			expect(mockDocs.update).toHaveBeenCalledWith(
-				expect.objectContaining({
-					contentMetadata: { title: "New Title" },
-					version: 2,
-				}),
+				{ contentMetadata: { title: "New Title" }, version: 2 },
 				{ where: { id: 1 } },
 			);
-			expect(result).toEqual(updatedDoc);
+			expect(result).toEqual(renamedDoc);
 		});
 
-		it("should return undefined if document not found", async () => {
-			vi.mocked(mockDocs.findByPk).mockResolvedValue(null);
+		it("should preserve other contentMetadata fields when renaming", async () => {
+			const existingDoc = mockDoc({
+				id: 1,
+				contentMetadata: { title: "Old Title", sourceName: "source", sourceUrl: "http://example.com" },
+				version: 1,
+			});
+			const renamedDoc = mockDoc({
+				id: 1,
+				contentMetadata: { title: "New Title", sourceName: "source", sourceUrl: "http://example.com" },
+				version: 2,
+			});
+
+			vi.mocked(mockDocs.findByPk)
+				.mockResolvedValueOnce({ get: () => existingDoc } as never)
+				.mockResolvedValueOnce({ get: () => renamedDoc } as never);
+			vi.mocked(mockDocs.update).mockResolvedValueOnce([1] as never);
+
+			const result = await docDao.renameDoc(1, "New Title");
+
+			expect(mockDocs.update).toHaveBeenCalledWith(
+				{
+					contentMetadata: { title: "New Title", sourceName: "source", sourceUrl: "http://example.com" },
+					version: 2,
+				},
+				{ where: { id: 1 } },
+			);
+			expect(result).toEqual(renamedDoc);
+		});
+
+		it("should return undefined when document not found", async () => {
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(null as never);
 
 			const result = await docDao.renameDoc(999, "New Title");
 
 			expect(result).toBeUndefined();
 			expect(mockDocs.update).not.toHaveBeenCalled();
 		});
+	});
 
-		it("should preserve existing contentMetadata fields", async () => {
-			const existingDoc = mockDoc({
+	describe("getAllContent", () => {
+		it("should return content array excluding root and deleted docs", async () => {
+			const docs = [
+				{ get: (field: string) => (field === "content" ? "Content 1" : undefined) },
+				{ get: (field: string) => (field === "content" ? "Content 2" : undefined) },
+			];
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce(docs as never);
+
+			const result = await docDao.getAllContent();
+
+			expect(mockDocs.findAll).toHaveBeenCalledWith({
+				where: expect.objectContaining({
+					jrn: expect.anything(),
+					deletedAt: expect.anything(),
+				}),
+				attributes: ["content"],
+			});
+			expect(result).toEqual([{ content: "Content 1" }, { content: "Content 2" }]);
+		});
+
+		it("should return empty array when no docs exist", async () => {
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([] as never);
+
+			const result = await docDao.getAllContent();
+
+			expect(result).toEqual([]);
+		});
+	});
+
+	describe("reorderDoc", () => {
+		let mockTransaction: {
+			commit: ReturnType<typeof vi.fn>;
+			rollback: ReturnType<typeof vi.fn>;
+		};
+		let mockSequelizeWithTransaction: Sequelize;
+
+		beforeEach(() => {
+			mockTransaction = {
+				commit: vi.fn().mockResolvedValue(undefined),
+				rollback: vi.fn().mockResolvedValue(undefined),
+			};
+
+			mockSequelizeWithTransaction = {
+				define: vi.fn().mockReturnValue(mockDocs),
+				transaction: vi.fn().mockResolvedValue(mockTransaction),
+			} as unknown as Sequelize;
+
+			docDao = createDocDao(mockSequelizeWithTransaction);
+		});
+
+		it("should swap sortOrder when moving down", async () => {
+			const doc = mockDoc({ id: 1, sortOrder: 0, spaceId: 1, parentId: undefined, deletedAt: undefined });
+			const sibling = mockDoc({ id: 2, sortOrder: 1, spaceId: 1, parentId: undefined, deletedAt: undefined });
+			const updatedDoc = mockDoc({ id: 1, sortOrder: 1, spaceId: 1 });
+
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce({ get: () => doc } as never);
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([{ get: () => doc }, { get: () => sibling }] as never);
+			vi.mocked(mockDocs.update).mockResolvedValue([1] as never);
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce({ get: () => updatedDoc } as never);
+
+			const result = await docDao.reorderDoc(1, "down");
+
+			expect(mockDocs.update).toHaveBeenCalled();
+			expect(mockTransaction.commit).toHaveBeenCalled();
+			expect(result).toEqual(updatedDoc);
+		});
+
+		it("should swap sortOrder when moving up", async () => {
+			const sibling = mockDoc({ id: 1, sortOrder: 0, spaceId: 1, parentId: undefined, deletedAt: undefined });
+			const doc = mockDoc({ id: 2, sortOrder: 1, spaceId: 1, parentId: undefined, deletedAt: undefined });
+			const updatedDoc = mockDoc({ id: 2, sortOrder: 0, spaceId: 1 });
+
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce({ get: () => doc } as never);
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([{ get: () => sibling }, { get: () => doc }] as never);
+			vi.mocked(mockDocs.update).mockResolvedValue([1] as never);
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce({ get: () => updatedDoc } as never);
+
+			const result = await docDao.reorderDoc(2, "up");
+
+			expect(mockDocs.update).toHaveBeenCalled();
+			expect(mockTransaction.commit).toHaveBeenCalled();
+			expect(result).toEqual(updatedDoc);
+		});
+
+		it("should return undefined when document not found", async () => {
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce(null as never);
+
+			const result = await docDao.reorderDoc(999, "down");
+
+			expect(result).toBeUndefined();
+		});
+
+		it("should return undefined when document is deleted", async () => {
+			const deletedDoc = mockDoc({ id: 1, deletedAt: new Date("2024-01-01T00:00:00Z") });
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce({ get: () => deletedDoc } as never);
+
+			const result = await docDao.reorderDoc(1, "down");
+
+			expect(result).toBeUndefined();
+		});
+
+		it("should return undefined when at top boundary moving up", async () => {
+			const doc = mockDoc({ id: 1, sortOrder: 0, spaceId: 1, parentId: undefined, deletedAt: undefined });
+
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce({ get: () => doc } as never);
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([{ get: () => doc }] as never);
+
+			const result = await docDao.reorderDoc(1, "up");
+
+			expect(result).toBeUndefined();
+			expect(mockDocs.update).not.toHaveBeenCalled();
+		});
+
+		it("should return undefined when at bottom boundary moving down", async () => {
+			const doc = mockDoc({ id: 1, sortOrder: 0, spaceId: 1, parentId: undefined, deletedAt: undefined });
+
+			vi.mocked(mockDocs.findByPk).mockResolvedValueOnce({ get: () => doc } as never);
+			vi.mocked(mockDocs.findAll).mockResolvedValueOnce([{ get: () => doc }] as never);
+
+			const result = await docDao.reorderDoc(1, "down");
+
+			expect(result).toBeUndefined();
+			expect(mockDocs.update).not.toHaveBeenCalled();
+		});
+	});
+
+	describe("findDocBySourcePath", () => {
+		it("should find doc by source metadata path within a space", async () => {
+			const doc = mockDoc({
 				id: 1,
-				version: 1,
-				contentMetadata: { title: "Old Title", sourceName: "existing-source" },
+				spaceId: 1,
+				sourceMetadata: { path: "docs/getting-started.md" },
 			});
 
 			const mockDocInstance = {
-				get: vi.fn().mockReturnValue(existingDoc),
+				get: vi.fn().mockReturnValue(doc),
 			};
 
-			vi.mocked(mockDocs.findByPk).mockResolvedValue(mockDocInstance as never);
+			vi.mocked(mockDocs.findOne).mockResolvedValue(mockDocInstance as never);
 
-			await docDao.renameDoc(1, "New Title");
+			const result = await docDao.findDocBySourcePath(1, "docs/getting-started.md");
 
-			expect(mockDocs.update).toHaveBeenCalledWith(
-				expect.objectContaining({
-					contentMetadata: { title: "New Title", sourceName: "existing-source" },
-				}),
-				{ where: { id: 1 } },
-			);
+			expect(mockDocs.findOne).toHaveBeenCalled();
+			expect(result).toEqual(doc);
+		});
+
+		it("should return undefined when no doc found", async () => {
+			vi.mocked(mockDocs.findOne).mockResolvedValue(null);
+
+			const result = await docDao.findDocBySourcePath(1, "nonexistent.md");
+
+			expect(result).toBeUndefined();
+		});
+
+		it("should escape single quotes in source path", async () => {
+			vi.mocked(mockDocs.findOne).mockResolvedValue(null);
+
+			await docDao.findDocBySourcePath(1, "doc's-name.md");
+
+			// The path should be escaped to prevent SQL injection
+			expect(mockDocs.findOne).toHaveBeenCalled();
+		});
+	});
+
+	describe("findDocBySourcePathAnySpace", () => {
+		it("should find doc by source metadata path across all spaces", async () => {
+			const doc = mockDoc({
+				id: 1,
+				spaceId: 2,
+				sourceMetadata: { path: "docs/readme.md" },
+			});
+
+			const mockDocInstance = {
+				get: vi.fn().mockReturnValue(doc),
+			};
+
+			vi.mocked(mockDocs.findOne).mockResolvedValue(mockDocInstance as never);
+
+			const result = await docDao.findDocBySourcePathAnySpace("docs/readme.md");
+
+			expect(mockDocs.findOne).toHaveBeenCalled();
+			expect(result).toEqual(doc);
+		});
+
+		it("should return undefined when no doc found", async () => {
+			vi.mocked(mockDocs.findOne).mockResolvedValue(null);
+
+			const result = await docDao.findDocBySourcePathAnySpace("nonexistent.md");
+
+			expect(result).toBeUndefined();
+		});
+
+		it("should include integration scope when integrationId is provided", async () => {
+			vi.mocked(mockDocs.findOne).mockResolvedValue(null);
+
+			await docDao.findDocBySourcePathAnySpace("docs/readme.md", 42);
+
+			expect(mockDocs.findOne).toHaveBeenCalled();
+			const callArgs = vi.mocked(mockDocs.findOne).mock.calls[0][0] as Record<string, unknown>;
+			const where = callArgs.where as Record<string, unknown>;
+			expect(where).toHaveProperty("sourceMetadata.path", "docs/readme.md");
+			expect(where).toHaveProperty("source.integrationId", 42);
+		});
+
+		it("should not include integration scope when integrationId is omitted", async () => {
+			vi.mocked(mockDocs.findOne).mockResolvedValue(null);
+
+			await docDao.findDocBySourcePathAnySpace("docs/readme.md");
+
+			expect(mockDocs.findOne).toHaveBeenCalled();
+			const callArgs = vi.mocked(mockDocs.findOne).mock.calls[0][0] as Record<string, unknown>;
+			const where = callArgs.where as Record<string, unknown>;
+			expect(where).toHaveProperty("sourceMetadata.path", "docs/readme.md");
+			expect(where).not.toHaveProperty("source.integrationId");
+		});
+
+		it("should include integration scope in filename fallback query", async () => {
+			// First query returns no result to trigger filename fallback
+			vi.mocked(mockDocs.findOne).mockResolvedValue(null);
+
+			await docDao.findDocBySourcePathAnySpace("docs/readme.md", 7);
+
+			// Should be called twice: once for full path, once for filename fallback
+			expect(mockDocs.findOne).toHaveBeenCalledTimes(2);
+			const callArgs = vi.mocked(mockDocs.findOne).mock.calls[1][0] as Record<string, unknown>;
+			const where = callArgs.where as Record<string, unknown>;
+			// Filename fallback uses just "readme.md"
+			expect(where).toHaveProperty("sourceMetadata.path", "readme.md");
+			expect(where).toHaveProperty("source.integrationId", 7);
 		});
 	});
 });
@@ -1586,5 +2835,226 @@ describe("createDocDaoProvider", () => {
 		const result = provider.getDao(context);
 
 		expect(result).toBe(contextDocDao);
+	});
+});
+
+describe("DocDao postSync migrations", () => {
+	let mockDocs: ModelDef<Doc>;
+	let mockSequelize: Sequelize & { query: ReturnType<typeof vi.fn> };
+	let docDaoWithPostSync: DocDao & { postSync: (sequelize: Sequelize, db: unknown) => Promise<void> };
+
+	beforeEach(() => {
+		mockDocs = {
+			create: vi.fn(),
+			findOne: vi.fn(),
+			findAll: vi.fn(),
+			findByPk: vi.fn(),
+			update: vi.fn(),
+			destroy: vi.fn(),
+			count: vi.fn(),
+		} as unknown as ModelDef<Doc>;
+
+		mockSequelize = {
+			define: vi.fn().mockReturnValue(mockDocs),
+			query: vi.fn(),
+		} as unknown as Sequelize & { query: ReturnType<typeof vi.fn> };
+
+		docDaoWithPostSync = createDocDao(mockSequelize) as DocDao & {
+			postSync: (sequelize: Sequelize, db: unknown) => Promise<void>;
+		};
+	});
+
+	describe("migrateSortOrder", () => {
+		it("should skip migration when no groups exist", async () => {
+			mockSequelize.query
+				.mockResolvedValueOnce([[]]) // no null slugs
+				.mockResolvedValueOnce([[]]) // no empty paths
+				.mockResolvedValueOnce([[]]) // no old jrns
+				.mockResolvedValueOnce([[]]); // no groups for sortOrder migration
+
+			await docDaoWithPostSync.postSync(mockSequelize, {});
+
+			// Query was called to find groups
+			expect(mockSequelize.query).toHaveBeenCalled();
+		});
+
+		it("should not update sortOrder when no duplicates exist", async () => {
+			// First three queries for slug, path, and jrn migrations (no docs to migrate)
+			mockSequelize.query
+				.mockResolvedValueOnce([[]]) // slug migration - no null slugs
+				.mockResolvedValueOnce([[]]) // path migration - no empty paths
+				.mockResolvedValueOnce([[]]) // jrn migration - no old format jrns
+				// sortOrder migration
+				.mockResolvedValueOnce([[{ space_id: 1, parent_id: null }]]) // groups query
+				.mockResolvedValueOnce([
+					// docs in group with unique sortOrders
+					{ id: 1, sort_order: 0 },
+					{ id: 2, sort_order: 1 },
+					{ id: 3, sort_order: 2 },
+				]);
+
+			await docDaoWithPostSync.postSync(mockSequelize, {});
+
+			// Verify no UPDATE queries were made for sortOrder
+			const updateCalls = mockSequelize.query.mock.calls.filter(
+				call => typeof call[0] === "string" && call[0].includes("UPDATE docs SET sort_order"),
+			);
+			expect(updateCalls).toHaveLength(0);
+		});
+
+		it("should fix duplicate sortOrder values", async () => {
+			// First three queries for slug, path, and jrn migrations (no docs to migrate)
+			mockSequelize.query
+				.mockResolvedValueOnce([[]]) // slug migration - no null slugs
+				.mockResolvedValueOnce([[]]) // path migration - no empty paths
+				.mockResolvedValueOnce([[]]) // jrn migration - no old format jrns
+				// sortOrder migration
+				.mockResolvedValueOnce([[{ space_id: 1, parent_id: null }]]) // groups query
+				.mockResolvedValueOnce([
+					// docs with duplicate sortOrders (both have sortOrder 1)
+					{ id: 1, sort_order: 1 },
+					{ id: 2, sort_order: 1 },
+				])
+				.mockResolvedValue(undefined); // UPDATE queries
+
+			await docDaoWithPostSync.postSync(mockSequelize, {});
+
+			// Verify UPDATE queries were made to fix sortOrder
+			const updateCalls = mockSequelize.query.mock.calls.filter(
+				call => typeof call[0] === "string" && call[0].includes("UPDATE docs SET sort_order"),
+			);
+			expect(updateCalls.length).toBeGreaterThan(0);
+		});
+
+		it("should skip empty groups", async () => {
+			// First three queries for slug, path, and jrn migrations (no docs to migrate)
+			mockSequelize.query
+				.mockResolvedValueOnce([[]]) // slug migration - no null slugs
+				.mockResolvedValueOnce([[]]) // path migration - no empty paths
+				.mockResolvedValueOnce([[]]) // jrn migration - no old format jrns
+				// sortOrder migration
+				.mockResolvedValueOnce([
+					[
+						{ space_id: 1, parent_id: null },
+						{ space_id: 2, parent_id: null },
+					],
+				]) // groups
+				.mockResolvedValueOnce([]) // first group has no docs
+				.mockResolvedValueOnce([{ id: 1, sort_order: 0 }]); // second group has one doc
+
+			await docDaoWithPostSync.postSync(mockSequelize, {});
+
+			// No errors should be thrown, migration should handle empty groups
+			expect(mockSequelize.query).toHaveBeenCalled();
+		});
+	});
+
+	describe("migrateDocSlugs", () => {
+		it("should generate slugs for docs with NULL slugs", async () => {
+			mockSequelize.query
+				.mockResolvedValueOnce([
+					[{ id: 1, jrn: "doc:old-format", content_metadata: { title: "Test Doc" }, doc_type: "document" }],
+				]) // docs with NULL slugs
+				.mockResolvedValue(undefined); // UPDATE queries
+
+			await docDaoWithPostSync.postSync(mockSequelize, {});
+
+			// Verify UPDATE query was made with generated slug
+			const updateCalls = mockSequelize.query.mock.calls.filter(
+				call => typeof call[0] === "string" && call[0].includes("UPDATE docs SET slug"),
+			);
+			expect(updateCalls.length).toBeGreaterThan(0);
+		});
+
+		it("should use jrn segment when no title in contentMetadata", async () => {
+			mockSequelize.query
+				.mockResolvedValueOnce([
+					[{ id: 1, jrn: "doc:my-document", content_metadata: null, doc_type: "document" }],
+				])
+				.mockResolvedValue(undefined);
+
+			await docDaoWithPostSync.postSync(mockSequelize, {});
+
+			const updateCalls = mockSequelize.query.mock.calls.filter(
+				call => typeof call[0] === "string" && call[0].includes("UPDATE docs SET slug"),
+			);
+			expect(updateCalls.length).toBeGreaterThan(0);
+		});
+	});
+
+	describe("migrateDocPaths", () => {
+		it("should calculate paths for docs with empty paths", async () => {
+			mockSequelize.query
+				.mockResolvedValueOnce([[]]) // no null slugs
+				.mockResolvedValueOnce([[{ id: 1, slug: "test-doc", parent_id: null }]]) // docs with empty paths
+				.mockResolvedValue(undefined); // UPDATE queries
+
+			await docDaoWithPostSync.postSync(mockSequelize, {});
+
+			const updateCalls = mockSequelize.query.mock.calls.filter(
+				call => typeof call[0] === "string" && call[0].includes("UPDATE docs SET path"),
+			);
+			expect(updateCalls.length).toBeGreaterThan(0);
+		});
+
+		it("should calculate path based on parent", async () => {
+			mockSequelize.query
+				.mockResolvedValueOnce([[]]) // no null slugs
+				.mockResolvedValueOnce([[{ id: 2, slug: "child-doc", parent_id: 1 }]]) // docs with empty paths
+				.mockResolvedValueOnce([[{ path: "/parent" }]]) // parent path lookup
+				.mockResolvedValue(undefined); // UPDATE queries
+
+			await docDaoWithPostSync.postSync(mockSequelize, {});
+
+			const updateCalls = mockSequelize.query.mock.calls.filter(
+				call => typeof call[0] === "string" && call[0].includes("UPDATE docs SET path"),
+			);
+			expect(updateCalls.length).toBeGreaterThan(0);
+		});
+	});
+
+	describe("migrateDocJrns", () => {
+		it("should migrate old JRN format to new format", async () => {
+			mockSequelize.query
+				.mockResolvedValueOnce([[]]) // no null slugs
+				.mockResolvedValueOnce([[]]) // no empty paths
+				.mockResolvedValueOnce([[{ id: 1, jrn: "doc:old-format", slug: "test-doc", doc_type: "document" }]])
+				.mockResolvedValue(undefined);
+
+			await docDaoWithPostSync.postSync(mockSequelize, {});
+
+			const updateCalls = mockSequelize.query.mock.calls.filter(
+				call => typeof call[0] === "string" && call[0].includes("UPDATE docs SET jrn"),
+			);
+			expect(updateCalls.length).toBeGreaterThan(0);
+		});
+
+		it("should use folder JRN format for folder docType", async () => {
+			mockSequelize.query
+				.mockResolvedValueOnce([[]]) // no null slugs
+				.mockResolvedValueOnce([[]]) // no empty paths
+				.mockResolvedValueOnce([[{ id: 1, jrn: "folder:old-format", slug: "test-folder", doc_type: "folder" }]])
+				.mockResolvedValue(undefined);
+
+			await docDaoWithPostSync.postSync(mockSequelize, {});
+
+			const updateCalls = mockSequelize.query.mock.calls.filter(
+				call => typeof call[0] === "string" && call[0].includes("UPDATE docs SET jrn"),
+			);
+			expect(updateCalls.length).toBeGreaterThan(0);
+		});
+	});
+
+	describe("postSync error handling", () => {
+		it("should continue migrations even if one fails", async () => {
+			mockSequelize.query
+				.mockRejectedValueOnce(new Error("Slug migration failed")) // slug migration fails
+				.mockRejectedValueOnce(new Error("Path migration failed")) // path migration fails
+				.mockRejectedValueOnce(new Error("JRN migration failed")) // jrn migration fails
+				.mockRejectedValueOnce(new Error("SortOrder migration failed")); // sortOrder migration fails
+
+			// Should not throw - errors are logged but execution continues
+			await expect(docDaoWithPostSync.postSync(mockSequelize, {})).resolves.toBeUndefined();
+		});
 	});
 });

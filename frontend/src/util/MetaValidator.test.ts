@@ -1,7 +1,12 @@
 import {
+	addMetaEntry,
 	extractSlugsWithLineNumbers,
 	extractSlugsWithRegex,
+	findEntryBoundaries,
 	findKeyLineNumber,
+	getEntryValue,
+	removeMetaEntry,
+	renameMetaEntry,
 	validateMetaContent,
 	validateMetaSyntaxOnly,
 } from "./MetaValidator";
@@ -357,6 +362,20 @@ describe("MetaValidator", () => {
 			expect(result.orphanedEntries).toHaveLength(1);
 		});
 
+		it("should handle empty string in folders array", () => {
+			// Tests line 483: the || f fallback when pop() returns empty string
+			const content = `export default {
+	intro: "Introduction"
+}`;
+			const contentFiles = ["intro.mdx"];
+			const folders = [""]; // Edge case: empty string folder name
+
+			const result = validateMetaContent(content, contentFiles, folders);
+
+			expect(result.valid).toBe(true);
+			expect(result.syntaxErrors).toHaveLength(0);
+		});
+
 		it("should always include line number for syntax errors", () => {
 			// Test various syntax errors to ensure they all get line numbers
 			const testCases = [
@@ -442,6 +461,24 @@ describe("MetaValidator", () => {
 
 			expect(result.valid).toBe(false);
 			expect(result.syntaxErrors.length).toBeGreaterThan(0);
+		});
+
+		it("should detect missing comma error with 'expected' in error message", () => {
+			// Tests line 404: error.includes("expected") or "unexpected token" path
+			const content = `export default {
+	intro: "Introduction"
+	guide: "Guide"
+}`;
+			const result = validateMetaSyntaxOnly(content);
+
+			expect(result.valid).toBe(false);
+			expect(result.syntaxErrors.length).toBeGreaterThan(0);
+			// Should detect the line with missing comma
+			expect(result.syntaxErrors[0].line).toBeGreaterThan(0);
+			// Error message should contain expected or unexpected token
+			const errorMsg = result.syntaxErrors[0].message.toLowerCase();
+			const hasExpectedOrToken = errorMsg.includes("expected") || errorMsg.includes("unexpected");
+			expect(hasExpectedOrToken).toBe(true);
 		});
 	});
 
@@ -581,6 +618,308 @@ describe("MetaValidator", () => {
 			extractSlugsWithRegex(content, slugs);
 
 			expect(slugs.size).toBe(0);
+		});
+	});
+
+	// ============================================================================
+	// Meta Content Manipulation Utilities Tests
+	// ============================================================================
+
+	describe("findEntryBoundaries", () => {
+		it("should find boundaries for simple string entry", () => {
+			const content = 'export default { intro: "Introduction", guide: "Guide" }';
+			const boundaries = findEntryBoundaries(content, "intro");
+
+			expect(boundaries).not.toBeNull();
+			expect(boundaries?.entryText).toContain("intro");
+			expect(boundaries?.entryText).toContain("Introduction");
+		});
+
+		it("should find boundaries for quoted key", () => {
+			const content = 'export default { "quoted-key": "Value" }';
+			const boundaries = findEntryBoundaries(content, "quoted-key");
+
+			expect(boundaries).not.toBeNull();
+			expect(boundaries?.entryText).toContain("quoted-key");
+		});
+
+		it("should find boundaries for single-quoted key", () => {
+			const content = "export default { 'single-quoted': \"Value\" }";
+			const boundaries = findEntryBoundaries(content, "single-quoted");
+
+			expect(boundaries).not.toBeNull();
+			expect(boundaries?.entryText).toContain("single-quoted");
+		});
+
+		it("should find boundaries for multi-line object value", () => {
+			const content = `export default {
+	intro: {
+		type: "page",
+		title: "Introduction",
+		items: {
+			overview: "Overview"
+		}
+	},
+	guide: "Guide"
+}`;
+			const boundaries = findEntryBoundaries(content, "intro");
+
+			expect(boundaries).not.toBeNull();
+			expect(boundaries?.entryText).toContain("type");
+			expect(boundaries?.entryText).toContain("items");
+			expect(boundaries?.entryText).toContain("Overview");
+		});
+
+		it("should return null for non-existent entry", () => {
+			const content = 'export default { intro: "Introduction" }';
+			const boundaries = findEntryBoundaries(content, "nonexistent");
+
+			expect(boundaries).toBeNull();
+		});
+
+		it("should handle entry with escaped quotes in value", () => {
+			const content = 'export default { intro: "Say \\"Hello\\"" }';
+			const boundaries = findEntryBoundaries(content, "intro");
+
+			expect(boundaries).not.toBeNull();
+			expect(boundaries?.entryText).toContain("Hello");
+		});
+
+		it("should handle entry without trailing comma at end", () => {
+			const content = 'export default { intro: "Introduction" }';
+			const boundaries = findEntryBoundaries(content, "intro");
+
+			expect(boundaries).not.toBeNull();
+		});
+	});
+
+	describe("getEntryValue", () => {
+		it("should return string value for simple entry", () => {
+			const content = 'export default { intro: "Introduction", guide: "Guide" }';
+			const value = getEntryValue(content, "intro");
+
+			expect(value).toBe('"Introduction"');
+		});
+
+		it("should return object value for complex entry", () => {
+			const content = `export default {
+	intro: { title: "My Title", display: "hidden" },
+	guide: "Guide"
+}`;
+			const value = getEntryValue(content, "intro");
+
+			expect(value).toContain("title");
+			expect(value).toContain("My Title");
+			expect(value).toContain("display");
+		});
+
+		it("should return null for non-existent entry", () => {
+			const content = 'export default { intro: "Introduction" }';
+			const value = getEntryValue(content, "nonexistent");
+
+			expect(value).toBeNull();
+		});
+
+		it("should preserve nested object structure", () => {
+			const content = `export default {
+	section: {
+		type: "page",
+		items: {
+			nested: "Nested Item"
+		}
+	}
+}`;
+			const value = getEntryValue(content, "section");
+
+			expect(value).toContain("type");
+			expect(value).toContain("items");
+			expect(value).toContain("nested");
+		});
+	});
+
+	describe("removeMetaEntry", () => {
+		it("should remove simple string entry", () => {
+			const content = 'export default { intro: "Introduction", guide: "Guide" }';
+			const result = removeMetaEntry(content, "intro");
+
+			expect(result).not.toContain("intro");
+			expect(result).toContain("guide");
+			expect(result).toContain("Guide");
+		});
+
+		it("should remove entry with quoted key", () => {
+			const content = 'export default { "my-key": "Value", other: "Other" }';
+			const result = removeMetaEntry(content, "my-key");
+
+			expect(result).not.toContain("my-key");
+			expect(result).toContain("other");
+		});
+
+		it("should remove multi-line object entry", () => {
+			const content = `export default {
+	intro: {
+		type: "page",
+		title: "Introduction"
+	},
+	guide: "Guide"
+}`;
+			const result = removeMetaEntry(content, "intro");
+
+			expect(result).not.toContain("intro");
+			expect(result).not.toContain("type");
+			expect(result).toContain("guide");
+		});
+
+		it("should return unchanged content for non-existent entry", () => {
+			const content = 'export default { intro: "Introduction" }';
+			const result = removeMetaEntry(content, "nonexistent");
+
+			expect(result).toBe(content);
+		});
+
+		it("should handle last entry removal (no trailing comma)", () => {
+			const content = `export default {
+	intro: "Introduction",
+	guide: "Guide"
+}`;
+			const result = removeMetaEntry(content, "guide");
+
+			expect(result).not.toContain("guide");
+			expect(result).toContain("intro");
+			// Should clean up trailing comma before closing brace
+			expect(result).not.toMatch(/,\s*}/);
+		});
+
+		it("should handle only entry removal", () => {
+			const content = 'export default { intro: "Introduction" }';
+			const result = removeMetaEntry(content, "intro");
+
+			expect(result).not.toContain("intro");
+			expect(result).toContain("export default");
+		});
+	});
+
+	describe("addMetaEntry", () => {
+		it("should add entry to empty object", () => {
+			const content = "export default {\n}";
+			const result = addMetaEntry(content, "intro", "Introduction");
+
+			expect(result).toContain("intro");
+			expect(result).toContain('"Introduction"');
+		});
+
+		it("should add entry to object with existing entries", () => {
+			const content = `export default {
+	existing: "Existing"
+}`;
+			const result = addMetaEntry(content, "intro", "Introduction");
+
+			expect(result).toContain("existing");
+			expect(result).toContain("intro");
+			expect(result).toContain('"Introduction"');
+		});
+
+		it("should add comma after previous entry if needed", () => {
+			const content = `export default {
+	existing: "Existing"
+}`;
+			const result = addMetaEntry(content, "intro", "Introduction");
+
+			// The existing entry should have a comma after it
+			expect(result).toMatch(/existing.*?,/s);
+		});
+
+		it("should quote key with special characters", () => {
+			const content = "export default {\n}";
+			const result = addMetaEntry(content, "my-key", "My Value");
+
+			expect(result).toContain('"my-key"');
+		});
+
+		it("should escape quotes in title", () => {
+			const content = "export default {\n}";
+			const result = addMetaEntry(content, "intro", 'Say "Hello"');
+
+			expect(result).toContain('\\"Hello\\"');
+		});
+
+		it("should return unchanged content if no export default", () => {
+			const content = "const x = { intro: 'test' }";
+			const result = addMetaEntry(content, "intro", "Introduction");
+
+			expect(result).toBe(content);
+		});
+
+		it("should preserve existing indentation style", () => {
+			const content = `export default {
+    existing: "Existing"
+}`;
+			const result = addMetaEntry(content, "intro", "Introduction");
+
+			// Should use 4-space indentation like the existing entry
+			expect(result).toMatch(/^\s{4}intro:/m);
+		});
+	});
+
+	describe("renameMetaEntry", () => {
+		it("should rename simple string entry", () => {
+			const content = 'export default { oldName: "Title", other: "Other" }';
+			const result = renameMetaEntry(content, "oldName", "newName");
+
+			expect(result).not.toContain("oldName");
+			expect(result).toContain("newName");
+			expect(result).toContain('"Title"');
+		});
+
+		it("should rename quoted key to unquoted", () => {
+			const content = 'export default { "old-name": "Title" }';
+			const result = renameMetaEntry(content, "old-name", "newname");
+
+			expect(result).not.toContain("old-name");
+			expect(result).toContain("newname:");
+			expect(result).not.toContain('"newname"');
+		});
+
+		it("should rename unquoted key to quoted when needed", () => {
+			const content = 'export default { oldname: "Title" }';
+			const result = renameMetaEntry(content, "oldname", "new-name");
+
+			expect(result).not.toContain("oldname");
+			expect(result).toContain('"new-name"');
+		});
+
+		it("should preserve object value when renaming", () => {
+			const content = `export default {
+	oldKey: {
+		type: "page",
+		title: "My Page"
+	}
+}`;
+			const result = renameMetaEntry(content, "oldKey", "newKey");
+
+			expect(result).not.toContain("oldKey");
+			expect(result).toContain("newKey");
+			expect(result).toContain("type");
+			expect(result).toContain("My Page");
+		});
+
+		it("should return unchanged content for non-existent entry", () => {
+			const content = 'export default { intro: "Introduction" }';
+			const result = renameMetaEntry(content, "nonexistent", "newName");
+
+			expect(result).toBe(content);
+		});
+
+		it("should preserve trailing comma", () => {
+			const content = `export default {
+	oldName: "Title",
+	other: "Other"
+}`;
+			const result = renameMetaEntry(content, "oldName", "newName");
+
+			expect(result).toContain("newName:");
+			// The renamed entry should still have its trailing comma
+			expect(result).toMatch(/newName.*?,/s);
 		});
 	});
 });

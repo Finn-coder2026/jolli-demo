@@ -1,7 +1,6 @@
-import type { Agent, AgentConfig, ChatMessage } from "../core/agent";
 import { ChatService } from "./ChatService";
 import type { Response } from "express";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 describe("ChatService", () => {
 	let mockRes: Response;
@@ -17,6 +16,7 @@ describe("ChatService", () => {
 			status: vi.fn().mockReturnThis(),
 			json: vi.fn(),
 			end: vi.fn(),
+			flushHeaders: vi.fn(),
 		} as unknown as Response;
 	});
 
@@ -70,62 +70,6 @@ describe("ChatService", () => {
 
 			expect(mockRes.status).toHaveBeenCalledWith(500);
 			expect(mockRes.json).toHaveBeenCalledWith({ error: "Custom error" });
-		});
-	});
-
-	describe("streamChatResponse", () => {
-		it("should stream chat response with content chunks", async () => {
-			const mockAgent = {
-				stream: vi.fn(function* () {
-					yield { type: "content" as const, content: "Hello " };
-					yield { type: "content" as const, content: "world" };
-					yield { type: "done" as const, metadata: { tokens: 10 } };
-				}),
-			} as unknown as Agent;
-
-			const chatMessages: Array<ChatMessage> = [{ role: "user", content: "Hi" }];
-			const agentConfig: AgentConfig = { model: "test-model" };
-
-			const result = await chatService.streamChatResponse(mockRes, mockAgent, chatMessages, agentConfig);
-
-			expect(result).toEqual({ fullResponse: "Hello world", metadata: { tokens: 10 } });
-			expect(mockRes.setHeader).toHaveBeenCalledWith("Content-Type", "text/event-stream");
-			expect(mockRes.write).toHaveBeenCalledWith('data: {"content":"Hello "}\n\n');
-			expect(mockRes.write).toHaveBeenCalledWith('data: {"content":"world"}\n\n');
-			expect(mockRes.write).toHaveBeenCalledWith('data: {"type":"done","metadata":{"tokens":10}}\n\n');
-		});
-
-		it("should stream chat response without metadata", async () => {
-			const mockAgent = {
-				stream: vi.fn(function* () {
-					yield { type: "content" as const, content: "Hello" };
-					yield { type: "done" as const };
-				}),
-			} as unknown as Agent;
-
-			const chatMessages: Array<ChatMessage> = [{ role: "user", content: "Hi" }];
-			const agentConfig: AgentConfig = { model: "test-model" };
-
-			const result = await chatService.streamChatResponse(mockRes, mockAgent, chatMessages, agentConfig);
-
-			expect(result).toEqual({ fullResponse: "Hello" });
-		});
-
-		it("should ignore chunks without content", async () => {
-			const mockAgent = {
-				stream: vi.fn(function* () {
-					yield { type: "content" as const, content: "" };
-					yield { type: "content" as const, content: "Hello" };
-					yield { type: "done" as const };
-				}),
-			} as unknown as Agent;
-
-			const chatMessages: Array<ChatMessage> = [{ role: "user", content: "Hi" }];
-			const agentConfig: AgentConfig = { model: "test-model" };
-
-			const result = await chatService.streamChatResponse(mockRes, mockAgent, chatMessages, agentConfig);
-
-			expect(result).toEqual({ fullResponse: "Hello" });
 		});
 	});
 

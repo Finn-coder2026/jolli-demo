@@ -1,6 +1,7 @@
 import type { AWSCredentialsFactoryOptions } from "../../util/AWSCredentials";
 import { createAWSCredentialsProvider } from "../../util/AWSCredentials";
 import { getLog } from "../../util/Logger";
+import { withRetry } from "../../util/Retry";
 import type { ParameterStoreLoaderOptions } from "../ParameterStoreLoader";
 import { ParameterStoreLoader } from "../ParameterStoreLoader";
 import type { ConfigProvider } from "./ConfigProvider";
@@ -11,8 +12,8 @@ const log = getLog(import.meta);
  * Configuration provider that loads from AWS Systems Manager Parameter Store.
  *
  * Path convention:
- * - For Vercel deployments (VERCEL=1): `/jolli/vercel/{PSTORE_ENV}/*`
- * - For local/other deployments: `/jolli/backend/{PSTORE_ENV}/*`
+ * - If PSTORE_PATH_BASE is set: `/jolli/{PSTORE_PATH_BASE}/{PSTORE_ENV}/*`
+ * - Otherwise defaults to: `/jolli/app/{PSTORE_ENV}/*`
  *
  * This provider has highest priority (1) and will override values from other providers.
  */
@@ -24,21 +25,28 @@ export class AWSParameterStoreProvider implements ConfigProvider {
 
 	/**
 	 * Check if AWS Parameter Store is available.
-	 * Available when PSTORE_ENV environment variable is set.
+	 * Available when PSTORE_ENV is set AND SKIP_PSTORE is not "true".
+	 *
+	 * Set SKIP_PSTORE=true to bypass Parameter Store,
+	 * which eliminates 500-1500ms of cold start latency from AWS API calls.
 	 */
 	isAvailable(): boolean {
+		// If SKIP_PSTORE is set to "true", skip Parameter Store entirely
+		if (process.env.SKIP_PSTORE === "true") {
+			log.info("SKIP_PSTORE=true - bypassing AWS Parameter Store for faster cold start");
+			return false;
+		}
 		return Boolean(process.env.PSTORE_ENV);
 	}
 
 	/**
 	 * Load configuration from AWS Parameter Store.
 	 *
-	 * Uses the path prefix based on deployment environment:
-	 * - Vercel (VERCEL=1): /jolli/vercel/{PSTORE_ENV}/
-	 * - Other: /jolli/backend/{PSTORE_ENV}/
+	 * Uses the path prefix `/jolli/{pathBase}/{PSTORE_ENV}/` where pathBase
+	 * defaults to "app" and can be overridden via PSTORE_PATH_BASE.
 	 *
-	 * On Vercel with AWS_OIDC_ROLE_ARN set, uses OIDC federation for authentication.
-	 * Otherwise, falls back to the default AWS credential chain.
+	 * Uses the default AWS credential chain (IAM task role on ECS, env vars, etc.).
+	 * If AWS_OIDC_ROLE_ARN is set and useOIDC is enabled, uses OIDC federation.
 	 */
 	async load(): Promise<Record<string, string>> {
 		const pstoreEnv = process.env.PSTORE_ENV;
@@ -47,21 +55,19 @@ export class AWSParameterStoreProvider implements ConfigProvider {
 			return {};
 		}
 
-		// Determine path base - use /jolli/vercel/ for Vercel deployments
-		const isVercel = process.env.VERCEL === "1";
-		const pathBase = isVercel ? "vercel" : "backend";
+		// Default path base is "app" for ECS deployments
+		const pathBase = process.env.PSTORE_PATH_BASE ?? "app";
 		const roleArn = process.env.AWS_OIDC_ROLE_ARN;
 
 		log.info(
-			{ pstoreEnv, pathBase, isVercel, hasOidcRole: Boolean(roleArn) },
+			{ pstoreEnv, pathBase, hasOidcRole: Boolean(roleArn) },
 			"Loading from AWS Parameter Store: /jolli/%s/%s/",
 			pathBase,
 			pstoreEnv,
 		);
 
-		// Get credentials provider (OIDC on Vercel with role ARN, default chain otherwise)
-		// Build options object conditionally to satisfy exactOptionalPropertyTypes
-		const credentialsOptions: AWSCredentialsFactoryOptions = { isVercel };
+		// Build credentials options — uses default AWS credential chain (IAM task role on ECS)
+		const credentialsOptions: AWSCredentialsFactoryOptions = {};
 		if (roleArn) {
 			credentialsOptions.roleArn = roleArn;
 		}
@@ -80,14 +86,20 @@ export class AWSParameterStoreProvider implements ConfigProvider {
 		if (credentials) {
 			loaderOptions.credentials = credentials;
 		}
-		this.loader = new ParameterStoreLoader(loaderOptions);
+		const loader = new ParameterStoreLoader(loaderOptions);
+		this.loader = loader;
 
 		try {
-			const params = await this.loader.load();
+			const params = await withRetry(() => loader.load(), {
+				maxRetries: 3,
+				baseDelayMs: 1000,
+				maxDelayMs: 10000,
+				label: "Parameter Store",
+			});
 			log.info({ paramCount: Object.keys(params).length }, "Loaded parameters from AWS Parameter Store");
 			return params;
 		} catch (error) {
-			log.error(error, "Failed to load from AWS Parameter Store");
+			log.error(error, "Failed to load from AWS Parameter Store after retries");
 			throw error;
 		}
 	}

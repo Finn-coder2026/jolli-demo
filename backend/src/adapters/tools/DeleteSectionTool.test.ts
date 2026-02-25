@@ -47,6 +47,7 @@ describe("DeleteSectionTool", () => {
 			countMySharedNewDrafts: vi.fn(),
 			countSharedWithMeDrafts: vi.fn(),
 			countArticlesWithAgentSuggestions: vi.fn(),
+			getAllContent: vi.fn(),
 		});
 
 		it("returns error if draft not found", async () => {
@@ -608,14 +609,14 @@ describe("DeleteSectionTool", () => {
 			});
 
 			const mockUserDao = {
-				findUser: vi.fn().mockResolvedValue({
+				findByEmail: vi.fn().mockResolvedValue({
 					id: 5,
 					email: "user@example.com",
 					externalId: "ext-123",
 					createdAt: new Date(),
 					updatedAt: new Date(),
 				}),
-				findUserById: vi.fn(),
+				findById: vi.fn(),
 			};
 
 			const mockDocDraftSectionChangesDao = {
@@ -643,6 +644,87 @@ describe("DeleteSectionTool", () => {
 				title: "Test Article",
 				content: originalContent,
 				createdBy: 5,
+			});
+			expect(mockDocDraftSectionChangesDao.createDocDraftSectionChanges).toHaveBeenCalled();
+		});
+
+		it("creates suggestion for article mode with numeric updatedBy and no metadata title", async () => {
+			const dao = mockDocDraftDao();
+			const articleId = "jrn:article:org/repo/my-doc";
+			const originalContent = "# Introduction\n\nIntro content\n\n## Usage\n\nUsage content";
+
+			const mockDocDao = {
+				readDoc: vi.fn().mockResolvedValue({
+					id: 42,
+					jrn: articleId,
+					title: "Test Article",
+					content: originalContent,
+					contentMetadata: {}, // No title — falls back to articleId.split("/").pop()
+					version: 1,
+					updatedBy: "99",
+				}),
+			} as unknown as DocDao;
+
+			// findByDocId returns no existing draft
+			vi.mocked(dao.findByDocId).mockResolvedValue([]);
+
+			// createDocDraft creates a new draft
+			vi.mocked(dao.createDocDraft).mockResolvedValue({
+				id: 100,
+				docId: 42,
+				title: "my-doc",
+				content: originalContent,
+				contentType: "text/markdown",
+				createdBy: 99,
+				createdAt: new Date(),
+				updatedAt: new Date(),
+				contentLastEditedAt: null,
+				contentLastEditedBy: null,
+				contentMetadata: undefined,
+				isShared: false,
+				sharedAt: null,
+				sharedBy: null,
+				createdByAgent: false,
+			});
+
+			const mockUserDao = {
+				findByEmail: vi.fn(),
+				findById: vi.fn().mockResolvedValue({
+					id: 99,
+					email: "numericuser@example.com",
+					externalId: "ext-99",
+					createdAt: new Date(),
+					updatedAt: new Date(),
+				}),
+			};
+
+			const mockDocDraftSectionChangesDao = {
+				createDocDraftSectionChanges: vi.fn().mockResolvedValue({ id: 1 }),
+				getDocDraftSectionChanges: vi.fn(),
+				getDocDraftSectionChangesByDraftId: vi.fn(),
+				deleteDocDraftSectionChanges: vi.fn(),
+				updateDocDraftSectionChanges: vi.fn(),
+			} as unknown as DocDraftSectionChangesDao;
+
+			const result = await executeDeleteSectionTool(
+				undefined,
+				articleId,
+				{ sectionTitle: "Usage" },
+				dao,
+				1,
+				mockDocDao,
+				mockDocDraftSectionChangesDao,
+				mockUserDao as never,
+			);
+
+			expect(result).toContain("Suggested deleting section");
+			expect(mockUserDao.findById).toHaveBeenCalledWith(99);
+			expect(mockUserDao.findByEmail).not.toHaveBeenCalled();
+			expect(dao.createDocDraft).toHaveBeenCalledWith({
+				docId: 42,
+				title: "my-doc",
+				content: originalContent,
+				createdBy: 99,
 			});
 			expect(mockDocDraftSectionChangesDao.createDocDraftSectionChanges).toHaveBeenCalled();
 		});
@@ -684,8 +766,8 @@ describe("DeleteSectionTool", () => {
 
 			// User not found
 			const mockUserDao = {
-				findUser: vi.fn().mockResolvedValue(undefined),
-				findUserById: vi.fn(),
+				findByEmail: vi.fn().mockResolvedValue(undefined),
+				findById: vi.fn(),
 			};
 
 			const mockDocDraftSectionChangesDao = {

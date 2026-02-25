@@ -2,7 +2,7 @@ import { getLog } from "../util/Logger";
 import type { TenantDatabaseConfig } from "./TenantDatabaseConfig";
 import { createRegistrySequelize } from "./TenantSequelizeFactory";
 import type { Org, OrgSummary, Tenant, TenantSummary } from "jolli-common";
-import type { Sequelize } from "sequelize";
+import type { Sequelize, Transaction } from "sequelize";
 
 const log = getLog(import.meta);
 
@@ -31,11 +31,22 @@ export interface CreateInstallationMappingParams {
 	githubAccountType: "Organization" | "User";
 }
 
+/** Tenant with its default org for tenant switcher */
+export interface TenantWithDefaultOrg {
+	id: string;
+	slug: string;
+	displayName: string;
+	primaryDomain: string | null;
+	defaultOrgId: string;
+}
+
 export interface TenantRegistryClient {
 	// Tenant methods
 	getTenant(id: string): Promise<Tenant | undefined>;
 	getTenantBySlug(slug: string): Promise<Tenant | undefined>;
 	listTenants(): Promise<Array<TenantSummary>>;
+	/** List active tenants with their default org (single query, for tenant switcher) */
+	listTenantsWithDefaultOrg(): Promise<Array<TenantWithDefaultOrg>>;
 	/** List all active tenants (for migration scripts) */
 	listAllActiveTenants(): Promise<Array<Tenant>>;
 
@@ -60,6 +71,13 @@ export interface TenantRegistryClient {
 	getTenantOrgByInstallationId(installationId: number): Promise<TenantOrgByInstallationResult | undefined>;
 	/** Create a mapping from GitHub installation ID to tenant/org */
 	createInstallationMapping(params: CreateInstallationMappingParams): Promise<void>;
+	/**
+	 * Ensure a GitHub installation mapping exists (safe gap-filler).
+	 * Uses INSERT ... ON CONFLICT DO NOTHING — can only fill gaps, never overwrites
+	 * an existing mapping owned by another tenant.
+	 * @returns true if a new mapping was created, false if one already existed.
+	 */
+	ensureInstallationMapping(params: CreateInstallationMappingParams): Promise<boolean>;
 	/** Delete a GitHub installation mapping */
 	deleteInstallationMapping(installationId: number): Promise<void>;
 
@@ -127,6 +145,25 @@ export function createTenantRegistryClient(config: TenantRegistryClientInternalC
 			 ORDER BY t.created_at DESC`,
 		);
 		return (rows as Array<TenantRow>).map(mapRowToTenantSummary);
+	}
+
+	async function listTenantsWithDefaultOrg(): Promise<Array<TenantWithDefaultOrg>> {
+		// Single query to get active tenants with their default org (avoids N+1 problem)
+		const [rows] = await sequelize.query(
+			`SELECT t.id, t.slug, t.display_name, d.domain as primary_domain, o.id as default_org_id
+			 FROM tenants t
+			 JOIN orgs o ON o.tenant_id = t.id AND o.is_default = true
+			 LEFT JOIN tenant_domains d ON d.tenant_id = t.id AND d.is_primary = true AND d.verified_at IS NOT NULL
+			 WHERE t.status = 'active'
+			 ORDER BY t.created_at DESC`,
+		);
+		return (rows as Array<TenantWithDefaultOrgRow>).map(row => ({
+			id: row.id,
+			slug: row.slug,
+			displayName: row.display_name,
+			primaryDomain: row.primary_domain,
+			defaultOrgId: row.default_org_id,
+		}));
 	}
 
 	async function getTenantDatabaseConfig(tenantId: string): Promise<TenantDatabaseConfig | undefined> {
@@ -253,35 +290,121 @@ export function createTenantRegistryClient(config: TenantRegistryClientInternalC
 		};
 	}
 
-	async function createInstallationMapping(params: CreateInstallationMappingParams): Promise<void> {
-		const id = crypto.randomUUID();
-		await sequelize.query(
-			`INSERT INTO github_installation_mappings
-				(id, installation_id, tenant_id, org_id, github_account_login, github_account_type, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
-			ON CONFLICT (installation_id)
-			DO UPDATE SET
-				tenant_id = EXCLUDED.tenant_id,
-				org_id = EXCLUDED.org_id,
-				github_account_login = EXCLUDED.github_account_login,
-				github_account_type = EXCLUDED.github_account_type,
-				updated_at = NOW()`,
+	/**
+	 * Delete stale installation mappings for the same GitHub account but a different installation ID.
+	 * GitHub only allows one installation of a given app per org/user at a time, so if a new
+	 * installation ID exists for the same account, any older mappings are definitively stale.
+	 */
+	async function deleteStaleInstallationMappings(
+		githubAccountLogin: string,
+		installationId: number,
+		transaction: Transaction,
+	): Promise<number> {
+		const [, deleted] = await sequelize.query(
+			`DELETE FROM github_installation_mappings
+			 WHERE github_account_login = $1
+			   AND installation_id != $2`,
 			{
-				bind: [
-					id,
-					params.installationId,
-					params.tenantId,
-					params.orgId,
-					params.githubAccountLogin,
-					params.githubAccountType,
-				],
+				bind: [githubAccountLogin, installationId],
+				transaction,
 			},
 		);
+		return deleted as number;
+	}
+
+	async function createInstallationMapping(params: CreateInstallationMappingParams): Promise<void> {
+		await sequelize.transaction(async transaction => {
+			const deleted = await deleteStaleInstallationMappings(
+				params.githubAccountLogin,
+				params.installationId,
+				transaction,
+			);
+			if (deleted > 0) {
+				log.info(
+					{ githubAccountLogin: params.githubAccountLogin, deleted },
+					"Cleaned up %d stale installation mapping(s) for %s",
+					deleted,
+					params.githubAccountLogin,
+				);
+			}
+
+			const id = crypto.randomUUID();
+			await sequelize.query(
+				`INSERT INTO github_installation_mappings
+					(id, installation_id, tenant_id, org_id, github_account_login, github_account_type, created_at, updated_at)
+				VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+				ON CONFLICT (installation_id)
+				DO UPDATE SET
+					tenant_id = EXCLUDED.tenant_id,
+					org_id = EXCLUDED.org_id,
+					github_account_login = EXCLUDED.github_account_login,
+					github_account_type = EXCLUDED.github_account_type,
+					updated_at = NOW()`,
+				{
+					bind: [
+						id,
+						params.installationId,
+						params.tenantId,
+						params.orgId,
+						params.githubAccountLogin,
+						params.githubAccountType,
+					],
+					transaction,
+				},
+			);
+		});
 		log.info(
 			{ installationId: params.installationId, tenantId: params.tenantId, orgId: params.orgId },
 			"Created GitHub installation mapping for installation %d",
 			params.installationId,
 		);
+	}
+
+	async function ensureInstallationMapping(params: CreateInstallationMappingParams): Promise<boolean> {
+		let created = false;
+		await sequelize.transaction(async transaction => {
+			const deleted = await deleteStaleInstallationMappings(
+				params.githubAccountLogin,
+				params.installationId,
+				transaction,
+			);
+			if (deleted > 0) {
+				log.info(
+					{ githubAccountLogin: params.githubAccountLogin, deleted },
+					"Cleaned up %d stale installation mapping(s) for %s",
+					deleted,
+					params.githubAccountLogin,
+				);
+			}
+
+			const id = crypto.randomUUID();
+			const [, rowCount] = await sequelize.query(
+				`INSERT INTO github_installation_mappings
+					(id, installation_id, tenant_id, org_id, github_account_login, github_account_type, created_at, updated_at)
+				VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+				ON CONFLICT (installation_id) DO NOTHING`,
+				{
+					bind: [
+						id,
+						params.installationId,
+						params.tenantId,
+						params.orgId,
+						params.githubAccountLogin,
+						params.githubAccountType,
+					],
+					transaction,
+				},
+			);
+			created = (rowCount as number) > 0;
+		});
+		if (created) {
+			log.info(
+				{ installationId: params.installationId, tenantId: params.tenantId, orgId: params.orgId },
+				"Created GitHub installation mapping (gap-fill) for installation %d",
+				params.installationId,
+			);
+		}
+		return created;
 	}
 
 	async function deleteInstallationMapping(installationId: number): Promise<void> {
@@ -302,6 +425,7 @@ export function createTenantRegistryClient(config: TenantRegistryClientInternalC
 		getTenantByDomain,
 		getTenantDatabaseConfig,
 		listTenants,
+		listTenantsWithDefaultOrg,
 		listAllActiveTenants,
 		getOrg,
 		getOrgBySlug,
@@ -310,6 +434,7 @@ export function createTenantRegistryClient(config: TenantRegistryClientInternalC
 		listAllActiveOrgs,
 		getTenantOrgByInstallationId,
 		createInstallationMapping,
+		ensureInstallationMapping,
 		deleteInstallationMapping,
 		close,
 	};
@@ -317,6 +442,15 @@ export function createTenantRegistryClient(config: TenantRegistryClientInternalC
 
 // Raw row types from database queries (snake_case column names)
 // These provide explicit typing for query results before mapping to domain types
+
+/** Raw tenant with default org row from database query */
+interface TenantWithDefaultOrgRow {
+	id: string;
+	slug: string;
+	display_name: string;
+	primary_domain: string | null;
+	default_org_id: string;
+}
 
 /** Raw tenant row from database query */
 interface TenantRow {

@@ -33,7 +33,7 @@ describe("Asset", () => {
 		expect(schema.s3Key).toEqual({
 			type: DataTypes.STRING(512),
 			allowNull: false,
-			unique: true,
+			unique: "assets_s3_key_key",
 		});
 
 		// Validate assetType field
@@ -65,10 +65,6 @@ describe("Asset", () => {
 		expect(schema.uploadedBy).toEqual({
 			type: DataTypes.INTEGER,
 			allowNull: false,
-			references: {
-				model: "users",
-				key: "id",
-			},
 		});
 
 		// Validate status field

@@ -8,6 +8,7 @@ import type {
 	DomainVerificationChallenge,
 	JwtAuthConfig,
 	JwtAuthMode,
+	SiteBranding,
 } from "jolli-common";
 import { DataTypes, type Sequelize } from "sequelize";
 
@@ -63,6 +64,7 @@ export interface SiteMetadata {
 	allowedDomain?: string; // For internal sites: allowed email domain (e.g., "jolli.ai")
 	isPublished?: boolean; // For external sites: whether site has been published to production
 	generatedArticleJrns?: Array<string>; // JRNs of articles included in last generation (for change detection)
+	generatedArticleTitles?: Record<string, string>; // Map of JRN -> title at last generation (for deleted article slug derivation)
 	generatedJwtAuthEnabled?: boolean; // Whether JWT auth was enabled at last generation (for change detection)
 	selectedArticleJrns?: Array<string>; // JRNs of articles selected for this site (undefined = all articles)
 	validationErrors?: string; // MDX/build validation error details if build failed
@@ -76,10 +78,13 @@ export interface SiteMetadata {
 	subdomain?: string; // Subdomain slug (e.g., "docs" for docs-tenant.jolli.site)
 	jolliSiteDomain?: string; // Full jolli.site domain (e.g., "docs-acme.jolli.site")
 	customDomains?: Array<CustomDomainInfo>; // Custom domains attached to this site
+	// Site branding
+	branding?: SiteBranding; // Site branding/customization configuration
+	generatedBranding?: SiteBranding; // Branding at last generation (for change detection)
+	// Folder structure
+	useSpaceFolderStructure?: boolean; // Whether to use space folder structure for navigation
+	generatedUseSpaceFolderStructure?: boolean; // Whether folder structure was enabled at last generation (for change detection)
 }
-
-// Domain types (CustomDomainStatus, DomainVerificationChallenge, CustomDomainInfo,
-// AddDomainResult, DomainStatusResult) are re-exported from jolli-common above
 
 /**
  * Main site interface
@@ -105,11 +110,16 @@ export type NewSite = Omit<Site, "id" | "createdAt" | "updatedAt">;
 export const TABLE_NAME_SITES = "sites";
 
 export function defineSites(sequelize: Sequelize): ModelDef<Site> {
+	const existing = sequelize.models?.sites;
+	if (existing) {
+		return existing as ModelDef<Site>;
+	}
 	return sequelize.define(TABLE_NAME_SITES, schema, { timestamps: true, indexes });
 }
 
 const indexes = [
 	{
+		name: "sites_name_key",
 		unique: true,
 		fields: ["name"],
 	},
@@ -143,11 +153,6 @@ const schema = {
 		type: DataTypes.INTEGER,
 		field: "user_id",
 		allowNull: true,
-		references: {
-			model: "users",
-			key: "id",
-		},
-		onDelete: "SET NULL",
 	},
 	visibility: {
 		type: DataTypes.STRING,
@@ -191,3 +196,30 @@ class SitePII {
 
 // Reference the class to ensure decorators are executed
 void SitePII;
+
+/**
+ * Type-safe accessor for site metadata. Returns undefined if metadata is not set.
+ */
+export function getSiteMetadata(site: Site): SiteMetadata | undefined {
+	return site.metadata;
+}
+
+/**
+ * Type-safe accessor for site metadata. Throws if metadata is missing.
+ * Use in contexts where metadata is guaranteed to exist (e.g., active sites during rebuild).
+ */
+export function requireSiteMetadata(site: Site): SiteMetadata {
+	if (!site.metadata) {
+		throw new Error(`Site ${site.id} has no metadata`);
+	}
+	return site.metadata;
+}
+
+/**
+ * Gets site metadata for spread/update operations.
+ * Returns an empty object (typed as SiteMetadata) when metadata is undefined,
+ * suitable for spreading into a new object that supplies the required fields.
+ */
+export function getMetadataForUpdate(site: Site): SiteMetadata {
+	return (site.metadata || {}) as SiteMetadata;
+}

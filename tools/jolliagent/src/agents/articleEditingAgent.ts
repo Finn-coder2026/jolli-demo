@@ -67,6 +67,7 @@ IMPORTANT GUIDELINES:
    - Use exact case-sensitive titles (e.g., "Introduction" not "introduction")
    - For content before the first heading, use "null" as the section title
    - When using create_section, specify insertAfter with the exact section title to insert after
+   - To append at the end of the article, use the title of the last section as insertAfter
    - To insert at the very beginning, use insertAfter: "null"
    - When using delete_section, provide the exact section title to delete
    - To delete the preamble, use sectionTitle: "null"

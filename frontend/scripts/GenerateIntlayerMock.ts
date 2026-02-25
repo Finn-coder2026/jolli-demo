@@ -21,12 +21,29 @@ interface DictionaryFile {
 const DICTIONARY_DIR = join(process.cwd(), ".intlayer", "dictionary");
 const OUTPUT_FILE = join(process.cwd(), "src", "test", "IntlayerMock.ts");
 
+/** Recursively sort all object keys for deterministic serialization */
+function deepSortKeys(value: unknown): unknown {
+	if (Array.isArray(value)) {
+		return value.map(deepSortKeys);
+	}
+	if (value !== null && typeof value === "object") {
+		return Object.fromEntries(
+			Object.entries(value as Record<string, unknown>)
+				.sort(([a], [b]) => a.localeCompare(b))
+				.map(([k, v]) => [k, deepSortKeys(v)]),
+		);
+	}
+	return value;
+}
+
 function main() {
 	// biome-ignore lint/suspicious/noConsole: CLI script that outputs progress to user
 	console.log("Generating IntlayerMock.ts from built dictionaries...");
 
 	// Read all dictionary JSON files
-	const files = readdirSync(DICTIONARY_DIR).filter(f => f.endsWith(".json"));
+	const files = readdirSync(DICTIONARY_DIR)
+		.filter(f => f.endsWith(".json"))
+		.sort();
 
 	if (files.length === 0) {
 		console.error("Error: No dictionary files found. Run 'npm run build:intlayer' first.");
@@ -55,7 +72,11 @@ function main() {
  * Mock content map for testing
  * Contains English translations from all intlayer content files
  */
-export const CONTENT_MAP: Record<string, Record<string, unknown>> = ${JSON.stringify(contentMap, null, "\t")};
+export const CONTENT_MAP: Record<string, Record<string, unknown>> = ${JSON.stringify(
+		deepSortKeys(contentMap),
+		null,
+		"\t",
+	)};
 `;
 
 	writeFileSync(OUTPUT_FILE, output, "utf-8");

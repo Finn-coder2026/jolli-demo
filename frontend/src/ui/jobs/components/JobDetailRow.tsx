@@ -196,13 +196,13 @@ export function JobDetailRow({ job, onCancel, onRetry }: JobDetailRowProps): Rea
 						</TabsContent>
 
 						<TabsContent value="params" className="mt-4">
-							<pre className="text-sm bg-black/5 dark:bg-white/5 p-4 rounded overflow-auto max-h-96">
+							<pre className="text-sm bg-black/5 dark:bg-white/5 p-4 rounded overflow-auto max-h-96 scrollbar-thin">
 								{JSON.stringify(job.params, null, 2)}
 							</pre>
 						</TabsContent>
 
 						<TabsContent value="logs" className="mt-4">
-							<div className="space-y-2 max-h-96 overflow-auto">
+							<div className="space-y-2 max-h-96 overflow-auto scrollbar-thin">
 								{job.logs.length === 0 ? (
 									<div className="text-sm text-muted-foreground">
 										{content.messages.noLogsAvailable}
@@ -242,7 +242,7 @@ export function JobDetailRow({ job, onCancel, onRetry }: JobDetailRowProps): Rea
 												<div className="font-medium text-muted-foreground mb-2">
 													{content.errors.stackTrace}
 												</div>
-												<pre className="text-xs bg-black/5 dark:bg-white/5 p-4 rounded overflow-auto max-h-96">
+												<pre className="text-xs bg-black/5 dark:bg-white/5 p-4 rounded overflow-auto max-h-96 scrollbar-thin">
 													{job.errorStack}
 												</pre>
 											</div>

@@ -1,7 +1,7 @@
 import { PIIField, PIISchema } from "../audit/PiiDecorators";
 import type { ModelDef } from "../util/ModelDef";
 import type { DocContentMetadata, DocType } from "jolli-common";
-import { DataTypes, type Sequelize } from "sequelize";
+import { DataTypes, literal, type Sequelize } from "sequelize";
 
 export interface Doc {
 	readonly id: number;
@@ -32,14 +32,25 @@ export interface Doc {
  * - slug: Auto-generated from title if not provided
  * - path: Auto-generated based on parent hierarchy if not provided
  * - jrn: Auto-generated if not provided
+ * - sortOrder: Auto-calculated from max sibling sortOrder + 1 if not provided (requires spaceId)
  */
 export type NewDoc = Omit<
 	Doc,
-	"id" | "createdAt" | "updatedAt" | "version" | "deletedAt" | "explicitlyDeleted" | "slug" | "path" | "jrn"
+	| "id"
+	| "createdAt"
+	| "updatedAt"
+	| "version"
+	| "deletedAt"
+	| "explicitlyDeleted"
+	| "slug"
+	| "path"
+	| "jrn"
+	| "sortOrder"
 > & {
 	slug?: string;
 	path?: string;
 	jrn?: string;
+	sortOrder?: number;
 };
 
 export function defineDocs(sequelize: Sequelize): ModelDef<Doc> {
@@ -48,7 +59,17 @@ export function defineDocs(sequelize: Sequelize): ModelDef<Doc> {
 	if (existing) {
 		return existing as ModelDef<Doc>;
 	}
-	return sequelize.define("doc", schema, { timestamps: true });
+	return sequelize.define("doc", schema, {
+		timestamps: true,
+		indexes: [
+			// Full-text search index for content (English)
+			{
+				name: "idx_docs_content_fts",
+				using: "GIN",
+				fields: [literal("to_tsvector('english', content)")],
+			},
+		],
+	});
 }
 
 const schema = {
@@ -63,10 +84,9 @@ const schema = {
 		unique: "docs_jrn_key",
 	},
 	slug: {
-		// allowNull: true initially to allow migration of existing data
-		// DocDao.postSync will populate NULL slugs and add NOT NULL constraint
+		// Migration complete: all docs have slugs, all creation paths generate slugs
 		type: DataTypes.STRING(100),
-		allowNull: true,
+		allowNull: false,
 	},
 	path: {
 		type: DataTypes.TEXT,

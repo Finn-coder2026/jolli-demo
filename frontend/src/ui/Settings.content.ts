@@ -3,11 +3,15 @@ import { type Dictionary, t } from "intlayer";
 const settingsContent = {
 	key: "settings",
 	content: {
-		title: t({ en: "Settings", es: "Configuracion" }),
+		title: t({ en: "Account Settings", es: "Configuracion de cuenta" }),
 		subtitle: t({
-			en: "Configure your preferences and account settings",
-			es: "Configure sus preferencias y ajustes de cuenta",
+			en: "Configure your application preferences",
+			es: "Configure las preferencias de su aplicacion",
 		}),
+
+		// Tab labels
+		preferencesTab: t({ en: "Preferences", es: "Preferencias" }),
+		rolesTab: t({ en: "Roles", es: "Roles" }),
 
 		// Appearance section
 		appearanceTitle: t({ en: "Appearance", es: "Apariencia" }),
@@ -24,8 +28,8 @@ const settingsContent = {
 		themeDark: t({ en: "Dark", es: "Oscuro" }),
 		languageTitle: t({ en: "Language", es: "Idioma" }),
 		languageDescription: t({
-			en: "Select your preferred language for the interface",
-			es: "Seleccione su idioma preferido para la interfaz",
+			en: "Choose your preferred language",
+			es: "Elija su idioma preferido",
 		}),
 
 		// Interface section
@@ -67,6 +71,19 @@ const settingsContent = {
 			en: "Display detailed information about AI tool usage in article drafts",
 			es: "Mostrar informacion detallada sobre el uso de herramientas de IA en borradores",
 		}),
+
+		// Advanced section
+		advancedTitle: t({ en: "Advanced", es: "Avanzado" }),
+		advancedDescription: t({
+			en: "Advanced features and developer options",
+			es: "Funciones avanzadas y opciones para desarrolladores",
+		}),
+		sourceViewLabel: t({ en: "Source view", es: "Vista de codigo" }),
+		sourceViewDescription: t({
+			en: "View raw source data for debugging",
+			es: "Ver datos sin procesar para depuracion",
+		}),
+		viewSource: t({ en: "View Source", es: "Ver codigo" }),
 	},
 } satisfies Dictionary;
 

@@ -1,0 +1,89 @@
+/* Agent Page Styles */
+
+/* Message fade-in animation */
+.agent-message-enter {
+	animation: agentMessageFadeIn 0.2s ease-out;
+}
+
+@keyframes agentMessageFadeIn {
+	from {
+		opacity: 0;
+		transform: translateY(4px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+/* Typing indicator dots */
+.agent-typing-dot {
+	animation: agentTypingPulse 1.4s infinite;
+}
+
+.agent-typing-dot:nth-child(2) {
+	animation-delay: 0.2s;
+}
+
+.agent-typing-dot:nth-child(3) {
+	animation-delay: 0.4s;
+}
+
+@keyframes agentTypingPulse {
+	0%,
+	60%,
+	100% {
+		opacity: 0.3;
+		transform: scale(0.8);
+	}
+	30% {
+		opacity: 1;
+		transform: scale(1);
+	}
+}
+
+/* Auto-growing textarea */
+.agent-input-textarea {
+	field-sizing: content;
+	max-height: 10rem;
+	min-height: 2.5rem;
+	resize: none;
+}
+
+/* Sidebar conversation list fade gradient */
+.agent-sidebar-fade {
+	mask-image: linear-gradient(to bottom, #000 90%, transparent 100%);
+}
+
+/* Suggestion card hover effect */
+.agent-suggestion-card {
+	transition:
+		box-shadow 0.15s ease,
+		transform 0.15s ease;
+}
+
+.agent-suggestion-card:hover {
+	box-shadow: 0 4px 12px rgb(0 0 0 / 0.1);
+	transform: translateY(-1px);
+}
+
+/* Plan content fade-in */
+.agent-plan-content-enter {
+	animation: agentPlanFadeIn 0.15s ease-out;
+}
+
+@keyframes agentPlanFadeIn {
+	from {
+		opacity: 0;
+	}
+	to {
+		opacity: 1;
+	}
+}
+
+/* Scroll-to-bottom button */
+.agent-scroll-btn {
+	transition:
+		opacity 0.15s ease,
+		transform 0.15s ease;
+}

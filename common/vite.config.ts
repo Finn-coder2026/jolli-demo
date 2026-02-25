@@ -11,6 +11,7 @@ export default defineConfig({
 				"src/core/SiteClient.ts",
 				"src/types/**",
 				"src/tenant/**",
+				"src/onboarding/types.ts", // Type-only file - no executable code
 			],
 			include: ["src/**/*.ts"],
 			reporter: ["html", "json", "lcov", "text"],

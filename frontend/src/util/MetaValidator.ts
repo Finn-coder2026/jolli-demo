@@ -538,3 +538,6 @@ export function validateMetaSyntaxOnly(content: string): MetaValidationResult {
 		missingEntries: [], // Empty - not checking consistency
 	};
 }
+
+// Re-export manipulation functions from MetaSyncUtils for backwards compatibility
+export { addMetaEntry, findEntryBoundaries, getEntryValue, removeMetaEntry, renameMetaEntry } from "./MetaSyncUtils";

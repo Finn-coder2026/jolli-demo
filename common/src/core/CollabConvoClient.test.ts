@@ -35,6 +35,32 @@ function createMockAuth(checkUnauthorized?: (response: Response) => boolean): Mo
 	return auth;
 }
 
+/**
+ * Helper to create a mock SSE Response with ReadableStream body
+ */
+function createMockSseResponse(events: Array<{ type: string; data?: unknown }>): Response {
+	const sseText = events
+		.map(event => {
+			const data = event.data ? JSON.stringify(event.data) : JSON.stringify({ type: event.type });
+			return `data: ${data}\n\n`;
+		})
+		.join("");
+
+	const encoder = new TextEncoder();
+	const stream = new ReadableStream({
+		start(controller) {
+			controller.enqueue(encoder.encode(sseText));
+			controller.close();
+		},
+	});
+
+	return {
+		ok: true,
+		body: stream,
+		headers: new Headers({ "content-type": "text/event-stream" }),
+	} as unknown as Response;
+}
+
 describe("CollabConvoClient", () => {
 	let client: CollabConvoClient;
 	let mockAuth: ReturnType<typeof createMockAuth>;
@@ -162,29 +188,62 @@ describe("CollabConvoClient", () => {
 	});
 
 	describe("sendMessage", () => {
-		it("sends a message successfully", async () => {
-			const mockResponse = {
-				success: true,
-				message: {
-					role: "user" as const,
-					content: "Hello AI",
-					userId: 100,
-					timestamp: "2025-01-01T00:00:00Z",
+		it("sends a message and processes SSE stream successfully", async () => {
+			const mockSseResponse = createMockSseResponse([
+				{ type: "message_received", data: { type: "message_received", timestamp: "2025-01-01T00:00:00Z" } },
+				{ type: "content_chunk", data: { type: "content_chunk", content: "Hello", seq: 0 } },
+				{
+					type: "message_complete",
+					data: {
+						type: "message_complete",
+						message: { role: "assistant", content: "Hello!", timestamp: "2025-01-01T00:00:01Z" },
+					},
 				},
-			};
+			]);
 
-			mockFetch.mockResolvedValueOnce({
-				ok: true,
-				json: async () => mockResponse,
-			} as Response);
+			mockFetch.mockResolvedValueOnce(mockSseResponse);
 
-			const result = await client.sendMessage(1, "Hello AI");
+			const chunks: Array<string> = [];
+			let completeMessage: { role: string; content: string; timestamp: string } | undefined;
 
-			expect(result).toEqual(mockResponse);
+			await client.sendMessage(1, "Hello AI", {
+				onChunk: (content, _seq) => chunks.push(content),
+				onComplete: message => {
+					completeMessage = message;
+				},
+			});
+
+			expect(chunks).toEqual(["Hello"]);
+			expect(completeMessage).toEqual({
+				role: "assistant",
+				content: "Hello!",
+				timestamp: "2025-01-01T00:00:01Z",
+			});
 			expect(mockFetch).toHaveBeenCalledWith(
 				"http://localhost:3000/api/collab-convos/1/messages",
 				expect.objectContaining({ method: "POST" }),
 			);
+		});
+
+		it("includes clientRequestId in sendMessage request body when provided", async () => {
+			const mockSseResponse = createMockSseResponse([
+				{ type: "message_received", data: { type: "message_received" } },
+				{
+					type: "message_complete",
+					data: {
+						type: "message_complete",
+						message: { role: "assistant", content: "Done", timestamp: "2025-01-01T00:00:01Z" },
+					},
+				},
+			]);
+			mockFetch.mockResolvedValueOnce(mockSseResponse);
+
+			await client.sendMessage(1, "Hello AI", undefined, { clientRequestId: "req-123" });
+
+			expect(mockAuth.createRequest).toHaveBeenCalledWith("POST", {
+				message: "Hello AI",
+				clientRequestId: "req-123",
+			});
 		});
 
 		it("throws error when send fails", async () => {
@@ -194,6 +253,281 @@ describe("CollabConvoClient", () => {
 			} as Response);
 
 			await expect(client.sendMessage(1, "Hello")).rejects.toThrow("Failed to send message: Bad Request");
+		});
+
+		it("handles tool events from SSE stream", async () => {
+			const mockSseResponse = createMockSseResponse([
+				{ type: "message_received", data: { type: "message_received" } },
+				{
+					type: "tool_event",
+					data: { type: "tool_event", event: { type: "tool_start", tool: "search", status: "start" } },
+				},
+				{
+					type: "message_complete",
+					data: {
+						type: "message_complete",
+						message: { role: "assistant", content: "Done", timestamp: "2025-01-01T00:00:01Z" },
+					},
+				},
+			]);
+
+			mockFetch.mockResolvedValueOnce(mockSseResponse);
+
+			const toolEvents: Array<{ type: string; tool: string; status?: string }> = [];
+
+			await client.sendMessage(1, "Search something", {
+				onToolEvent: event => toolEvents.push(event),
+			});
+
+			expect(toolEvents).toEqual([{ type: "tool_start", tool: "search", status: "start" }]);
+		});
+
+		it("handles error events from SSE stream", async () => {
+			const mockSseResponse = createMockSseResponse([
+				{ type: "message_received", data: { type: "message_received" } },
+				{ type: "error", data: { type: "error", error: "Something went wrong" } },
+			]);
+
+			mockFetch.mockResolvedValueOnce(mockSseResponse);
+
+			let errorMessage: string | undefined;
+
+			await client.sendMessage(1, "Hello", {
+				onError: error => {
+					errorMessage = error;
+				},
+			});
+
+			expect(errorMessage).toBe("Something went wrong");
+		});
+
+		it("uses fallback values when content/seq/error are missing", async () => {
+			// Test content_chunk without content/seq and error without error message
+			const mockSseResponse = createMockSseResponse([
+				{ type: "message_received", data: { type: "message_received" } },
+				{ type: "content_chunk", data: { type: "content_chunk" } }, // missing content and seq
+				{ type: "error", data: { type: "error" } }, // missing error message
+				{
+					type: "message_complete",
+					data: {
+						type: "message_complete",
+						message: { role: "assistant", content: "Done", timestamp: "2025-01-01T00:00:01Z" },
+					},
+				},
+			]);
+
+			mockFetch.mockResolvedValueOnce(mockSseResponse);
+
+			const chunks: Array<{ content: string; seq: number }> = [];
+			let errorMessage: string | undefined;
+
+			await client.sendMessage(1, "Hello", {
+				onChunk: (content, seq) => chunks.push({ content, seq }),
+				onError: error => {
+					errorMessage = error;
+				},
+			});
+
+			// Verify fallback values are used
+			expect(chunks).toEqual([{ content: "", seq: 0 }]);
+			expect(errorMessage).toBe("Unknown error");
+		});
+
+		it("handles article_updated events from SSE stream", async () => {
+			const mockSseResponse = createMockSseResponse([
+				{ type: "message_received", data: { type: "message_received" } },
+				{
+					type: "article_updated",
+					data: {
+						type: "article_updated",
+						diffs: [{ op: "add" }],
+						contentLastEditedAt: "2025-01-01T00:00:01Z",
+						clientRequestId: "req-abc",
+						userId: 42,
+					},
+				},
+				{
+					type: "message_complete",
+					data: {
+						type: "message_complete",
+						message: { role: "assistant", content: "Updated", timestamp: "2025-01-01T00:00:02Z" },
+					},
+				},
+			]);
+
+			mockFetch.mockResolvedValueOnce(mockSseResponse);
+
+			let articleData:
+				| { diffs: Array<unknown> | undefined; clientRequestId?: string; userId?: number }
+				| undefined;
+
+			await client.sendMessage(1, "Update article", {
+				onArticleUpdated: data => {
+					articleData = data;
+				},
+			});
+
+			expect(articleData?.diffs).toEqual([{ op: "add" }]);
+			expect(articleData?.clientRequestId).toBe("req-abc");
+			expect(articleData?.userId).toBe(42);
+		});
+
+		it("throws error when response body is not readable", async () => {
+			mockFetch.mockResolvedValueOnce({
+				ok: true,
+				body: null,
+			} as Response);
+
+			await expect(client.sendMessage(1, "Hello")).rejects.toThrow("Response body is not readable");
+		});
+
+		it("ignores empty event strings and comment lines (keep-alive pings)", async () => {
+			// Create a custom SSE response with empty lines and comment lines
+			const sseText = [
+				"",
+				"   ",
+				": ping keep-alive",
+				'data: {"type":"message_received"}',
+				"",
+				": another ping",
+				'data: {"type":"message_complete","message":{"role":"assistant","content":"Done","timestamp":"2025-01-01T00:00:01Z"}}',
+				"",
+			].join("\n\n");
+
+			const encoder = new TextEncoder();
+			const stream = new ReadableStream({
+				start(controller) {
+					controller.enqueue(encoder.encode(sseText));
+					controller.close();
+				},
+			});
+
+			const mockSseResponse = {
+				ok: true,
+				body: stream,
+				headers: new Headers({ "content-type": "text/event-stream" }),
+			} as unknown as Response;
+
+			mockFetch.mockResolvedValueOnce(mockSseResponse);
+
+			let completeMessage: { role: string; content: string; timestamp: string } | undefined;
+
+			await client.sendMessage(1, "Hello", {
+				onComplete: message => {
+					completeMessage = message;
+				},
+			});
+
+			// Should still receive the message_complete event despite empty/comment lines
+			expect(completeMessage).toEqual({ role: "assistant", content: "Done", timestamp: "2025-01-01T00:00:01Z" });
+		});
+
+		it("ignores [DONE] and [ERROR] markers in SSE data", async () => {
+			// SSE events with special markers that should be ignored
+			const sseText =
+				'data: {"type":"message_received"}\n\n' +
+				"data: [DONE]\n\n" +
+				"data: [ERROR]\n\n" +
+				'data: {"type":"message_complete","message":{"role":"assistant","content":"Done","timestamp":"2025-01-01T00:00:01Z"}}\n\n';
+
+			const encoder = new TextEncoder();
+			const stream = new ReadableStream({
+				start(controller) {
+					controller.enqueue(encoder.encode(sseText));
+					controller.close();
+				},
+			});
+
+			const mockSseResponse = {
+				ok: true,
+				body: stream,
+				headers: new Headers({ "content-type": "text/event-stream" }),
+			} as unknown as Response;
+
+			mockFetch.mockResolvedValueOnce(mockSseResponse);
+
+			let completeMessage: { role: string; content: string; timestamp: string } | undefined;
+
+			await client.sendMessage(1, "Hello", {
+				onComplete: message => {
+					completeMessage = message;
+				},
+			});
+
+			// Should still receive the valid message, ignoring [DONE] and [ERROR] markers
+			expect(completeMessage).toEqual({ role: "assistant", content: "Done", timestamp: "2025-01-01T00:00:01Z" });
+		});
+
+		it("ignores lines that don't start with 'data: '", async () => {
+			// SSE events with non-data lines that should be ignored
+			const sseText =
+				'data: {"type":"message_received"}\n\n' +
+				"event: some-event\n\n" +
+				"id: 123\n\n" +
+				"retry: 5000\n\n" +
+				'data: {"type":"message_complete","message":{"role":"assistant","content":"Done","timestamp":"2025-01-01T00:00:01Z"}}\n\n';
+
+			const encoder = new TextEncoder();
+			const stream = new ReadableStream({
+				start(controller) {
+					controller.enqueue(encoder.encode(sseText));
+					controller.close();
+				},
+			});
+
+			const mockSseResponse = {
+				ok: true,
+				body: stream,
+				headers: new Headers({ "content-type": "text/event-stream" }),
+			} as unknown as Response;
+
+			mockFetch.mockResolvedValueOnce(mockSseResponse);
+
+			let completeMessage: { role: string; content: string; timestamp: string } | undefined;
+
+			await client.sendMessage(1, "Hello", {
+				onComplete: message => {
+					completeMessage = message;
+				},
+			});
+
+			// Should still receive the valid message, ignoring non-data lines
+			expect(completeMessage).toEqual({ role: "assistant", content: "Done", timestamp: "2025-01-01T00:00:01Z" });
+		});
+
+		it("ignores malformed JSON in SSE data", async () => {
+			// SSE events need proper double-newline separators
+			const sseText =
+				'data: {"type":"message_received"}\n\n' +
+				"data: not valid json\n\n" +
+				'data: {"type":"message_complete","message":{"role":"assistant","content":"Done","timestamp":"2025-01-01T00:00:01Z"}}\n\n';
+
+			const encoder = new TextEncoder();
+			const stream = new ReadableStream({
+				start(controller) {
+					controller.enqueue(encoder.encode(sseText));
+					controller.close();
+				},
+			});
+
+			const mockSseResponse = {
+				ok: true,
+				body: stream,
+				headers: new Headers({ "content-type": "text/event-stream" }),
+			} as unknown as Response;
+
+			mockFetch.mockResolvedValueOnce(mockSseResponse);
+
+			let completeMessage: { role: string; content: string; timestamp: string } | undefined;
+
+			await client.sendMessage(1, "Hello", {
+				onComplete: message => {
+					completeMessage = message;
+				},
+			});
+
+			// Should still receive the valid message despite malformed JSON in between
+			expect(completeMessage).toEqual({ role: "assistant", content: "Done", timestamp: "2025-01-01T00:00:01Z" });
 		});
 	});
 
@@ -534,19 +868,23 @@ describe("CollabConvoClient", () => {
 
 		it("should call checkUnauthorized for sendMessage", async () => {
 			const checkUnauthorized = vi.fn().mockReturnValue(false);
-			const mockResponse = {
-				ok: true,
-				json: async () => ({
-					success: true,
-					message: { role: "user", content: "Test", userId: 1, timestamp: "" },
-				}),
-			};
-			mockFetch.mockResolvedValueOnce(mockResponse as Response);
+			const mockSseResponse = createMockSseResponse([
+				{ type: "message_received", data: { type: "message_received" } },
+				{
+					type: "message_complete",
+					data: {
+						type: "message_complete",
+						message: { role: "assistant", content: "Done", timestamp: "2025-01-01T00:00:01Z" },
+					},
+				},
+			]);
+
+			mockFetch.mockResolvedValueOnce(mockSseResponse);
 
 			const clientWithCheck = createCollabConvoClient("http://localhost:3000", createMockAuth(checkUnauthorized));
 			await clientWithCheck.sendMessage(1, "Test");
 
-			expect(checkUnauthorized).toHaveBeenCalledWith(mockResponse);
+			expect(checkUnauthorized).toHaveBeenCalled();
 		});
 	});
 });

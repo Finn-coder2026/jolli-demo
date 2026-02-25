@@ -104,6 +104,22 @@ const sitesContent = {
 			en: "View Repository",
 			es: "Ver Repositorio",
 		}),
+		favorite: t({
+			en: "Favorite",
+			es: "Favorito",
+		}),
+		favorited: t({
+			en: "Favorited",
+			es: "Favorito",
+		}),
+		addFavorite: t({
+			en: "Add to favorites",
+			es: "Añadir a favoritos",
+		}),
+		removeFavorite: t({
+			en: "Remove from favorites",
+			es: "Quitar de favoritos",
+		}),
 		loading: t({
 			en: "Loading sites...",
 			es: "Cargando sitios...",

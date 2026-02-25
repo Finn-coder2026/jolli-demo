@@ -47,12 +47,13 @@ export interface SignedUrlOptions {
  * Service for managing image storage in S3.
  *
  * Uses a single bucket per environment with hierarchical keys:
- * {tenantId}/{orgId}/_default/{uuid}.{ext}
+ * {tenantId}/{orgId}/{spaceSlug}/{uuid}.{ext}
  *
- * The _default placeholder is for the future space concept.
- * When space is implemented, keys will be: {tenant}/{org}/{spaceId}/{uuid}.{ext}
+ * Legacy images use "_default" as the space slug.
+ * New images use the actual space slug for proper scoping.
  *
- * Uses IDs instead of slugs for stability - slugs can change, IDs cannot.
+ * Uses IDs instead of slugs for tenant/org for stability - slugs can change, IDs cannot.
+ * Space slugs are used in the path for readability since they're relatively stable.
  */
 export interface ImageStorageService {
 	/**
@@ -64,6 +65,7 @@ export interface ImageStorageService {
 	 * @param mimeType - MIME type of the image
 	 * @param extension - File extension
 	 * @param originalFilename - Optional original filename for metadata
+	 * @param spaceSlug - Optional space slug for scoping (defaults to "_default" for legacy)
 	 * @returns Upload result with imageId (full S3 key path)
 	 */
 	uploadImage(
@@ -73,6 +75,7 @@ export interface ImageStorageService {
 		mimeType: AllowedImageMimeType,
 		extension: string,
 		originalFilename?: string,
+		spaceSlug?: string,
 	): Promise<ImageUploadResult>;
 
 	/**
@@ -155,7 +158,8 @@ export function createImageStorageService(s3Client?: S3Client): ImageStorageServ
 
 	/**
 	 * Upload an image to S3.
-	 * Key structure: {tenantId}/{orgId}/_default/{uuid}.{extension}
+	 * Key structure: {tenantId}/{orgId}/{spaceSlug}/{uuid}.{extension}
+	 * Legacy images use "_default" as spaceSlug.
 	 */
 	async function uploadImage(
 		tenantId: string,
@@ -164,13 +168,16 @@ export function createImageStorageService(s3Client?: S3Client): ImageStorageServ
 		mimeType: AllowedImageMimeType,
 		extension: string,
 		originalFilename?: string,
+		spaceSlug?: string,
 	): Promise<ImageUploadResult> {
 		const bucketName = getBucketName();
 		await ensureBucketExists();
 
-		// Generate unique image ID with tenant/org/_default prefix
+		// Generate unique image ID with tenant/org/space prefix
+		// Use "_default" for legacy/org-wide images when no space is specified
 		const uuid = randomUUID();
-		const imageId = `${tenantId}/${orgId}/_default/${uuid}.${extension}`;
+		const effectiveSpaceSlug = spaceSlug ?? "_default";
+		const imageId = `${tenantId}/${orgId}/${effectiveSpaceSlug}/${uuid}.${extension}`;
 
 		// Build metadata
 		const metadata: Record<string, string> = {};

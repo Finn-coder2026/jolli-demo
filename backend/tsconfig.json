@@ -5,7 +5,15 @@
 		"noEmit": false,
 		"noEmitOnError": true,
 		"outDir": "dist",
-		"types": ["vite/client", "vitest/globals"]
+		"types": ["vite/client", "vitest/globals"],
+		"paths": {
+			"jolli-agent/jolliscript": ["../tools/jolliagent/src/jolliscript/index.ts"],
+			"jolli-agent/workflows": ["../tools/jolliagent/src/workflows.ts"],
+			"jolli-agent": ["../tools/jolliagent/src/index.ts"],
+			"jolli-agent/*": ["../tools/jolliagent/src/*"],
+			"nextra-generator": ["../tools/nextra-generator/src/index.ts"],
+			"nextra-generator/*": ["../tools/nextra-generator/src/*"]
+		}
 	},
 	"exclude": ["dist"],
 	"include": ["."]

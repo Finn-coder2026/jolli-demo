@@ -1,4 +1,5 @@
 import type { JobDao } from "../dao/JobDao.js";
+import { runWithTenantContext, type TenantOrgContext } from "../tenant/TenantContext.js";
 import type {
 	JobContext,
 	JobDefinition,
@@ -99,6 +100,18 @@ export interface PgBossConnectionConfig {
 }
 
 /**
+ * Error info passed to the onError callback.
+ */
+export interface JobSchedulerErrorInfo {
+	/** The error that occurred */
+	error: Error;
+	/** The schema name where the error occurred */
+	schema: string;
+	/** Whether this appears to be a schema-not-found error (tenant deleted) */
+	isSchemaNotFound: boolean;
+}
+
+/**
  * Configuration for job scheduler
  */
 export interface JobSchedulerConfig {
@@ -134,6 +147,23 @@ export interface JobSchedulerConfig {
 	 * - false: Only queue jobs, don't process them (for Vercel serverless)
 	 */
 	workerMode?: boolean;
+
+	/**
+	 * Optional tenant/org context for multi-tenant job execution.
+	 * When provided, job handlers will run within this context, allowing
+	 * them to access the correct tenant database via getTenantContext().
+	 */
+	tenantOrgContext?: TenantOrgContext;
+
+	/**
+	 * Optional callback for handling pg-boss errors.
+	 * Called when pg-boss emits an error event (e.g., database connection issues,
+	 * schema not found). If not provided, errors are logged but the scheduler
+	 * continues running.
+	 *
+	 * Use this to clean up the scheduler when a tenant's schema is deleted.
+	 */
+	onError?: (info: JobSchedulerErrorInfo) => void;
 }
 
 /**
@@ -169,6 +199,34 @@ export function createJobScheduler(jobsConfig: JobSchedulerConfig): JobScheduler
 	};
 
 	const boss = new PgBoss(pgBossConfig);
+
+	// Handle pg-boss errors to prevent process crash
+	// This is critical for multi-tenant mode when a tenant's schema is deleted
+	boss.on("error", (error: Error) => {
+		const schema = jobsConfig.schema || "pgboss";
+		const errorMessage = error.message || "";
+
+		// Check if this is a "relation does not exist" error (schema/table deleted)
+		const isSchemaNotFound =
+			errorMessage.includes("does not exist") ||
+			errorMessage.includes("ECONNREFUSED") ||
+			errorMessage.includes("connection refused");
+
+		if (isSchemaNotFound) {
+			log.warn("pg-boss schema error (tenant may have been deleted): schema=%s, error=%s", schema, errorMessage);
+		} else {
+			log.error(error, "pg-boss error: schema=%s", schema);
+		}
+
+		// Call the onError callback if provided (allows cleanup in multi-tenant mode)
+		if (jobsConfig.onError) {
+			jobsConfig.onError({
+				error,
+				schema,
+				isSchemaNotFound,
+			});
+		}
+	});
 
 	// Global defaults for loop prevention
 	const DEFAULT_MAX_CHAIN_DEPTH = 10;
@@ -425,32 +483,86 @@ export function createJobScheduler(jobsConfig: JobSchedulerConfig): JobScheduler
 			for (const job of jobs) {
 				const jobId = job.id;
 				const context = createJobContext(jobId, definition.name);
-				try {
-					context.log("job-starting", { jobName: definition.name });
-					log.debug("starting job '%s' with data: %O", definition.name, job.data);
 
-					// Check if this job was marked for loop prevention
-					const execution = await jobsConfig.jobDao.getJobExecution(jobId);
-					if (execution?.loopPrevented) {
-						const errorMessage = `Infinite loop prevented: ${execution.loopReason || "Unknown reason"}`;
-						context.log("loop-prevented", { reason: execution.loopReason || "Unknown reason" });
-						log.warn(
-							"Loop-prevented job %s (%s) failed immediately: %s",
+				// Core job execution logic - extracted so it can be wrapped with tenant context
+				const executeJob = async (): Promise<void> => {
+					try {
+						context.log("job-starting", { jobName: definition.name });
+						log.debug("starting job '%s' with data: %O", definition.name, job.data);
+
+						// Check if this job was marked for loop prevention
+						const execution = await jobsConfig.jobDao.getJobExecution(jobId);
+						if (execution?.loopPrevented) {
+							const errorMessage = `Infinite loop prevented: ${execution.loopReason || "Unknown reason"}`;
+							context.log("loop-prevented", { reason: execution.loopReason || "Unknown reason" });
+							log.warn(
+								"Loop-prevented job %s (%s) failed immediately: %s",
+								jobId,
+								definition.name,
+								errorMessage,
+							);
+
+							// Update job status to failed
+							await jobsConfig.jobDao.updateJobStatus(
+								jobId,
+								"failed",
+								new Date(),
+								new Date(),
+								errorMessage,
+								undefined,
+							);
+
+							// Emit job failed event
+							eventEmitter.emit("job:failed", {
+								jobId,
+								name: definition.name,
+								error: errorMessage,
+								showInDashboard: definition.showInDashboard,
+								keepCardAfterCompletion: definition.keepCardAfterCompletion,
+							});
+
+							// Don't throw - just mark as failed and return
+							return;
+						}
+
+						// Update job status to active
+						await jobsConfig.jobDao.updateJobStatus(jobId, "active", new Date());
+						// Emit job started event
+						eventEmitter.emit("job:started", {
 							jobId,
-							definition.name,
-							errorMessage,
-						);
-
+							name: definition.name,
+							showInDashboard: definition.showInDashboard,
+							keepCardAfterCompletion: definition.keepCardAfterCompletion,
+						});
+						// Execute the job handler
+						await definition.handler(job.data, context);
+						// Update job status to completed
+						await jobsConfig.jobDao.updateJobStatus(jobId, "completed", undefined, new Date());
+						context.log("job-completed", { jobName: definition.name });
+						log.debug("Completed job: %s", definition.name);
+						// Get job execution to retrieve completion info
+						const jobExecution = await jobsConfig.jobDao.getJobExecution(jobId);
+						// Emit job completed event
+						eventEmitter.emit("job:completed", {
+							jobId,
+							name: definition.name,
+							showInDashboard: definition.showInDashboard,
+							keepCardAfterCompletion: definition.keepCardAfterCompletion,
+							completionInfo: jobExecution?.completionInfo,
+						});
+					} catch (error) {
+						const errorMessage = error instanceof Error ? error.message : String(error);
+						const errorStack = error instanceof Error ? error.stack : undefined;
+						context.log("job-failed", { jobName: definition.name, errorMessage });
 						// Update job status to failed
 						await jobsConfig.jobDao.updateJobStatus(
 							jobId,
 							"failed",
-							new Date(),
+							undefined,
 							new Date(),
 							errorMessage,
-							undefined,
+							errorStack,
 						);
-
 						// Emit job failed event
 						eventEmitter.emit("job:failed", {
 							jobId,
@@ -459,59 +571,16 @@ export function createJobScheduler(jobsConfig: JobSchedulerConfig): JobScheduler
 							showInDashboard: definition.showInDashboard,
 							keepCardAfterCompletion: definition.keepCardAfterCompletion,
 						});
-
-						// Don't throw - just mark as failed and continue
-						continue;
+						// Re-throw to let pg-boss handle retries
+						throw error;
 					}
+				};
 
-					// Update job status to active
-					await jobsConfig.jobDao.updateJobStatus(jobId, "active", new Date());
-					// Emit job started event
-					eventEmitter.emit("job:started", {
-						jobId,
-						name: definition.name,
-						showInDashboard: definition.showInDashboard,
-						keepCardAfterCompletion: definition.keepCardAfterCompletion,
-					});
-					// Execute the job handler
-					await definition.handler(job.data, context);
-					// Update job status to completed
-					await jobsConfig.jobDao.updateJobStatus(jobId, "completed", undefined, new Date());
-					context.log("job-completed", { jobName: definition.name });
-					log.debug("Completed job: %s", definition.name);
-					// Get job execution to retrieve completion info
-					const jobExecution = await jobsConfig.jobDao.getJobExecution(jobId);
-					// Emit job completed event
-					eventEmitter.emit("job:completed", {
-						jobId,
-						name: definition.name,
-						showInDashboard: definition.showInDashboard,
-						keepCardAfterCompletion: definition.keepCardAfterCompletion,
-						completionInfo: jobExecution?.completionInfo,
-					});
-				} catch (error) {
-					const errorMessage = error instanceof Error ? error.message : String(error);
-					const errorStack = error instanceof Error ? error.stack : undefined;
-					context.log("job-failed", { jobName: definition.name, errorMessage });
-					// Update job status to failed
-					await jobsConfig.jobDao.updateJobStatus(
-						jobId,
-						"failed",
-						undefined,
-						new Date(),
-						errorMessage,
-						errorStack,
-					);
-					// Emit job failed event
-					eventEmitter.emit("job:failed", {
-						jobId,
-						name: definition.name,
-						error: errorMessage,
-						showInDashboard: definition.showInDashboard,
-						keepCardAfterCompletion: definition.keepCardAfterCompletion,
-					});
-					// Re-throw to let pg-boss handle retries
-					throw error;
+				// Execute with tenant context if available, otherwise run directly
+				if (jobsConfig.tenantOrgContext) {
+					await runWithTenantContext(jobsConfig.tenantOrgContext, executeJob);
+				} else {
+					await executeJob();
 				}
 			}
 		};
@@ -584,7 +653,7 @@ export function createJobScheduler(jobsConfig: JobSchedulerConfig): JobScheduler
 			);
 		}
 
-		log.debug("queuing job for event: %O", queueRequest);
+		log.info("Queuing job %s for event %s", queueRequest.name, eventName);
 		await scheduler.queueJob(queueRequest);
 	}
 
@@ -618,17 +687,27 @@ export function createJobScheduler(jobsConfig: JobSchedulerConfig): JobScheduler
 			throw new Error(`Job already registered: ${definition.name}`);
 		}
 		const { category, name } = definition;
-		log.debug("Registering job: %s (%s)", name, category);
+		log.info("Registering job: %s (%s)", name, category);
 
 		jobDefinitions.set(definition.name, definition as JobDefinition);
 
-		// Set up event listeners for trigger events
+		// Set up event listeners for trigger events.
+		// When tenantOrgContext is available (multi-tenant mode), wrap the handler
+		// so that shouldTriggerEvent and other event-phase callbacks can access the
+		// tenant database via getTenantContext().
 		if (definition.triggerEvents && definition.triggerEvents.length > 0) {
+			log.info("Setting up event listeners for job %s: %s", name, definition.triggerEvents.join(", "));
 			for (const eventName of definition.triggerEvents) {
 				eventEmitter.on(eventName, async event => {
-					await handleJobTriggerEventWithFallback(event, definition, eventName).catch(err =>
-						log.error(err, "Failed to queue job %s from event", definition.name),
-					);
+					const handler = () =>
+						handleJobTriggerEventWithFallback(event, definition, eventName).catch(err =>
+							log.error(err, "Failed to queue job %s from event", definition.name),
+						);
+					if (jobsConfig.tenantOrgContext) {
+						await runWithTenantContext(jobsConfig.tenantOrgContext, handler);
+					} else {
+						await handler();
+					}
 				});
 			}
 		}

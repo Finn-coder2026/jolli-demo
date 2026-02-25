@@ -3,11 +3,15 @@ import type { Database } from "../core/Database";
 import { mockDatabase } from "../core/Database.mock";
 import type { IntegrationsManager } from "../integrations/IntegrationsManager";
 import { createMockIntegrationsManager } from "../integrations/IntegrationsManager.mock";
+import { mockActiveUser } from "../model/ActiveUser.mock";
 import { mockDoc } from "../model/Doc.mock";
 import type { GithubRepoIntegration } from "../model/Integration";
 import { mockIntegration } from "../model/Integration.mock";
+import { mockSpace } from "../model/Space.mock";
 import type { JobContext, JobDefinition } from "../types/JobTypes";
+import * as GithubAppUtil from "../util/GithubAppUtil";
 import * as IntegrationUtil from "../util/IntegrationUtil";
+import * as TokenUtil from "../util/TokenUtil";
 import type { JobScheduler } from "./JobScheduler";
 import { createKnowledgeGraphJobs } from "./KnowledgeGraphJobs";
 import type { WorkflowResult, WorkflowType } from "jolli-agent/workflows";
@@ -55,6 +59,13 @@ describe("KnowledgeGraphJobs", () => {
 
 		vi.restoreAllMocks();
 		vi.clearAllMocks();
+
+		// Default space/user mocks for resolveSandboxAuth (used by run-jolliscript and cli-impact)
+		db.spaceDao.getDefaultSpace = vi.fn().mockResolvedValue(mockSpace({ id: 1, slug: "global", ownerId: 1 }));
+		db.activeUserDao.findById = vi
+			.fn()
+			.mockResolvedValue(mockActiveUser({ id: 1, email: "owner@test.com", name: "Owner" }));
+		vi.spyOn(TokenUtil, "createSandboxServiceToken").mockReturnValue("mock-sandbox-token");
 	});
 
 	function getRegisteredJobHandler(jobName = "knowledge-graph:architecture") {
@@ -251,6 +262,7 @@ describe("KnowledgeGraphJobs", () => {
 			e2bEnabled: true,
 			anthropicApiKey: "anthropic",
 			githubToken: "token",
+			syncServerUrl: "https://public.jolli.example/api",
 			vercelToken: "vercel-token",
 			debug: true,
 		});
@@ -1108,15 +1120,76 @@ job:
 				markdownContent: expect.stringContaining("job:"),
 				filename: expect.stringContaining("Doc Title"),
 				killSandbox: false,
-				additionalTools: expect.arrayContaining([
-					expect.objectContaining({ name: "get_latest_linear_tickets" }),
-				]),
+				additionalTools: expect.any(Array),
 				jobSteps: expect.arrayContaining([expect.objectContaining({ name: "test step" })]),
 			}),
 			expect.any(Function),
 		);
 
 		expect(context.updateStats).toHaveBeenCalledWith(expect.objectContaining({ docJrn: "doc:123" }));
+	});
+
+	it("injects sandbox auth token and space into run-jolliscript workflow config", async () => {
+		const def = getRegisteredJobHandler("knowledge-graph:run-jolliscript");
+		const { runWorkflowForJob } = await import("jolli-agent/workflows");
+
+		const contentWithJobSteps = `---
+job:
+  steps:
+    - name: test step
+      run_prompt: Do something
+---
+# Test Content`;
+		db.docDao.readDoc = vi.fn().mockResolvedValue(
+			mockDoc({
+				jrn: "jrn:/org_1/spc_abc123:docs:article/doc-123",
+				content: contentWithJobSteps,
+				contentMetadata: { title: "Doc Title" },
+				contentType: "text/markdown",
+				spaceId: 77,
+			}),
+		);
+		db.spaceDao.getSpace = vi.fn().mockResolvedValue(
+			mockSpace({
+				id: 77,
+				slug: "sandbox-space",
+				ownerId: 321,
+			}),
+		);
+		db.activeUserDao.findById = vi.fn().mockResolvedValue(
+			mockActiveUser({
+				id: 321,
+				email: "owner@example.com",
+				name: "Space Owner",
+			}),
+		);
+		const sandboxTokenSpy = vi.spyOn(TokenUtil, "createSandboxServiceToken").mockReturnValue("sandbox-token");
+		vi.mocked(runWorkflowForJob).mockResolvedValue({
+			success: true,
+		} satisfies Partial<WorkflowResult> as WorkflowResult);
+
+		await expect(
+			def.handler({ docJrn: "jrn:/org_1/spc_abc123:docs:article/doc-123" }, createMockContext(def.name)),
+		).resolves.toBeUndefined();
+
+		expect(sandboxTokenSpy).toHaveBeenCalledWith(
+			expect.objectContaining({
+				userId: 321,
+				email: "owner@example.com",
+				spaceSlug: "sandbox-space",
+				ttl: "30m",
+			}),
+		);
+		expect(runWorkflowForJob).toHaveBeenCalledWith(
+			"run-jolliscript",
+			expect.objectContaining({
+				jolliAuthToken: "sandbox-token",
+				jolliSpace: "sandbox-space",
+				syncServerUrl: expect.any(String),
+			}),
+			expect.any(Object),
+			expect.any(Function),
+		);
 	});
 
 	it("throws when docJrn is missing for run-jolliscript job", async () => {
@@ -1140,6 +1213,55 @@ job:
 
 		await expect(def.handler({ docJrn: "doc:123" }, createMockContext(def.name))).rejects.toThrow(
 			"Document doc:123 has no content to process",
+		);
+	});
+
+	it("throws when space has no owner for run-jolliscript job", async () => {
+		const def = getRegisteredJobHandler("knowledge-graph:run-jolliscript");
+
+		db.docDao.readDoc = vi.fn().mockResolvedValue(
+			mockDoc({
+				jrn: "doc:owner-test",
+				content: "# Has content",
+				contentType: "text/markdown",
+				spaceId: 77,
+			}),
+		);
+		db.spaceDao.getSpace = vi.fn().mockResolvedValue(
+			mockSpace({
+				id: 77,
+				slug: "test-space",
+				ownerId: 0,
+			}),
+		);
+
+		await expect(def.handler({ docJrn: "doc:owner-test" }, createMockContext(def.name))).rejects.toThrow(
+			'Space "test-space" has no owner',
+		);
+	});
+
+	it("throws when space owner is not found for run-jolliscript job", async () => {
+		const def = getRegisteredJobHandler("knowledge-graph:run-jolliscript");
+
+		db.docDao.readDoc = vi.fn().mockResolvedValue(
+			mockDoc({
+				jrn: "doc:orphan-test",
+				content: "# Has content",
+				contentType: "text/markdown",
+				spaceId: 78,
+			}),
+		);
+		db.spaceDao.getSpace = vi.fn().mockResolvedValue(
+			mockSpace({
+				id: 78,
+				slug: "orphan-space",
+				ownerId: 888,
+			}),
+		);
+		db.activeUserDao.findById = vi.fn().mockResolvedValue(undefined);
+
+		await expect(def.handler({ docJrn: "doc:orphan-test" }, createMockContext(def.name))).rejects.toThrow(
+			'Owner (id=888) for space "orphan-space" not found',
 		);
 	});
 
@@ -1749,23 +1871,16 @@ job:
 			});
 			expect(result5).toBeDefined();
 
-			// Test get_latest_linear_tickets
-			const result6 = await capturedToolExecutor({
-				name: "get_latest_linear_tickets",
-				arguments: { teamId: "team-1" },
-			});
-			expect(result6).toBeDefined();
-
 			// Test sync_up_article
-			const result7 = await capturedToolExecutor({
+			const result6 = await capturedToolExecutor({
 				name: "sync_up_article",
 				arguments: { sandboxPath: "/path/to/file.md", articleName: "test-article" },
 			});
-			expect(result7).toBeDefined();
+			expect(result6).toBeDefined();
 
 			// Test unknown tool
-			const result8 = await capturedToolExecutor({ name: "unknown_tool" });
-			expect(result8).toContain("Unknown article editing tool");
+			const result7 = await capturedToolExecutor({ name: "unknown_tool" });
+			expect(result7).toContain("Unknown article editing tool");
 		}
 	});
 
@@ -1801,16 +1916,398 @@ job:
 		expect(runWorkflowForJob).not.toHaveBeenCalled();
 	});
 
+	it("runs cli-impact job with resolved space, integration, and sandbox auth token", async () => {
+		const def = getRegisteredJobHandler("knowledge-graph:cli-impact");
+		const { runWorkflowForJob } = await import("jolli-agent/workflows");
+
+		db.spaceDao.getSpace = vi.fn().mockResolvedValue(
+			mockSpace({
+				id: 900,
+				slug: "impact-space",
+				ownerId: 321,
+			}),
+		);
+		db.activeUserDao.findById = vi.fn().mockResolvedValue(
+			mockActiveUser({
+				id: 321,
+				email: "impact-owner@example.com",
+				name: "Impact Owner",
+			}),
+		);
+
+		const integration: GithubRepoIntegration = mockIntegration({
+			id: 55,
+			type: "github",
+			metadata: {
+				repo: "impact-org/impact-repo",
+				branch: "main",
+				features: [],
+				installationId: 123,
+				githubAppId: 1,
+			},
+		}) as GithubRepoIntegration;
+		integrationsManager.getIntegration = vi.fn().mockResolvedValue(integration);
+		vi.spyOn(IntegrationUtil, "getAccessTokenForGithubRepoIntegration").mockResolvedValue("gh_token_impact");
+		const sandboxTokenSpy = vi
+			.spyOn(TokenUtil, "createSandboxServiceToken")
+			.mockReturnValue("sandbox-impact-token");
+		vi.mocked(runWorkflowForJob).mockResolvedValue({
+			success: true,
+		} satisfies Partial<WorkflowResult> as WorkflowResult);
+
+		const context = createMockContext(def.name);
+		await expect(
+			def.handler(
+				{
+					spaceId: 900,
+					integrationId: 55,
+					eventJrn: "jrn::path:/home/global/sources/github/impact-org/impact-repo/feature/cli",
+				},
+				context,
+			),
+		).resolves.toBeUndefined();
+
+		expect(sandboxTokenSpy).toHaveBeenCalledWith(
+			expect.objectContaining({
+				userId: 321,
+				email: "impact-owner@example.com",
+				spaceSlug: "impact-space",
+				ttl: "30m",
+			}),
+		);
+		expect(runWorkflowForJob).toHaveBeenCalledWith(
+			"cli-impact",
+			expect.objectContaining({
+				githubToken: "gh_token_impact",
+				jolliAuthToken: "sandbox-impact-token",
+				jolliSpace: "impact-space",
+			}),
+			expect.objectContaining({
+				githubOrg: "impact-org",
+				githubRepo: "impact-repo",
+				githubBranch: "feature/cli",
+				eventJrn: "jrn::path:/home/global/sources/github/impact-org/impact-repo/feature/cli",
+				killSandbox: false,
+				cursorSha: undefined,
+			}),
+			expect.any(Function),
+		);
+		expect(context.updateStats).toHaveBeenCalledWith(
+			expect.objectContaining({
+				phase: "completed",
+				progress: 100,
+				githubUrl: "https://github.com/impact-org/impact-repo",
+			}),
+		);
+	});
+
+	it("fails cli-impact job when event JRN repo does not match integration repo", async () => {
+		const def = getRegisteredJobHandler("knowledge-graph:cli-impact");
+		const { runWorkflowForJob } = await import("jolli-agent/workflows");
+
+		db.spaceDao.getSpace = vi.fn().mockResolvedValue(
+			mockSpace({
+				id: 901,
+				slug: "impact-space",
+				ownerId: 321,
+			}),
+		);
+		const integration: GithubRepoIntegration = mockIntegration({
+			id: 56,
+			type: "github",
+			metadata: {
+				repo: "correct-org/correct-repo",
+				branch: "main",
+				features: [],
+				installationId: 123,
+				githubAppId: 1,
+			},
+		}) as GithubRepoIntegration;
+		integrationsManager.getIntegration = vi.fn().mockResolvedValue(integration);
+		vi.spyOn(IntegrationUtil, "getAccessTokenForGithubRepoIntegration").mockResolvedValue("gh_token_impact");
+		vi.mocked(runWorkflowForJob).mockResolvedValue({
+			success: true,
+		} satisfies Partial<WorkflowResult> as WorkflowResult);
+
+		await expect(
+			def.handler(
+				{
+					spaceId: 901,
+					integrationId: 56,
+					eventJrn: "jrn::path:/home/global/sources/github/wrong-org/wrong-repo/main",
+				},
+				createMockContext(def.name),
+			),
+		).rejects.toThrow("does not match integration repo");
+		expect(runWorkflowForJob).not.toHaveBeenCalled();
+	});
+
+	it("fails cli-impact job when space has no owner", async () => {
+		const def = getRegisteredJobHandler("knowledge-graph:cli-impact");
+
+		db.spaceDao.getSpace = vi.fn().mockResolvedValue(
+			mockSpace({
+				id: 902,
+				slug: "no-owner-space",
+				ownerId: 0,
+			}),
+		);
+		const integration: GithubRepoIntegration = mockIntegration({
+			id: 57,
+			type: "github",
+			metadata: {
+				repo: "some-org/some-repo",
+				branch: "main",
+				features: [],
+				installationId: 123,
+				githubAppId: 1,
+			},
+		}) as GithubRepoIntegration;
+		integrationsManager.getIntegration = vi.fn().mockResolvedValue(integration);
+		vi.spyOn(IntegrationUtil, "getAccessTokenForGithubRepoIntegration").mockResolvedValue("gh_token");
+
+		await expect(
+			def.handler(
+				{
+					spaceId: 902,
+					integrationId: 57,
+					eventJrn: "jrn::path:/home/global/sources/github/some-org/some-repo/main",
+				},
+				createMockContext(def.name),
+			),
+		).rejects.toThrow('Space "no-owner-space" has no owner');
+	});
+
+	it("fails cli-impact job when space owner is not found", async () => {
+		const def = getRegisteredJobHandler("knowledge-graph:cli-impact");
+
+		db.spaceDao.getSpace = vi.fn().mockResolvedValue(
+			mockSpace({
+				id: 903,
+				slug: "orphan-space",
+				ownerId: 999,
+			}),
+		);
+		db.activeUserDao.findById = vi.fn().mockResolvedValue(undefined);
+		const integration: GithubRepoIntegration = mockIntegration({
+			id: 58,
+			type: "github",
+			metadata: {
+				repo: "some-org/some-repo",
+				branch: "main",
+				features: [],
+				installationId: 123,
+				githubAppId: 1,
+			},
+		}) as GithubRepoIntegration;
+		integrationsManager.getIntegration = vi.fn().mockResolvedValue(integration);
+		vi.spyOn(IntegrationUtil, "getAccessTokenForGithubRepoIntegration").mockResolvedValue("gh_token");
+
+		await expect(
+			def.handler(
+				{
+					spaceId: 903,
+					integrationId: 58,
+					eventJrn: "jrn::path:/home/global/sources/github/some-org/some-repo/main",
+				},
+				createMockContext(def.name),
+			),
+		).rejects.toThrow('Owner (id=999) for space "orphan-space" not found');
+	});
+
+	it("updates source cursor after successful cli-impact job", async () => {
+		const def = getRegisteredJobHandler("knowledge-graph:cli-impact");
+		const { runWorkflowForJob } = await import("jolli-agent/workflows");
+
+		db.spaceDao.getSpace = vi.fn().mockResolvedValue(
+			mockSpace({
+				id: 910,
+				slug: "cursor-space",
+				ownerId: 330,
+			}),
+		);
+		db.activeUserDao.findById = vi.fn().mockResolvedValue(
+			mockActiveUser({
+				id: 330,
+				email: "cursor-owner@example.com",
+				name: "Cursor Owner",
+			}),
+		);
+
+		const integration: GithubRepoIntegration = mockIntegration({
+			id: 60,
+			type: "github",
+			metadata: {
+				repo: "cursor-org/cursor-repo",
+				branch: "main",
+				features: [],
+				installationId: 130,
+				githubAppId: 1,
+			},
+		}) as GithubRepoIntegration;
+		integrationsManager.getIntegration = vi.fn().mockResolvedValue(integration);
+		vi.spyOn(IntegrationUtil, "getAccessTokenForGithubRepoIntegration").mockResolvedValue("gh_token_cursor");
+		vi.spyOn(TokenUtil, "createSandboxServiceToken").mockReturnValue("sandbox-cursor-token");
+		vi.mocked(runWorkflowForJob).mockResolvedValue({
+			success: true,
+		} satisfies Partial<WorkflowResult> as WorkflowResult);
+
+		const context = createMockContext(def.name);
+		await def.handler(
+			{
+				spaceId: 910,
+				sourceId: 70,
+				integrationId: 60,
+				eventJrn: "jrn::path:/home/global/sources/github/cursor-org/cursor-repo/main",
+				afterSha: "new-sha-abc123",
+				cursorSha: "prev-sha-000",
+			},
+			context,
+		);
+
+		// Verify cursor was updated with the afterSha
+		expect(db.sourceDao.updateCursor).toHaveBeenCalledWith(70, {
+			value: "new-sha-abc123",
+			updatedAt: expect.any(String),
+		});
+		expect(context.log).toHaveBeenCalledWith("source-cursor-updated", {
+			sourceId: 70,
+			afterSha: "new-sha-abc123",
+		});
+		// Verify cursorSha was passed to workflow
+		expect(runWorkflowForJob).toHaveBeenCalledWith(
+			"cli-impact",
+			expect.anything(),
+			expect.objectContaining({ cursorSha: "prev-sha-000" }),
+			expect.any(Function),
+		);
+	});
+
+	it("does not update cursor when sourceId or afterSha is missing", async () => {
+		const def = getRegisteredJobHandler("knowledge-graph:cli-impact");
+		const { runWorkflowForJob } = await import("jolli-agent/workflows");
+
+		db.spaceDao.getSpace = vi.fn().mockResolvedValue(
+			mockSpace({
+				id: 911,
+				slug: "no-cursor-space",
+				ownerId: 331,
+			}),
+		);
+		db.activeUserDao.findById = vi.fn().mockResolvedValue(
+			mockActiveUser({
+				id: 331,
+				email: "no-cursor@example.com",
+				name: "No Cursor",
+			}),
+		);
+
+		const integration: GithubRepoIntegration = mockIntegration({
+			id: 61,
+			type: "github",
+			metadata: {
+				repo: "nocursor-org/nocursor-repo",
+				branch: "main",
+				features: [],
+				installationId: 131,
+				githubAppId: 1,
+			},
+		}) as GithubRepoIntegration;
+		integrationsManager.getIntegration = vi.fn().mockResolvedValue(integration);
+		vi.spyOn(IntegrationUtil, "getAccessTokenForGithubRepoIntegration").mockResolvedValue("gh_token");
+		vi.spyOn(TokenUtil, "createSandboxServiceToken").mockReturnValue("sandbox-token");
+		vi.mocked(runWorkflowForJob).mockResolvedValue({
+			success: true,
+		} satisfies Partial<WorkflowResult> as WorkflowResult);
+
+		const context = createMockContext(def.name);
+		// No sourceId or afterSha provided
+		await def.handler(
+			{
+				spaceId: 911,
+				integrationId: 61,
+				eventJrn: "jrn::path:/home/global/sources/github/nocursor-org/nocursor-repo/main",
+			},
+			context,
+		);
+
+		expect(db.sourceDao.updateCursor).not.toHaveBeenCalled();
+	});
+
+	it("does not fail job when cursor update fails", async () => {
+		const def = getRegisteredJobHandler("knowledge-graph:cli-impact");
+		const { runWorkflowForJob } = await import("jolli-agent/workflows");
+
+		db.spaceDao.getSpace = vi.fn().mockResolvedValue(
+			mockSpace({
+				id: 912,
+				slug: "fail-cursor-space",
+				ownerId: 332,
+			}),
+		);
+		db.activeUserDao.findById = vi.fn().mockResolvedValue(
+			mockActiveUser({
+				id: 332,
+				email: "fail-cursor@example.com",
+				name: "Fail Cursor",
+			}),
+		);
+
+		const integration: GithubRepoIntegration = mockIntegration({
+			id: 62,
+			type: "github",
+			metadata: {
+				repo: "failcursor-org/failcursor-repo",
+				branch: "main",
+				features: [],
+				installationId: 132,
+				githubAppId: 1,
+			},
+		}) as GithubRepoIntegration;
+		integrationsManager.getIntegration = vi.fn().mockResolvedValue(integration);
+		vi.spyOn(IntegrationUtil, "getAccessTokenForGithubRepoIntegration").mockResolvedValue("gh_token");
+		vi.spyOn(TokenUtil, "createSandboxServiceToken").mockReturnValue("sandbox-token");
+		vi.mocked(runWorkflowForJob).mockResolvedValue({
+			success: true,
+		} satisfies Partial<WorkflowResult> as WorkflowResult);
+
+		// Make cursor update fail
+		db.sourceDao.updateCursor = vi.fn().mockRejectedValue(new Error("DB connection lost"));
+
+		const context = createMockContext(def.name);
+		// Should not throw — cursor update failure is non-fatal
+		await expect(
+			def.handler(
+				{
+					spaceId: 912,
+					sourceId: 72,
+					integrationId: 62,
+					eventJrn: "jrn::path:/home/global/sources/github/failcursor-org/failcursor-repo/main",
+					afterSha: "sha-that-wont-save",
+				},
+				context,
+			),
+		).resolves.toBeUndefined();
+
+		expect(context.log).toHaveBeenCalledWith("source-cursor-update-failed", {
+			sourceId: 72,
+			afterSha: "sha-that-wont-save",
+			error: "DB connection lost",
+		});
+	});
+
 	it("registers all knowledge graph jobs", () => {
 		const jobs = createKnowledgeGraphJobs(db, integrationsManager);
 		jobs.registerJobs(scheduler);
 
-		expect(registeredJobs.length).toBe(5);
+		expect(registeredJobs.length).toBe(7);
 		expect(registeredJobs.find(j => j.name === "knowledge-graph:architecture")).toBeTruthy();
 		expect(registeredJobs.find(j => j.name === "knowledge-graph:code-to-api-articles")).toBeTruthy();
 		expect(registeredJobs.find(j => j.name === "knowledge-graph:docs-to-docusaurus")).toBeTruthy();
 		expect(registeredJobs.find(j => j.name === "knowledge-graph:run-jolliscript")).toBeTruthy();
+		expect(registeredJobs.find(j => j.name === "knowledge-graph:cli-impact")).toBeTruthy();
 		expect(registeredJobs.find(j => j.name === "knowledge-graph:git-push-event")).toBeTruthy();
+		expect(registeredJobs.find(j => j.name === "knowledge-graph:analyze-source-doc")).toBeTruthy();
 	});
 
 	// Tests for git-push-event job handler (lines 100-219)
@@ -2206,6 +2703,292 @@ job:
 
 			const result = converter(undefined);
 			expect(result).toBeUndefined();
+		});
+	});
+
+	describe("analyze-source-doc job", () => {
+		it("registers analyze-source-doc job", () => {
+			const def = getRegisteredJobHandler("knowledge-graph:analyze-source-doc");
+			expect(def).toBeTruthy();
+			expect(def.name).toBe("knowledge-graph:analyze-source-doc");
+		});
+
+		it("fetches diff, constructs prompt, and runs workflow", async () => {
+			const def = getRegisteredJobHandler("knowledge-graph:analyze-source-doc");
+			const { runWorkflowForJob } = await import("jolli-agent/workflows");
+
+			// Mock the doc
+			db.docDao.readDoc = vi.fn().mockResolvedValue(
+				mockDoc({
+					jrn: "doc:source-article",
+					content: "# Source Article\n\nDocuments the API endpoints.",
+					contentType: "text/markdown",
+					sourceMetadata: { repo: "owner/repo", branch: "main", path: "docs/api.md" },
+				}),
+			);
+
+			// Mock GitHub integration for token
+			const githubIntegration = mockIntegration({
+				id: 1,
+				type: "github",
+				status: "active",
+				name: "owner/repo",
+				metadata: { repo: "owner/repo", branch: "main", features: [], installationId: 123, githubAppId: 1 },
+			}) as GithubRepoIntegration;
+			integrationsManager.listIntegrations = vi.fn().mockResolvedValue([githubIntegration]);
+			vi.spyOn(IntegrationUtil, "getAccessTokenForGithubRepoIntegration").mockResolvedValue(
+				// biome-ignore lint/suspicious/noExplicitAny: Overloaded function mock needs type override
+				{ accessToken: "gh_token", owner: "owner", repo: "repo" } as any,
+			);
+
+			// Mock fetchGithubCompare
+			vi.spyOn(GithubAppUtil, "fetchGithubCompare").mockResolvedValue({
+				diff: "diff --git a/src/api.ts b/src/api.ts\n+added new endpoint",
+				files: [{ filename: "src/api.ts", status: "modified", patch: "+added new endpoint" }],
+			});
+
+			vi.mocked(runWorkflowForJob).mockResolvedValue({
+				success: true,
+			} satisfies Partial<WorkflowResult> as WorkflowResult);
+
+			const context = createMockContext(def.name);
+			await expect(
+				def.handler(
+					{
+						docJrn: "doc:source-article",
+						before: "abc123",
+						after: "def456",
+						owner: "owner",
+						repo: "repo",
+						branch: "main",
+					},
+					context,
+				),
+			).resolves.toBeUndefined();
+
+			// Verify fetchGithubCompare was called
+			expect(GithubAppUtil.fetchGithubCompare).toHaveBeenCalledWith(
+				"gh_token",
+				"owner",
+				"repo",
+				"abc123",
+				"def456",
+			);
+
+			// Verify workflow was called with the right args
+			expect(runWorkflowForJob).toHaveBeenCalledWith(
+				"run-jolliscript",
+				expect.objectContaining({
+					anthropicApiKey: "anthropic",
+				}),
+				expect.objectContaining({
+					additionalTools: expect.arrayContaining([expect.objectContaining({ name: "edit_section" })]),
+					jobSteps: expect.arrayContaining([
+						expect.objectContaining({
+							name: "analyze-source-changes",
+							run_prompt: expect.stringContaining("documentation reviewer"),
+						}),
+					]),
+					killSandbox: true,
+				}),
+				expect.any(Function),
+			);
+
+			expect(context.log).toHaveBeenCalledWith("completed", { docJrn: "doc:source-article" });
+		});
+
+		it("throws when document is not found", async () => {
+			const def = getRegisteredJobHandler("knowledge-graph:analyze-source-doc");
+			db.docDao.readDoc = vi.fn().mockResolvedValue(undefined);
+
+			await expect(
+				def.handler(
+					{
+						docJrn: "doc:missing",
+						before: "abc",
+						after: "def",
+						owner: "o",
+						repo: "r",
+						branch: "main",
+					},
+					createMockContext(def.name),
+				),
+			).rejects.toThrow("Document doc:missing not found");
+		});
+
+		it("throws when document has no content", async () => {
+			const def = getRegisteredJobHandler("knowledge-graph:analyze-source-doc");
+			db.docDao.readDoc = vi.fn().mockResolvedValue(
+				mockDoc({
+					jrn: "doc:empty",
+					content: "",
+					contentType: "text/markdown",
+				}),
+			);
+
+			await expect(
+				def.handler(
+					{
+						docJrn: "doc:empty",
+						before: "abc",
+						after: "def",
+						owner: "o",
+						repo: "r",
+						branch: "main",
+					},
+					createMockContext(def.name),
+				),
+			).rejects.toThrow("Document doc:empty has no content to analyze");
+		});
+
+		it("throws when no GitHub access token available", async () => {
+			const def = getRegisteredJobHandler("knowledge-graph:analyze-source-doc");
+			db.docDao.readDoc = vi.fn().mockResolvedValue(
+				mockDoc({
+					jrn: "doc:no-token",
+					content: "# Some content",
+					contentType: "text/markdown",
+				}),
+			);
+			integrationsManager.listIntegrations = vi.fn().mockResolvedValue([]);
+
+			await expect(
+				def.handler(
+					{
+						docJrn: "doc:no-token",
+						before: "abc",
+						after: "def",
+						owner: "o",
+						repo: "r",
+						branch: "main",
+					},
+					createMockContext(def.name),
+				),
+			).rejects.toThrow("No GitHub access token available");
+		});
+
+		it("throws when diff fetch fails", async () => {
+			const def = getRegisteredJobHandler("knowledge-graph:analyze-source-doc");
+			db.docDao.readDoc = vi.fn().mockResolvedValue(
+				mockDoc({
+					jrn: "doc:diff-fail",
+					content: "# Some content",
+					contentType: "text/markdown",
+				}),
+			);
+
+			const githubIntegration = mockIntegration({
+				id: 1,
+				type: "github",
+				status: "active",
+				name: "owner/repo",
+				metadata: { repo: "owner/repo", branch: "main", features: [], installationId: 123, githubAppId: 1 },
+			}) as GithubRepoIntegration;
+			integrationsManager.listIntegrations = vi.fn().mockResolvedValue([githubIntegration]);
+			vi.spyOn(IntegrationUtil, "getAccessTokenForGithubRepoIntegration").mockResolvedValue(
+				// biome-ignore lint/suspicious/noExplicitAny: Overloaded function mock needs type override
+				{ accessToken: "gh_token", owner: "owner", repo: "repo" } as any,
+			);
+			vi.spyOn(GithubAppUtil, "fetchGithubCompare").mockResolvedValue(undefined);
+
+			await expect(
+				def.handler(
+					{
+						docJrn: "doc:diff-fail",
+						before: "abc",
+						after: "def",
+						owner: "owner",
+						repo: "repo",
+						branch: "main",
+					},
+					createMockContext(def.name),
+				),
+			).rejects.toThrow("Failed to fetch diff");
+		});
+
+		it("returns early when diff is empty (no changes)", async () => {
+			const def = getRegisteredJobHandler("knowledge-graph:analyze-source-doc");
+			const { runWorkflowForJob } = await import("jolli-agent/workflows");
+
+			db.docDao.readDoc = vi.fn().mockResolvedValue(
+				mockDoc({
+					jrn: "doc:empty-diff",
+					content: "# Content",
+					contentType: "text/markdown",
+				}),
+			);
+
+			const githubIntegration = mockIntegration({
+				id: 1,
+				type: "github",
+				status: "active",
+				name: "owner/repo",
+				metadata: { repo: "owner/repo", branch: "main", features: [], installationId: 123, githubAppId: 1 },
+			}) as GithubRepoIntegration;
+			integrationsManager.listIntegrations = vi.fn().mockResolvedValue([githubIntegration]);
+			vi.spyOn(IntegrationUtil, "getAccessTokenForGithubRepoIntegration").mockResolvedValue(
+				// biome-ignore lint/suspicious/noExplicitAny: Overloaded function mock needs type override
+				{ accessToken: "gh_token", owner: "owner", repo: "repo" } as any,
+			);
+			vi.spyOn(GithubAppUtil, "fetchGithubCompare").mockResolvedValue({ diff: "   ", files: [] });
+
+			const context = createMockContext(def.name);
+			await expect(
+				def.handler(
+					{
+						docJrn: "doc:empty-diff",
+						before: "abc",
+						after: "def",
+						owner: "owner",
+						repo: "repo",
+						branch: "main",
+					},
+					context,
+				),
+			).resolves.toBeUndefined();
+
+			expect(context.log).toHaveBeenCalledWith("no-changes", { docJrn: "doc:empty-diff" });
+			expect(runWorkflowForJob).not.toHaveBeenCalled();
+		});
+
+		it("handles github token error gracefully and throws", async () => {
+			const def = getRegisteredJobHandler("knowledge-graph:analyze-source-doc");
+			db.docDao.readDoc = vi.fn().mockResolvedValue(
+				mockDoc({
+					jrn: "doc:token-error",
+					content: "# Content",
+					contentType: "text/markdown",
+				}),
+			);
+
+			const githubIntegration = mockIntegration({
+				id: 1,
+				type: "github",
+				status: "active",
+				name: "owner/repo",
+				metadata: { repo: "owner/repo", branch: "main", features: [], installationId: 123, githubAppId: 1 },
+			}) as GithubRepoIntegration;
+			integrationsManager.listIntegrations = vi.fn().mockResolvedValue([githubIntegration]);
+			vi.spyOn(IntegrationUtil, "getAccessTokenForGithubRepoIntegration").mockRejectedValue(
+				new Error("Token failed"),
+			);
+
+			const context = createMockContext(def.name);
+			await expect(
+				def.handler(
+					{
+						docJrn: "doc:token-error",
+						before: "abc",
+						after: "def",
+						owner: "owner",
+						repo: "repo",
+						branch: "main",
+					},
+					context,
+				),
+			).rejects.toThrow("No GitHub access token available");
+
+			expect(context.log).toHaveBeenCalledWith("github-token-error", expect.any(Object));
 		});
 	});
 

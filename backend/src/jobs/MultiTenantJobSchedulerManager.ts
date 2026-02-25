@@ -26,15 +26,15 @@
  */
 
 import type { Database } from "../core/Database";
-import { getTenantContext } from "../tenant/TenantContext";
+import { createTenantOrgContext, getTenantContext } from "../tenant/TenantContext";
 import type { TenantDatabaseConfig } from "../tenant/TenantDatabaseConfig";
 import type { TenantOrgConnectionManager } from "../tenant/TenantOrgConnectionManager";
 import type { TenantRegistryClient } from "../tenant/TenantRegistryClient";
 import type { JobDefinition } from "../types/JobTypes";
 import { getLog } from "../util/Logger";
-import { createJobScheduler, type JobScheduler } from "./JobScheduler";
+import { createJobScheduler, type JobScheduler, type JobSchedulerErrorInfo } from "./JobScheduler";
 import { createTenantOrgJobScheduler, type TenantOrgJobScheduler } from "./TenantOrgJobScheduler";
-import type { Org, OrgSummary, Tenant, TenantSummary } from "jolli-common";
+import type { GithubRepoIntegrationMetadata, Org, OrgSummary, Tenant, TenantSummary } from "jolli-common";
 
 const log = getLog(import.meta);
 
@@ -94,13 +94,17 @@ interface SchedulerCacheEntry {
 	lastUsed: number;
 	/** Whether this entry is currently being initialized */
 	initializing?: Promise<SchedulerCacheEntry>;
+	/** The tenant-scoped database for this scheduler (multi-tenant only) */
+	database?: Database;
 }
 
 /**
  * Callback function type for registering jobs on a scheduler.
  * Called when a new scheduler is created to register all jobs.
+ * The database parameter provides the tenant-scoped database instance,
+ * allowing callbacks to access tenant-specific DAOs.
  */
-export type JobRegistrationCallback = (scheduler: JobScheduler) => void;
+export type JobRegistrationCallback = (scheduler: JobScheduler, database: Database) => void;
 
 /**
  * Manager for job schedulers with multi-tenant support.
@@ -157,6 +161,106 @@ export interface MultiTenantJobSchedulerManager {
 	 * Run TTL eviction - removes schedulers older than ttlMs.
 	 */
 	evictExpired(): Promise<void>;
+}
+
+/**
+ * Self-heal missing installation mappings for webhook routing.
+ *
+ * Uses INSERT ... ON CONFLICT DO NOTHING — safe, can never overwrite another tenant's mapping.
+ * If the mapping already exists and is owned by a different tenant, removes the orphaned
+ * installation and its integrations from this tenant's database.
+ */
+export async function repairInstallationMappings(
+	database: Database,
+	registryClient: TenantRegistryClient,
+	tenant: Tenant,
+	org: Org,
+): Promise<void> {
+	try {
+		const installations = await database.githubInstallationDao.listInstallations();
+		for (const installation of installations) {
+			if (!installation.installationId) {
+				continue;
+			}
+			const created = await registryClient.ensureInstallationMapping({
+				installationId: installation.installationId,
+				tenantId: tenant.id,
+				orgId: org.id,
+				githubAccountLogin: installation.name,
+				githubAccountType: installation.containerType === "org" ? "Organization" : "User",
+			});
+			if (created) {
+				log.info(
+					{ installationId: installation.installationId, tenant: tenant.slug },
+					"Repaired missing installation mapping for installation %d",
+					installation.installationId,
+				);
+			} else {
+				// Mapping already exists — check if it belongs to this tenant.
+				await removeOrphanedInstallation(database, registryClient, tenant, installation);
+			}
+		}
+	} catch (error) {
+		log.warn(error, "Failed to repair installation mappings for tenant %s", tenant.slug);
+	}
+}
+
+/**
+ * If an existing installation mapping belongs to a different tenant, the local
+ * installation record is orphaned — webhooks will never route here. Remove it
+ * along with any integrations that reference it.
+ */
+async function removeOrphanedInstallation(
+	database: Database,
+	registryClient: TenantRegistryClient,
+	tenant: Tenant,
+	installation: { id: number; installationId: number; name: string },
+): Promise<void> {
+	const existing = await registryClient.getTenantOrgByInstallationId(installation.installationId);
+	if (!existing || existing.tenant.id === tenant.id) {
+		// Owned by us (or mapping somehow disappeared) — nothing to do.
+		return;
+	}
+
+	log.warn(
+		{
+			installationId: installation.installationId,
+			ownerTenant: existing.tenant.slug,
+			currentTenant: tenant.slug,
+		},
+		"Installation %d is owned by tenant %s — removing orphaned installation from tenant %s",
+		installation.installationId,
+		existing.tenant.slug,
+		tenant.slug,
+	);
+
+	// Delete integrations that reference this installation
+	const allIntegrations = await database.integrationDao.listIntegrations();
+	const ownerPrefix = `${installation.name}/`;
+	const orphanedIntegrations = allIntegrations.filter(i => {
+		const metadata = i.metadata as GithubRepoIntegrationMetadata | undefined;
+		return (
+			i.type === "github" &&
+			(metadata?.installationId === installation.installationId || metadata?.repo?.startsWith(ownerPrefix))
+		);
+	});
+
+	for (const integration of orphanedIntegrations) {
+		await database.integrationDao.deleteIntegration(integration.id);
+	}
+
+	await database.githubInstallationDao.deleteInstallation(installation.id);
+	log.info(
+		{
+			installationId: installation.installationId,
+			deletedIntegrations: orphanedIntegrations.length,
+			tenant: tenant.slug,
+		},
+		"Removed orphaned installation %d and %d integration(s) from tenant %s",
+		installation.installationId,
+		orphanedIntegrations.length,
+		tenant.slug,
+	);
 }
 
 /**
@@ -236,7 +340,7 @@ export function createMultiTenantJobSchedulerManager(
 
 		// Call registration callback if set
 		if (jobRegistrationCallback) {
-			jobRegistrationCallback(singleTenantJobScheduler);
+			jobRegistrationCallback(singleTenantJobScheduler, defaultDatabase);
 		}
 
 		// Create a "fake" tenant and org for the wrapper
@@ -311,6 +415,32 @@ export function createMultiTenantJobSchedulerManager(
 		}
 	}
 
+	/**
+	 * Handle pg-boss error for a tenant-org scheduler.
+	 * If the error indicates the schema was deleted (tenant deleted),
+	 * remove the scheduler from the cache and stop it gracefully.
+	 */
+	function handleSchedulerError(key: string, info: JobSchedulerErrorInfo): void {
+		if (info.isSchemaNotFound) {
+			log.warn(
+				"Scheduler %s encountered schema-not-found error, cleaning up (tenant may have been deleted)",
+				key,
+			);
+
+			const entry = cache.get(key);
+			if (entry) {
+				cache.delete(key);
+				// Stop the scheduler asynchronously - don't await to avoid blocking
+				if (!entry.initializing && entry.scheduler) {
+					entry.scheduler.stop().catch(err => {
+						log.debug("Error stopping scheduler %s after schema error: %s", key, err);
+					});
+				}
+			}
+		}
+		// For other errors, just log them (already logged by JobScheduler)
+	}
+
 	async function getScheduler(tenant: Tenant, org: Org): Promise<TenantOrgJobScheduler> {
 		// In single-tenant mode, always return the single scheduler
 		if (isSingleTenantMode) {
@@ -366,7 +496,10 @@ export function createMultiTenantJobSchedulerManager(
 			// Get the database instance for the JobDao
 			const database = await connectionManager.getConnection(tenant, org);
 
-			// Create the job scheduler with the org's schema
+			// Create tenant context for job handlers to access the correct database
+			const tenantOrgContext = createTenantOrgContext(tenant, org, database);
+
+			// Create the job scheduler with the org's schema and tenant context
 			const scheduler = createJobScheduler({
 				jobDao: database.jobDao,
 				schema: org.schemaName, // Use org's schema for pg-boss tables
@@ -375,6 +508,9 @@ export function createMultiTenantJobSchedulerManager(
 					ssl: dbConfig.databaseSsl,
 				},
 				workerMode,
+				tenantOrgContext, // Pass tenant context for job handlers
+				// Handle pg-boss errors (e.g., schema deleted when tenant is removed)
+				onError: (errorInfo: JobSchedulerErrorInfo) => handleSchedulerError(key, errorInfo),
 			});
 
 			// Register all job definitions
@@ -384,11 +520,14 @@ export function createMultiTenantJobSchedulerManager(
 
 			// Call registration callback if set
 			if (jobRegistrationCallback) {
-				jobRegistrationCallback(scheduler);
+				jobRegistrationCallback(scheduler, database);
 			}
 
 			// Start the scheduler
 			await scheduler.start();
+
+			// Self-heal missing installation mappings for webhook routing.
+			await repairInstallationMappings(database, registryClient, tenant, org);
 
 			// Create the wrapped scheduler
 			const tenantOrgScheduler = createTenantOrgJobScheduler({
@@ -400,6 +539,7 @@ export function createMultiTenantJobSchedulerManager(
 			const entry: SchedulerCacheEntry = {
 				scheduler: tenantOrgScheduler,
 				lastUsed: Date.now(),
+				database,
 			};
 
 			// Update cache entry with completed initialization
@@ -471,14 +611,14 @@ export function createMultiTenantJobSchedulerManager(
 		jobRegistrationCallback = callback;
 
 		// If single-tenant scheduler already exists, call the callback on it
-		if (singleTenantJobScheduler) {
-			callback(singleTenantJobScheduler);
+		if (singleTenantJobScheduler && defaultDatabase) {
+			callback(singleTenantJobScheduler, defaultDatabase);
 		}
 
-		// Call on existing cached schedulers
+		// Call on existing cached schedulers (each has its own tenant-scoped database)
 		for (const entry of cache.values()) {
-			if (!entry.initializing && entry.scheduler) {
-				callback(entry.scheduler.scheduler);
+			if (!entry.initializing && entry.scheduler && entry.database) {
+				callback(entry.scheduler.scheduler, entry.database);
 			}
 		}
 

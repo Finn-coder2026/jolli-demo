@@ -1,3 +1,6 @@
+---
+jrn: MKKIR4UTMQOF3EHH
+---
 # SSL Certificates
 
 Place your SSL certificate files in this directory.

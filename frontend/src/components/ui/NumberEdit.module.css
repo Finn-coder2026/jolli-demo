@@ -73,7 +73,8 @@
 .editorContainer {
 	background: var(--bg-color);
 	flex: 1;
-	overflow: auto;
+	min-width: 0; /* Allow flex item to shrink below content size, preventing overflow */
+	overflow: auto; /* Both vertical and horizontal scroll for long lines */
 	position: relative; /* Required for absolute positioning of ghost text */
 	scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-bg);
 	scrollbar-width: thin;
@@ -114,9 +115,9 @@
 	min-height: 100%;
 	min-width: 100%;
 	outline: none;
-	overflow-wrap: normal;
 	padding: 8px 12px;
-	white-space: pre;
+	white-space: pre; /* No wrapping - each line stays on one line */
+	width: fit-content;
 }
 
 /* Focus styling - must come before more specific selectors for proper cascade */
@@ -141,8 +142,8 @@
 }
 
 .wrapper:focus-within {
-	border-color: hsl(var(--ring));
-	box-shadow: 0 0 0 1px hsl(var(--ring));
+	border-color: var(--color-ring);
+	box-shadow: 0 0 0 1px var(--color-ring);
 }
 
 /* Dark mode - use a darker gutter */

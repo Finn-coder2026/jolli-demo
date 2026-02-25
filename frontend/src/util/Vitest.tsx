@@ -19,6 +19,62 @@ global.console.warn = vi.fn();
 
 global.fetch = vi.fn();
 
+class MemoryStorage implements Storage {
+	private store = new Map<string, string>();
+
+	get length(): number {
+		return this.store.size;
+	}
+
+	clear(): void {
+		this.store.clear();
+	}
+
+	getItem(key: string): string | null {
+		return this.store.get(key) ?? null;
+	}
+
+	key(index: number): string | null {
+		const keys = Array.from(this.store.keys());
+		return keys[index] ?? null;
+	}
+
+	removeItem(key: string): void {
+		this.store.delete(key);
+	}
+
+	setItem(key: string, value: string): void {
+		this.store.set(key, value);
+	}
+}
+
+function ensureWebStorage(name: "localStorage" | "sessionStorage"): void {
+	const current = (globalThis as Record<string, unknown>)[name] as Storage | undefined;
+	const hasStorageShape =
+		current &&
+		typeof current.getItem === "function" &&
+		typeof current.setItem === "function" &&
+		typeof current.removeItem === "function" &&
+		typeof current.clear === "function";
+
+	if (hasStorageShape) {
+		return;
+	}
+
+	(globalThis as Record<string, unknown>).Storage = MemoryStorage;
+
+	const fallback = new MemoryStorage();
+	(globalThis as Record<string, unknown>)[name] = fallback;
+	if (typeof window !== "undefined") {
+		(window as unknown as Record<string, unknown>)[name] = fallback;
+	}
+}
+
+// Some Node environments expose a non-standard localStorage placeholder without Storage methods.
+// Ensure tests always run with a complete in-memory Web Storage implementation.
+ensureWebStorage("localStorage");
+ensureWebStorage("sessionStorage");
+
 // Export helper function for test files that need to create mock IntlayerNode values
 export function createMockIntlayerValue(value: string) {
 	// biome-ignore lint/suspicious/noExplicitAny: Mock helper returns flexible types
@@ -88,6 +144,13 @@ function _wrapIntlayerMock(obj: unknown): unknown {
 			return mockFn;
 		}
 
+		// Handle translation objects (from t() function) - objects with language keys like {en, es, fr, ...}
+		// These need a .value property that returns the English translation
+		if (typeof asAny.en === "string") {
+			const mockValue = createMockIntlayerValue(asAny.en);
+			return mockValue;
+		}
+
 		const wrapped: Record<string, unknown> = {};
 		for (const [key, value] of Object.entries(obj)) {
 			wrapped[key] = _wrapIntlayerMock(value);
@@ -130,6 +193,9 @@ vi.mock("react-intlayer", () => ({
 
 // Mock @radix-ui/react-select to avoid React compatibility issues with Preact
 vi.mock("@radix-ui/react-select", () => {
+	// Use module-level variable to pass onValueChange from Root to Item
+	let currentOnValueChange: ((value: string) => void) | undefined;
+
 	const createComponent = (displayName: string) => {
 		// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
 		const Component = (props: any) => {
@@ -145,11 +211,15 @@ vi.mock("@radix-ui/react-select", () => {
 	};
 
 	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
-	const Root = ({ children, value, onValueChange }: any) => (
-		<div data-radix-select="Root" data-value={value} data-onvaluechange={onValueChange ? "true" : "false"}>
-			{children}
-		</div>
-	);
+	const Root = ({ children, value, onValueChange }: any) => {
+		// Store onValueChange so Item can call it
+		currentOnValueChange = onValueChange;
+		return (
+			<div data-radix-select="Root" data-value={value} data-onvaluechange={onValueChange ? "true" : "false"}>
+				{children}
+			</div>
+		);
+	};
 	Root.displayName = "Root";
 
 	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
@@ -157,11 +227,17 @@ vi.mock("@radix-ui/react-select", () => {
 	Portal.displayName = "Portal";
 
 	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
-	const Item = ({ children, value, onSelect }: any) => (
-		<div data-radix-select="Item" data-value={value} onClick={onSelect}>
-			{children}
-		</div>
-	);
+	const Item = ({ children, value, onSelect, ...props }: any) => {
+		const handleClick = () => {
+			onSelect?.();
+			currentOnValueChange?.(value);
+		};
+		return (
+			<div {...props} data-radix-select="Item" data-value={value} onClick={handleClick}>
+				{children}
+			</div>
+		);
+	};
 	Item.displayName = "Item";
 
 	return {
@@ -240,11 +316,21 @@ vi.mock("@radix-ui/react-dropdown-menu", () => {
 	Content.displayName = "Content";
 
 	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
-	const Item = ({ children, onClick, ...props }: any) => (
-		<div {...props} data-radix-dropdown="Item" onClick={onClick} role="menuitem">
-			{children}
-		</div>
-	);
+	const Item = ({ children, onClick, onSelect, ...props }: any) => {
+		// Trigger both onClick and onSelect on click, matching real Radix UI behavior
+		// where DropdownMenuItem fires onSelect for both mouse clicks and keyboard selection.
+		// onSelect is also spread explicitly so tests that fire a "select" DOM event can
+		// trigger it via React/Preact's synthetic event system.
+		const handleClick = (e: unknown) => {
+			onClick?.(e);
+			onSelect?.();
+		};
+		return (
+			<div {...props} data-radix-dropdown="Item" onClick={handleClick} onSelect={onSelect} role="menuitem">
+				{children}
+			</div>
+		);
+	};
 	Item.displayName = "Item";
 
 	const createComponent = (displayName: string) => {
@@ -282,8 +368,13 @@ vi.mock("@radix-ui/react-dropdown-menu", () => {
 
 // Mock @radix-ui/react-dialog to avoid React compatibility issues with Preact
 vi.mock("@radix-ui/react-dialog", () => {
+	// Use a module-level variable to pass onOpenChange from Root to Overlay
+	let currentDialogOnOpenChange: ((open: boolean) => void) | undefined;
+
 	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
 	const Root = ({ children, open, onOpenChange }: any) => {
+		// Store onOpenChange so Overlay can call it
+		currentDialogOnOpenChange = onOpenChange;
 		if (!open) {
 			return null;
 		}
@@ -293,12 +384,6 @@ vi.mock("@radix-ui/react-dialog", () => {
 				data-open={open}
 				data-onopen-change={onOpenChange ? "true" : "false"}
 				data-testid="dialog-root-for-testing"
-				onClick={e => {
-					// Allow clicking on overlay to trigger onOpenChange
-					if (onOpenChange && (e.target as HTMLElement)?.getAttribute?.("data-radix-dialog") === "Overlay") {
-						onOpenChange(false);
-					}
-				}}
 			>
 				{children}
 			</div>
@@ -311,7 +396,14 @@ vi.mock("@radix-ui/react-dialog", () => {
 	Portal.displayName = "Portal";
 
 	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
-	const Overlay = (props: any) => <div {...props} data-radix-dialog="Overlay" data-testid="dialog-overlay" />;
+	const Overlay = (props: any) => (
+		<div
+			{...props}
+			data-radix-dialog="Overlay"
+			data-testid="dialog-overlay"
+			onClick={() => currentDialogOnOpenChange?.(false)}
+		/>
+	);
 	Overlay.displayName = "Overlay";
 
 	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
@@ -361,8 +453,13 @@ vi.mock("@radix-ui/react-dialog", () => {
 
 // Mock @radix-ui/react-alert-dialog to avoid React compatibility issues with Preact
 vi.mock("@radix-ui/react-alert-dialog", () => {
+	// Module-level variable to pass onOpenChange from Root to Cancel/Overlay
+	let currentAlertOnOpenChange: ((open: boolean) => void) | undefined;
+
 	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
 	const Root = ({ children, open, onOpenChange }: any) => {
+		// Store onOpenChange so Cancel/Overlay can call it
+		currentAlertOnOpenChange = onOpenChange;
 		if (!open) {
 			return null;
 		}
@@ -379,7 +476,9 @@ vi.mock("@radix-ui/react-alert-dialog", () => {
 	Portal.displayName = "Portal";
 
 	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
-	const Overlay = (props: any) => <div {...props} data-radix-alert-dialog="Overlay" />;
+	const Overlay = (props: any) => (
+		<div {...props} data-radix-alert-dialog="Overlay" onClick={() => currentAlertOnOpenChange?.(false)} />
+	);
 	Overlay.displayName = "Overlay";
 
 	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
@@ -415,11 +514,19 @@ vi.mock("@radix-ui/react-alert-dialog", () => {
 	Action.displayName = "Action";
 
 	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
-	const Cancel = ({ children, onClick, ...props }: any) => (
-		<button {...props} type="button" data-radix-alert-dialog="Cancel" onClick={onClick}>
-			{children}
-		</button>
-	);
+	const Cancel = ({ children, onClick, ...props }: any) => {
+		const handleClick = (e: unknown) => {
+			// Call original onClick if provided
+			onClick?.(e);
+			// Notify parent that dialog is closing
+			currentAlertOnOpenChange?.(false);
+		};
+		return (
+			<button {...props} type="button" data-radix-alert-dialog="Cancel" onClick={handleClick}>
+				{children}
+			</button>
+		);
+	};
 	Cancel.displayName = "Cancel";
 
 	return {
@@ -436,6 +543,157 @@ vi.mock("@radix-ui/react-alert-dialog", () => {
 	};
 });
 
+// Mock @radix-ui/react-checkbox to avoid React compatibility issues with Preact
+vi.mock("@radix-ui/react-checkbox", () => {
+	const { forwardRef } = require("preact/compat");
+
+	interface CheckboxRootProps {
+		children?: unknown;
+		checked?: boolean;
+		defaultChecked?: boolean;
+		disabled?: boolean;
+		onCheckedChange?: (checked: boolean) => void;
+		className?: string;
+		[key: string]: unknown;
+	}
+
+	const Root = forwardRef(
+		(
+			{ children, checked, defaultChecked, disabled, onCheckedChange, className, ...props }: CheckboxRootProps,
+			ref: unknown,
+		) => {
+			const isChecked = checked ?? defaultChecked ?? false;
+			const handleClick = () => {
+				if (!disabled && onCheckedChange) {
+					onCheckedChange(!isChecked);
+				}
+			};
+			return (
+				<button
+					{...props}
+					ref={ref as React.Ref<HTMLButtonElement>}
+					type="button"
+					role="checkbox"
+					aria-checked={isChecked}
+					data-state={isChecked ? "checked" : "unchecked"}
+					data-disabled={disabled ? "" : undefined}
+					disabled={disabled}
+					className={className}
+					onClick={handleClick}
+				>
+					{children as React.ReactNode}
+				</button>
+			);
+		},
+	);
+	Root.displayName = "Checkbox";
+
+	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props
+	const Indicator = ({ children, className, ...props }: any) => (
+		<span {...props} className={className} data-radix-checkbox="Indicator">
+			{children}
+		</span>
+	);
+	Indicator.displayName = "CheckboxIndicator";
+
+	return {
+		Root,
+		Indicator,
+	};
+});
+
+// Mock @radix-ui/react-radio-group to avoid React compatibility issues with Preact
+vi.mock("@radix-ui/react-radio-group", () => {
+	const { forwardRef } = require("preact/compat");
+
+	// Module-level variable to store onValueChange callback
+	let currentOnValueChange: ((value: string) => void) | undefined;
+
+	interface RadioGroupRootProps {
+		children?: unknown;
+		value?: string;
+		defaultValue?: string;
+		onValueChange?: (value: string) => void;
+		disabled?: boolean;
+		className?: string;
+		[key: string]: unknown;
+	}
+
+	const Root = forwardRef(
+		(
+			{ children, value, defaultValue, onValueChange, disabled, className, ...props }: RadioGroupRootProps,
+			ref: unknown,
+		) => {
+			// Store onValueChange so Item can call it
+			currentOnValueChange = onValueChange;
+			return (
+				<div
+					{...props}
+					ref={ref as React.Ref<HTMLDivElement>}
+					role="radiogroup"
+					data-radix-radio-group="Root"
+					data-value={value ?? defaultValue}
+					data-disabled={disabled ? "" : undefined}
+					className={className}
+				>
+					{children as React.ReactNode}
+				</div>
+			);
+		},
+	);
+	Root.displayName = "RadioGroup";
+
+	interface RadioGroupItemProps {
+		children?: unknown;
+		value: string;
+		disabled?: boolean;
+		className?: string;
+		id?: string;
+		[key: string]: unknown;
+	}
+
+	const Item = forwardRef(
+		({ children, value, disabled, className, id, ...props }: RadioGroupItemProps, ref: unknown) => {
+			const handleClick = () => {
+				if (!disabled && currentOnValueChange) {
+					currentOnValueChange(value);
+				}
+			};
+			return (
+				<button
+					{...props}
+					ref={ref as React.Ref<HTMLButtonElement>}
+					type="button"
+					role="radio"
+					id={id}
+					data-radix-radio-group="Item"
+					data-value={value}
+					data-disabled={disabled ? "" : undefined}
+					className={className}
+					onClick={handleClick}
+				>
+					{children as React.ReactNode}
+				</button>
+			);
+		},
+	);
+	Item.displayName = "RadioGroupItem";
+
+	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props
+	const Indicator = ({ children, className, ...props }: any) => (
+		<span {...props} className={className} data-radix-radio-group="Indicator">
+			{children}
+		</span>
+	);
+	Indicator.displayName = "RadioGroupIndicator";
+
+	return {
+		Root,
+		Item,
+		Indicator,
+	};
+});
+
 // Mock @radix-ui/react-label to avoid React compatibility issues with Preact
 vi.mock("@radix-ui/react-label", () => {
 	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
@@ -443,6 +701,59 @@ vi.mock("@radix-ui/react-label", () => {
 		<label {...props} htmlFor={htmlFor} data-radix-label="Root">
 			{children}
 		</label>
+	);
+	Root.displayName = "Root";
+
+	return { Root };
+});
+
+// Mock @radix-ui/react-tooltip to avoid React compatibility issues with Preact
+vi.mock("@radix-ui/react-tooltip", () => {
+	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
+	const Provider = ({ children }: any) => <div data-radix-tooltip="Provider">{children}</div>;
+	Provider.displayName = "Provider";
+
+	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
+	const Root = ({ children }: any) => <div data-radix-tooltip="Root">{children}</div>;
+	Root.displayName = "Root";
+
+	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
+	const Trigger = ({ children, asChild }: any) => (asChild ? children : <button type="button">{children}</button>);
+	Trigger.displayName = "Trigger";
+
+	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
+	const Portal = ({ children }: any) => <div data-radix-tooltip="Portal">{children}</div>;
+	Portal.displayName = "Portal";
+
+	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
+	const Content = ({ children, className, sideOffset, ...props }: any) => (
+		<div className={className} data-side-offset={sideOffset} data-radix-tooltip="Content" {...props}>
+			{children}
+		</div>
+	);
+	Content.displayName = "Content";
+
+	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
+	const Arrow = ({ className }: any) => <div className={className} data-radix-tooltip="Arrow" />;
+	Arrow.displayName = "Arrow";
+
+	return { Provider, Root, Trigger, Portal, Content, Arrow };
+});
+
+// Mock @radix-ui/react-separator to avoid React compatibility issues with Preact
+vi.mock("@radix-ui/react-separator", () => {
+	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
+	const Root = ({ children, orientation, decorative, className, ...props }: any) => (
+		<div
+			{...props}
+			data-radix-separator="Root"
+			data-orientation={orientation}
+			data-decorative={decorative}
+			className={className}
+			role={decorative ? "none" : "separator"}
+		>
+			{children}
+		</div>
 	);
 	Root.displayName = "Root";
 
@@ -468,6 +779,234 @@ vi.mock("@radix-ui/react-slot", () => {
 	Slot.displayName = "Slot";
 
 	return { Slot };
+});
+
+// Storage for captured DndContext callbacks (for testing)
+// Using globalThis to avoid circular dependency issues with ESM
+// Note: var is required for global scope declarations in TypeScript
+declare global {
+	var __dndContextCallbacks: {
+		onDragStart?: (event: { active: { id: string | number } }) => void;
+		onDragOver?: (event: { over: { id: string | number } | null; delta: { x: number } }) => void;
+		onDragEnd?: (event: { active: { id: string | number }; over: { id: string | number } | null }) => void;
+		onDragCancel?: () => void;
+	};
+}
+
+globalThis.__dndContextCallbacks = {};
+
+export const dndContextCallbacks = globalThis.__dndContextCallbacks;
+
+// Mock @dnd-kit/core for drag-and-drop functionality
+vi.mock("@dnd-kit/core", () => {
+	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
+	const DndContext = ({ children, onDragStart, onDragOver, onDragEnd, onDragCancel }: any) => {
+		// Use globalThis to store callbacks (avoids circular dependency)
+		globalThis.__dndContextCallbacks.onDragStart = onDragStart;
+		globalThis.__dndContextCallbacks.onDragOver = onDragOver;
+		globalThis.__dndContextCallbacks.onDragEnd = onDragEnd;
+		globalThis.__dndContextCallbacks.onDragCancel = onDragCancel;
+
+		return (
+			<div data-dnd-context="true" data-testid="dnd-context">
+				{children}
+			</div>
+		);
+	};
+	DndContext.displayName = "DndContext";
+
+	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
+	const DragOverlay = ({ children }: any) => (
+		<div data-dnd-overlay="true" data-testid="drag-overlay">
+			{children}
+		</div>
+	);
+	DragOverlay.displayName = "DragOverlay";
+
+	const useDndContext = () => ({
+		active: null,
+		over: null,
+		activatorEvent: null,
+		activeNode: null,
+		activeNodeRect: null,
+		collisions: null,
+		containerNodeRect: null,
+		draggableNodes: new Map(),
+		droppableContainers: new Map(),
+		droppableRects: new Map(),
+		measureDroppableContainers: vi.fn(),
+		overlayNode: null,
+		scrollableAncestors: [],
+		scrollableAncestorRects: [],
+		recomputeLayouts: vi.fn(),
+		windowRect: null,
+	});
+
+	const useDraggable = ({ id, disabled }: { id: string | number; data?: unknown; disabled?: boolean }) => ({
+		active: null,
+		activeNodeRect: null,
+		attributes: {
+			role: "button",
+			tabIndex: 0,
+			"aria-pressed": false,
+			"aria-roledescription": "draggable",
+			"aria-describedby": `DndDescribedBy-${id}`,
+		},
+		isDragging: false,
+		listeners: disabled
+			? {}
+			: {
+					onKeyDown: vi.fn(),
+					onPointerDown: vi.fn(),
+				},
+		node: { current: null },
+		over: null,
+		setNodeRef: vi.fn(),
+		setActivatorNodeRef: vi.fn(),
+		transform: null,
+	});
+
+	const useDroppable = (_options: { id: string | number; data?: unknown; disabled?: boolean }) => ({
+		active: null,
+		isOver: false,
+		node: { current: null },
+		over: null,
+		rect: { current: null },
+		setNodeRef: vi.fn(),
+	});
+
+	// Sensors
+	const PointerSensor = { activators: [{ eventName: "onPointerDown" }] };
+	const KeyboardSensor = { activators: [{ eventName: "onKeyDown" }] };
+	const MouseSensor = { activators: [{ eventName: "onMouseDown" }] };
+	const TouchSensor = { activators: [{ eventName: "onTouchStart" }] };
+
+	const useSensor = (sensor: unknown, options?: unknown) => ({ sensor, options });
+	const useSensors = (...sensors: Array<unknown>) => sensors;
+
+	// Collision detection
+	const closestCenter = vi.fn(() => []);
+	const closestCorners = vi.fn(() => []);
+	const rectIntersection = vi.fn(() => []);
+	const pointerWithin = vi.fn(() => []);
+
+	// Utilities
+	const defaultDropAnimationSideEffects = vi.fn(() => ({}));
+	const MeasuringStrategy = {
+		Always: "always",
+		BeforeDragging: "beforeDragging",
+		WhileDragging: "whileDragging",
+	};
+
+	return {
+		DndContext,
+		DragOverlay,
+		useDndContext,
+		useDraggable,
+		useDroppable,
+		PointerSensor,
+		KeyboardSensor,
+		MouseSensor,
+		TouchSensor,
+		useSensor,
+		useSensors,
+		closestCenter,
+		closestCorners,
+		rectIntersection,
+		pointerWithin,
+		defaultDropAnimationSideEffects,
+		MeasuringStrategy,
+	};
+});
+
+// Mock @dnd-kit/sortable for sortable list functionality
+vi.mock("@dnd-kit/sortable", () => {
+	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
+	const SortableContext = ({ children }: any) => (
+		<div data-sortable-context="true" data-testid="sortable-context">
+			{children}
+		</div>
+	);
+	SortableContext.displayName = "SortableContext";
+
+	const useSortable = ({ id, data, disabled }: { id: string | number; data?: unknown; disabled?: boolean }) => ({
+		active: null,
+		activeIndex: -1,
+		attributes: {
+			role: "button",
+			tabIndex: 0,
+			"aria-pressed": false,
+			"aria-roledescription": "sortable",
+			"aria-describedby": `DndDescribedBy-${id}`,
+		},
+		data: { current: data },
+		rect: { current: null },
+		index: 0,
+		isDragging: false,
+		isSorting: false,
+		isOver: false,
+		items: [],
+		listeners: disabled
+			? {}
+			: {
+					onKeyDown: vi.fn(),
+					onPointerDown: vi.fn(),
+				},
+		node: { current: null },
+		over: null,
+		overIndex: -1,
+		setNodeRef: vi.fn(),
+		setActivatorNodeRef: vi.fn(),
+		setDroppableNodeRef: vi.fn(),
+		setDraggableNodeRef: vi.fn(),
+		transform: null,
+		transition: null,
+	});
+
+	const sortableKeyboardCoordinates = vi.fn();
+	const verticalListSortingStrategy = vi.fn(() => null);
+	const horizontalListSortingStrategy = vi.fn(() => null);
+	const rectSortingStrategy = vi.fn(() => null);
+	const rectSwappingStrategy = vi.fn(() => null);
+
+	const arrayMove = (array: Array<unknown>, from: number, to: number) => {
+		const newArray = [...array];
+		const [item] = newArray.splice(from, 1);
+		newArray.splice(to, 0, item);
+		return newArray;
+	};
+
+	return {
+		SortableContext,
+		useSortable,
+		sortableKeyboardCoordinates,
+		verticalListSortingStrategy,
+		horizontalListSortingStrategy,
+		rectSortingStrategy,
+		rectSwappingStrategy,
+		arrayMove,
+	};
+});
+
+// Mock @dnd-kit/utilities for CSS transform utilities
+vi.mock("@dnd-kit/utilities", () => {
+	const CSS = {
+		Transform: {
+			toString: (transform: { x?: number; y?: number; scaleX?: number; scaleY?: number } | null) => {
+				if (!transform) {
+					return;
+				}
+				const { x = 0, y = 0, scaleX = 1, scaleY = 1 } = transform;
+				return `translate3d(${x}px, ${y}px, 0) scaleX(${scaleX}) scaleY(${scaleY})`;
+			},
+		},
+		Transition: {
+			toString: ({ property, duration, easing }: { property: string; duration: number; easing: string }) =>
+				`${property} ${duration}ms ${easing}`,
+		},
+	};
+
+	return { CSS };
 });
 
 // Mock react-resizable-panels (v2.x API) to avoid issues in test environment
@@ -499,14 +1038,126 @@ vi.mock("react-resizable-panels", () => {
 	return { PanelGroup, Panel, PanelResizeHandle };
 });
 
-// Mock @radix-ui/react-tabs to properly render tab content
-vi.mock("@radix-ui/react-tabs", () => {
+// Mock @radix-ui/react-popover to avoid React compatibility issues with Preact
+vi.mock("@radix-ui/react-popover", () => {
+	// Use a module-level variable to pass onOpenChange from Root to Content
+	let currentPopoverOnOpenChange: ((open: boolean) => void) | undefined;
+	let currentPopoverOpen: boolean | undefined;
+
 	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
-	const Root = ({ children, defaultValue }: any) => (
-		<div data-radix-tabs="Root" data-default-value={defaultValue}>
+	const Root = ({ children, open, onOpenChange }: any) => {
+		currentPopoverOnOpenChange = onOpenChange;
+		currentPopoverOpen = open;
+		return (
+			<div data-radix-popover="Root" data-open={open} data-onopen-change={onOpenChange ? "true" : "false"}>
+				{children}
+			</div>
+		);
+	};
+	Root.displayName = "Root";
+
+	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
+	const Trigger = ({ children, asChild, onClick, ...props }: any) => {
+		const handleClick = (e: unknown) => {
+			onClick?.(e);
+			currentPopoverOnOpenChange?.(!currentPopoverOpen);
+		};
+
+		if (asChild && children) {
+			const { cloneElement } = require("preact");
+			return cloneElement(children, {
+				onClick: (e: unknown) => {
+					children.props?.onClick?.(e);
+					currentPopoverOnOpenChange?.(!currentPopoverOpen);
+				},
+			});
+		}
+		return (
+			<button {...props} type="button" data-radix-popover="Trigger" onClick={handleClick}>
+				{children}
+			</button>
+		);
+	};
+	Trigger.displayName = "Trigger";
+
+	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
+	const Portal = ({ children }: any) => <div data-radix-popover="Portal">{children}</div>;
+	Portal.displayName = "Portal";
+
+	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
+	const Content = ({ children, align, sideOffset, ...props }: any) => (
+		<div {...props} data-radix-popover="Content" data-align={align} data-side-offset={sideOffset}>
 			{children}
 		</div>
 	);
+	Content.displayName = "Content";
+
+	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
+	const Anchor = ({ children, ...props }: any) => (
+		<div {...props} data-radix-popover="Anchor">
+			{children}
+		</div>
+	);
+	Anchor.displayName = "Anchor";
+
+	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
+	const Close = ({ children, ...props }: any) => (
+		<button {...props} type="button" data-radix-popover="Close" onClick={() => currentPopoverOnOpenChange?.(false)}>
+			{children}
+		</button>
+	);
+	Close.displayName = "Close";
+
+	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
+	const Arrow = (props: any) => <div {...props} data-radix-popover="Arrow" />;
+	Arrow.displayName = "Arrow";
+
+	return {
+		Root,
+		Trigger,
+		Portal,
+		Content,
+		Anchor,
+		Close,
+		Arrow,
+	};
+});
+
+// Mock @radix-ui/react-tabs to properly render tab content with state management
+// This mock creates a stateful tabs implementation that properly triggers onValueChange
+vi.mock("@radix-ui/react-tabs", async () => {
+	const React = await import("react");
+	const { createContext, useContext, useState } = React;
+
+	// Create context to share active tab state between Root, Trigger, and Content
+	const TabsContext = createContext<{
+		activeValue: string;
+		setActiveValue: (value: string) => void;
+	} | null>(null);
+
+	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
+	const Root = ({ children, defaultValue, value, onValueChange }: any) => {
+		// Use controlled value if provided, otherwise use internal state
+		const [internalValue, setInternalValue] = useState(defaultValue ?? "");
+		const activeValue = value ?? internalValue;
+
+		const setActiveValue = (newValue: string) => {
+			if (onValueChange) {
+				onValueChange(newValue);
+			}
+			if (value === undefined) {
+				setInternalValue(newValue);
+			}
+		};
+
+		return (
+			<TabsContext.Provider value={{ activeValue, setActiveValue }}>
+				<div data-radix-tabs="Root" data-default-value={defaultValue}>
+					{children}
+				</div>
+			</TabsContext.Provider>
+		);
+	};
 	Root.displayName = "Root";
 
 	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
@@ -518,20 +1169,28 @@ vi.mock("@radix-ui/react-tabs", () => {
 	List.displayName = "List";
 
 	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
-	const Trigger = ({ children, value, ...props }: any) => (
-		<button {...props} type="button" data-radix-tabs="Trigger" data-value={value}>
-			{children}
-		</button>
-	);
+	const Trigger = ({ children, value, ...props }: any) => {
+		const context = useContext(TabsContext);
+		const handleClick = (e: Event) => {
+			context?.setActiveValue(value);
+			props.onClick?.(e);
+		};
+		return (
+			<button {...props} type="button" data-radix-tabs="Trigger" data-value={value} onClick={handleClick}>
+				{children}
+			</button>
+		);
+	};
 	Trigger.displayName = "Trigger";
 
 	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
 	const Content = ({ children, value, ...props }: any) => {
-		// Always render content for testing (in real app, only active tab renders)
-		// This allows tests to find buttons inside tabs
+		const context = useContext(TabsContext);
+		// Only render content when this tab is active
+		const isActive = context?.activeValue === value;
 		return (
 			<div {...props} data-radix-tabs="Content" data-value={value}>
-				{children}
+				{isActive ? children : null}
 			</div>
 		);
 	};
@@ -542,6 +1201,175 @@ vi.mock("@radix-ui/react-tabs", () => {
 		List,
 		Trigger,
 		Content,
+	};
+});
+
+// Mock @radix-ui/react-collapsible to avoid React compatibility issues with Preact
+vi.mock("@radix-ui/react-collapsible", () => {
+	// Use module-level variable to track open state and pass onOpenChange
+	let currentCollapsibleOnOpenChange: ((open: boolean) => void) | undefined;
+	let currentCollapsibleOpen: boolean | undefined;
+
+	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
+	const Root = ({ children, open, onOpenChange }: any) => {
+		currentCollapsibleOnOpenChange = onOpenChange;
+		currentCollapsibleOpen = open;
+		return (
+			<div
+				data-radix-collapsible="Root"
+				data-state={open ? "open" : "closed"}
+				data-collapsible-open={open}
+				data-collapsible-on-open-change={onOpenChange ? "true" : "false"}
+			>
+				{children}
+			</div>
+		);
+	};
+	Root.displayName = "Root";
+
+	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
+	const CollapsibleTrigger = ({ children, asChild, onClick, ...props }: any) => {
+		const handleClick = (e: unknown) => {
+			onClick?.(e);
+			currentCollapsibleOnOpenChange?.(!currentCollapsibleOpen);
+		};
+
+		if (asChild && children) {
+			const { cloneElement } = require("preact");
+			return cloneElement(children, {
+				onClick: (e: unknown) => {
+					children.props?.onClick?.(e);
+					currentCollapsibleOnOpenChange?.(!currentCollapsibleOpen);
+				},
+			});
+		}
+		return (
+			<button type="button" {...props} data-radix-collapsible="Trigger" onClick={handleClick}>
+				{children}
+			</button>
+		);
+	};
+	CollapsibleTrigger.displayName = "CollapsibleTrigger";
+
+	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
+	const CollapsibleContent = ({ children, ...props }: any) => {
+		// In test environment, always render content so tests can access children
+		// The actual visibility behavior is controlled by parent component's state
+		return (
+			<div {...props} data-radix-collapsible="Content">
+				{children}
+			</div>
+		);
+	};
+	CollapsibleContent.displayName = "CollapsibleContent";
+
+	return {
+		Root,
+		CollapsibleTrigger,
+		CollapsibleContent,
+	};
+});
+
+// Mock react-day-picker for Calendar component testing
+vi.mock("react-day-picker", () => {
+	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
+	const DayPicker = ({ mode, selected, onSelect, disabled, className, ...props }: any) => {
+		// Simulate clicking a date - call onSelect with a mock date
+		const handleDateClick = (date: Date) => {
+			if (disabled) {
+				const isDisabled = typeof disabled === "function" ? disabled(date) : false;
+				if (isDisabled) {
+					return;
+				}
+			}
+			onSelect?.(date);
+		};
+
+		// Generate a simple mock calendar for testing
+		// Use year, month (0-indexed), day constructor for timezone-safe local date
+		const mockDate = new Date(2025, 0, 15);
+
+		return (
+			<div data-react-day-picker="DayPicker" data-mode={mode} className={className} {...props}>
+				<div data-testid="calendar-mock">
+					<button
+						type="button"
+						data-testid="calendar-date-15"
+						onClick={() => handleDateClick(mockDate)}
+						aria-selected={selected?.toDateString() === mockDate.toDateString()}
+					>
+						15
+					</button>
+				</div>
+			</div>
+		);
+	};
+	DayPicker.displayName = "DayPicker";
+
+	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props including children
+	const DayButton = ({ children, ...props }: any) => (
+		<button type="button" data-react-day-picker="DayButton" {...props}>
+			{children}
+		</button>
+	);
+	DayButton.displayName = "DayButton";
+
+	const getDefaultClassNames = () => ({
+		root: "rdp-root",
+		months: "rdp-months",
+		month: "rdp-month",
+		nav: "rdp-nav",
+		button_previous: "rdp-button_previous",
+		button_next: "rdp-button_next",
+		month_caption: "rdp-month_caption",
+		dropdowns: "rdp-dropdowns",
+		dropdown_root: "rdp-dropdown_root",
+		dropdown: "rdp-dropdown",
+		caption_label: "rdp-caption_label",
+		weekdays: "rdp-weekdays",
+		weekday: "rdp-weekday",
+		week: "rdp-week",
+		week_number_header: "rdp-week_number_header",
+		week_number: "rdp-week_number",
+		day: "rdp-day",
+		range_start: "rdp-range_start",
+		range_middle: "rdp-range_middle",
+		range_end: "rdp-range_end",
+		today: "rdp-today",
+		outside: "rdp-outside",
+		disabled: "rdp-disabled",
+		hidden: "rdp-hidden",
+	});
+
+	return {
+		DayPicker,
+		DayButton,
+		getDefaultClassNames,
+	};
+});
+
+// Mock sonner to avoid issues in test environment
+// The Toaster component renders nothing in tests, and toast functions are mocked
+vi.mock("sonner", () => {
+	// biome-ignore lint/suspicious/noExplicitAny: Mock component needs flexible props
+	const Toaster = (_props: any) => null;
+	Toaster.displayName = "Toaster";
+
+	const toast = Object.assign(vi.fn(), {
+		success: vi.fn(),
+		error: vi.fn(),
+		info: vi.fn(),
+		warning: vi.fn(),
+		loading: vi.fn(),
+		promise: vi.fn(),
+		custom: vi.fn(),
+		dismiss: vi.fn(),
+		message: vi.fn(),
+	});
+
+	return {
+		Toaster,
+		toast,
 	};
 });
 
@@ -573,10 +1401,15 @@ vi.mock("lucide-react", () => {
 		AlertCircle: createIconComponent("AlertCircle"),
 		AlertTriangle: createIconComponent("AlertTriangle"),
 		Archive: createIconComponent("Archive"),
+		ArrowDown: createIconComponent("ArrowDown"),
 		ArrowLeft: createIconComponent("ArrowLeft"),
+		ArrowUp: createIconComponent("ArrowUp"),
+		ArrowUpDown: createIconComponent("ArrowUpDown"),
 		BarChart3: createIconComponent("BarChart3"),
 		Bell: createIconComponent("Bell"),
+		Bold: createIconComponent("Bold"),
 		BookOpen: createIconComponent("BookOpen"),
+		Bot: createIconComponent("Bot"),
 		Building2: createIconComponent("Building2"),
 		Check: createIconComponent("Check"),
 		CheckCircle: createIconComponent("CheckCircle"),
@@ -585,14 +1418,20 @@ vi.mock("lucide-react", () => {
 		ChevronLeft: createIconComponent("ChevronLeft"),
 		ChevronRight: createIconComponent("ChevronRight"),
 		ChevronUp: createIconComponent("ChevronUp"),
+		ChevronsUpDown: createIconComponent("ChevronsUpDown"),
 		Circle: createIconComponent("Circle"),
+		ClipboardList: createIconComponent("ClipboardList"),
 		Clock: createIconComponent("Clock"),
 		Code: createIconComponent("Code"),
+		CodeSquare: createIconComponent("CodeSquare"),
+		Columns2: createIconComponent("Columns2"),
 		Copy: createIconComponent("Copy"),
 		Edit: createIconComponent("Edit"),
+		Edit3: createIconComponent("Edit3"),
 		ExternalLink: createIconComponent("ExternalLink"),
 		File: createIconComponent("File"),
 		FileCode: createIconComponent("FileCode"),
+		Filter: createIconComponent("Filter"),
 		FileEdit: createIconComponent("FileEdit"),
 		FilePlus: createIconComponent("FilePlus"),
 		FileQuestion: createIconComponent("FileQuestion"),
@@ -601,47 +1440,96 @@ vi.mock("lucide-react", () => {
 		Folder: createIconComponent("Folder"),
 		FolderPlus: createIconComponent("FolderPlus"),
 		FolderGit2: createIconComponent("FolderGit2"),
+		FolderInput: createIconComponent("FolderInput"),
 		Gauge: createIconComponent("Gauge"),
 		GitBranch: createIconComponent("GitBranch"),
 		Github: createIconComponent("Github"),
 		Globe: createIconComponent("Globe"),
+		Layers: createIconComponent("Layers"),
+		LayoutGrid: createIconComponent("LayoutGrid"),
+		Lightbulb: createIconComponent("Lightbulb"),
+		Link2: createIconComponent("Link2"),
 		GripVertical: createIconComponent("GripVertical"),
+		Heading1: createIconComponent("Heading1"),
+		Heading2: createIconComponent("Heading2"),
+		Heading3: createIconComponent("Heading3"),
+		Heading4: createIconComponent("Heading4"),
+		HelpCircle: createIconComponent("HelpCircle"),
+		Highlighter: createIconComponent("Highlighter"),
 		History: createIconComponent("History"),
+		Image: createIconComponent("Image"),
 		Inbox: createIconComponent("Inbox"),
+		Italic: createIconComponent("Italic"),
+		Key: createIconComponent("Key"),
+		LetterText: createIconComponent("LetterText"),
+		List: createIconComponent("List"),
+		ListChecks: createIconComponent("ListChecks"),
+		ListOrdered: createIconComponent("ListOrdered"),
 		Loader2: createIconComponent("Loader2"),
 		Lock: createIconComponent("Lock"),
 		LockOpen: createIconComponent("LockOpen"),
 		LogOut: createIconComponent("LogOut"),
+		Maximize2: createIconComponent("Maximize2"),
 		MessageSquare: createIconComponent("MessageSquare"),
+		Monitor: createIconComponent("Monitor"),
 		Moon: createIconComponent("Moon"),
 		MoreHorizontal: createIconComponent("MoreHorizontal"),
 		MoreVertical: createIconComponent("MoreVertical"),
+		PanelLeft: createIconComponent("PanelLeft"),
 		PanelLeftClose: createIconComponent("PanelLeftClose"),
 		PanelLeftOpen: createIconComponent("PanelLeftOpen"),
+		PanelRightClose: createIconComponent("PanelRightClose"),
 		Pencil: createIconComponent("Pencil"),
+		Pilcrow: createIconComponent("Pilcrow"),
 		Pin: createIconComponent("Pin"),
 		Play: createIconComponent("Play"),
 		Plug: createIconComponent("Plug"),
 		Plus: createIconComponent("Plus"),
+		Quote: createIconComponent("Quote"),
+		Redo: createIconComponent("Redo"),
 		Redo2: createIconComponent("Redo2"),
 		RefreshCw: createIconComponent("RefreshCw"),
 		RotateCcw: createIconComponent("RotateCcw"),
+		Rows3: createIconComponent("Rows3"),
 		Save: createIconComponent("Save"),
 		Search: createIconComponent("Search"),
 		Send: createIconComponent("Send"),
 		Settings: createIconComponent("Settings"),
 		Share2: createIconComponent("Share2"),
+		Shield: createIconComponent("Shield"),
+		ShieldAlert: createIconComponent("ShieldAlert"),
+		Sliders: createIconComponent("Sliders"),
 		Sparkles: createIconComponent("Sparkles"),
+		Square: createIconComponent("Square"),
+		Strikethrough: createIconComponent("Strikethrough"),
 		Sun: createIconComponent("Sun"),
 		Trash: createIconComponent("Trash"),
 		Trash2: createIconComponent("Trash2"),
 		TrendingUp: createIconComponent("TrendingUp"),
+		Underline: createIconComponent("Underline"),
+		Undo: createIconComponent("Undo"),
 		Undo2: createIconComponent("Undo2"),
 		User: createIconComponent("User"),
+		UserPlus: createIconComponent("UserPlus"),
 		Users: createIconComponent("Users"),
+		WandSparkles: createIconComponent("WandSparkles"),
 		Wrench: createIconComponent("Wrench"),
 		X: createIconComponent("X"),
 		XCircle: createIconComponent("XCircle"),
+		// Additional icons used by branding components
+		CircleX: createIconComponent("CircleX"),
+		FolderTree: createIconComponent("FolderTree"),
+		Home: createIconComponent("Home"),
+		Info: createIconComponent("Info"),
+		Linkedin: createIconComponent("Linkedin"),
+		Menu: createIconComponent("Menu"),
+		Palette: createIconComponent("Palette"),
+		Settings2: createIconComponent("Settings2"),
+		TriangleAlert: createIconComponent("TriangleAlert"),
+		Type: createIconComponent("Type"),
+		Youtube: createIconComponent("Youtube"),
+		XIcon: createIconComponent("XIcon"),
+		CheckIcon: createIconComponent("CheckIcon"),
 	};
 });
 
@@ -702,7 +1590,17 @@ global.ResizeObserver = vi.fn().mockImplementation(() => ({
 	disconnect: vi.fn(),
 }));
 
-global.PointerEvent = class PointerEvent extends Event {} as unknown as typeof PointerEvent;
+// Provide a PointerEvent polyfill with pointerId support for pointer-based interactions.
+class MockPointerEvent extends MouseEvent {
+	pointerId: number;
+
+	constructor(type: string, props: PointerEventInit = {}) {
+		super(type, props);
+		this.pointerId = props.pointerId ?? 0;
+	}
+}
+
+global.PointerEvent = MockPointerEvent as unknown as typeof PointerEvent;
 global.HTMLElement.prototype.scrollIntoView = vi.fn();
 global.HTMLElement.prototype.hasPointerCapture = vi.fn();
 global.HTMLElement.prototype.releasePointerCapture = vi.fn();

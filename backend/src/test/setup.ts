@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { afterEach, beforeAll, beforeEach, vi } from "vitest";
 
 /**
@@ -36,10 +37,13 @@ afterEach(() => {
 });
 
 // Mock uuid to fix ESM/CJS interop issue in Vitest
-// We need to directly import from the CJS dist since the ESM wrapper fails in Vitest VM
-vi.mock("uuid", async () => {
-	const actual = await import("uuid");
-	return actual;
+// Keep this local to test setup so backend build doesn't rely on transitive uuid typings.
+vi.mock("uuid", () => {
+	const v4 = () => randomUUID();
+	return {
+		v4,
+		default: { v4 },
+	};
 });
 
 // Mock ansi-styles to avoid Vitest ESM/CJS interop issues

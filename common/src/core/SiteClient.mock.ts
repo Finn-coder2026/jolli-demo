@@ -10,29 +10,8 @@ export function mockSiteClient(partial?: Partial<SiteClient>): SiteClient {
 		regenerateSite: () => {
 			throw new Error("Not implemented");
 		},
-		updateRepositoryFile: async () => {
-			// Mock implementation - no-op
-		},
-		checkUpdateStatus: async () => ({
-			needsUpdate: false,
-			lastGeneratedAt: undefined,
-			latestArticleUpdate: new Date().toISOString(),
-			changedArticles: [],
-		}),
-		toggleProtection: () => {
-			throw new Error("Not implemented");
-		},
-		refreshProtectionStatus: () => {
-			throw new Error("Not implemented");
-		},
-		publishSite: () => {
-			throw new Error("Not implemented");
-		},
-		unpublishSite: () => {
-			throw new Error("Not implemented");
-		},
 		deleteSite: async () => {
-			// Mock implementation - no-op
+			// No-op for mock
 		},
 		updateSiteArticles: () => {
 			throw new Error("Not implemented");
@@ -42,17 +21,13 @@ export function mockSiteClient(partial?: Partial<SiteClient>): SiteClient {
 		},
 		getChangedConfigFiles: async () => [],
 		formatCode: async () => ({ formatted: "" }),
-		createFolder: async () => ({ success: true, path: "" }),
-		deleteFolder: async () => ({ success: true }),
-		renameFolder: async () => ({ success: true, newPath: "" }),
-		moveFile: async () => ({ success: true, newPath: "" }),
 		listFolderContents: async () => ({ files: [] }),
 		checkSubdomainAvailability: async () => ({ available: true }),
 		addCustomDomain: () => {
 			throw new Error("Not implemented");
 		},
 		removeCustomDomain: async () => {
-			// Mock implementation - no-op
+			// No-op for mock
 		},
 		getCustomDomainStatus: () => {
 			throw new Error("Not implemented");
@@ -64,6 +39,12 @@ export function mockSiteClient(partial?: Partial<SiteClient>): SiteClient {
 		updateJwtAuthConfig: () => {
 			throw new Error("Not implemented");
 		},
+		updateBranding: () => {
+			throw new Error("Not implemented");
+		},
+		updateFolderStructure: () => {
+			throw new Error("Not implemented");
+		},
 		getRepositoryTree: async () => ({
 			sha: "mock-sha",
 			tree: [],
@@ -73,10 +54,15 @@ export function mockSiteClient(partial?: Partial<SiteClient>): SiteClient {
 			name: "mock-file",
 			path: "mock-path",
 			sha: "mock-sha",
-			type: "file" as const,
+			type: "file",
 			content: "",
-			encoding: "base64" as const,
+			encoding: "base64",
 		}),
+		syncTree: async () => ({
+			success: true,
+			commitSha: "mock-commit-sha",
+		}),
+		getSitesForArticle: async () => [],
 		...partial,
 	};
 }

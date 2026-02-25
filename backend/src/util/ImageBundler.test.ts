@@ -290,6 +290,59 @@ Here's how to use images:
 
 			expect(result).toBe(`<img src="/images/hash-sized.png" alt="Sized" width="400" height="300">`);
 		});
+
+		test("transforms markdown images with width percentage to HTML with style", () => {
+			const content = `![Resized Image](/api/images/t/o/_default/resized.png){width=50%}`;
+			const filenameMap = new Map([["t/o/_default/resized.png", "hash-resized.png"]]);
+
+			const result = transformImageUrls(content, filenameMap);
+
+			expect(result).toBe(`<img src="/images/hash-resized.png" alt="Resized Image" style="width: 50%" />`);
+		});
+
+		test("transforms markdown images with various width percentages", () => {
+			const content = `
+![Small](/api/images/t/o/_default/small.png){width=25%}
+![Medium](/api/images/t/o/_default/medium.png){width=50%}
+![Large](/api/images/t/o/_default/large.png){width=100%}
+			`;
+			const filenameMap = new Map([
+				["t/o/_default/small.png", "hash-small.png"],
+				["t/o/_default/medium.png", "hash-medium.png"],
+				["t/o/_default/large.png", "hash-large.png"],
+			]);
+
+			const result = transformImageUrls(content, filenameMap);
+
+			expect(result).toContain(`<img src="/images/hash-small.png" alt="Small" style="width: 25%" />`);
+			expect(result).toContain(`<img src="/images/hash-medium.png" alt="Medium" style="width: 50%" />`);
+			expect(result).toContain(`<img src="/images/hash-large.png" alt="Large" style="width: 100%" />`);
+		});
+
+		test("transforms mix of images with and without width percentage", () => {
+			const content = `
+![With Width](/api/images/t/o/_default/with-width.png){width=75%}
+![Without Width](/api/images/t/o/_default/without-width.png)
+			`;
+			const filenameMap = new Map([
+				["t/o/_default/with-width.png", "hash-with-width.png"],
+				["t/o/_default/without-width.png", "hash-without-width.png"],
+			]);
+
+			const result = transformImageUrls(content, filenameMap);
+
+			expect(result).toContain(`<img src="/images/hash-with-width.png" alt="With Width" style="width: 75%" />`);
+			expect(result).toContain(`<img src="/images/hash-without-width.png" alt="Without Width" />`);
+		});
+
+		test("preserves empty alt text with width percentage", () => {
+			const content = `![](/api/images/t/o/_default/no-alt.png){width=60%}`;
+			const filenameMap = new Map([["t/o/_default/no-alt.png", "hash-no-alt.png"]]);
+
+			const result = transformImageUrls(content, filenameMap);
+
+			expect(result).toBe(`<img src="/images/hash-no-alt.png" alt="" style="width: 60%" />`);
+		});
 	});
 
 	describe("bundleSiteImages", () => {

@@ -1,3 +1,6 @@
+---
+jrn: MKKIR4UNYKAA96C4
+---
 # Jolli Developer Guide
 
 Welcome to the Jolli development environment! This guide will help you get set up to work on Jolli locally.
@@ -19,9 +22,14 @@ Welcome to the Jolli development environment! This guide will help you get set u
   - [Environment-Specific Deployments](#environment-specific-deployments)
   - [Custom Domains](#custom-domains)
 - [Article Image Upload Setup](#article-image-upload-setup)
+- [Asset Cleanup (Orphaned Image Detection)](#asset-cleanup-orphaned-image-detection)
+- [Unified Sidebar Navigation](#unified-sidebar-navigation)
 - [Running the Application](#running-the-application)
 - [Multi-Tenant Local Development](#multi-tenant-local-development)
+  - [Writing Multi-Tenant Safe Raw Queries](#writing-multi-tenant-safe-raw-queries)
+- [Job Worker Service (Multi-Tenant)](#job-worker-service-multi-tenant)
 - [Mercure Hub for Distributed SSE](#mercure-hub-for-distributed-sse)
+- [Central User Authentication](#central-user-authentication)
 - [Testing](#testing)
 - [Common Issues](#common-issues)
 
@@ -323,11 +331,11 @@ E2B_TEMPLATE_ID=placeholder
 
 **Note:** With placeholder values, the server will start but sandbox-dependent features (like the JolliAgent automated article generation) will not function. If you need these features, obtain real credentials from https://e2b.dev.
 
-At this point, the server should start, but you won't be able to log in because OAuth authentication is not yet configured. Continue to the next section to set up authentication.
+At this point, the server should start, but you won't be able to log in because authentication is not yet configured. Continue to the next section to set up authentication.
 
 ## OAuth Authentication Setup
 
-Jolli uses OAuth for user authentication. You need to configure at least one provider (GitHub or Google) to log in.
+Jolli uses [better-auth](https://www.better-auth.com/) for user authentication with OAuth providers. You need to configure at least one provider (GitHub or Google) to log in.
 
 ### GitHub OAuth
 
@@ -336,7 +344,7 @@ Jolli uses OAuth for user authentication. You need to configure at least one pro
 3. Fill in the application details:
    - **Application name:** `Jolli Local Dev` (or any name)
    - **Homepage URL:** `http://localhost:8034`
-   - **Authorization callback URL:** `http://localhost:8034/api/auth/connect/github/callback`
+   - **Authorization callback URL:** `http://localhost:8034/auth/callback/github`
 4. Click "Register application"
 5. Copy the **Client ID**
 6. Click "Generate a new client secret" and copy the **Client Secret**
@@ -358,7 +366,7 @@ GITHUB_CLIENT_SECRET=your_client_secret
 6. Fill in the details:
    - **Name:** `Jolli Local Dev` (or any name)
    - **Authorized JavaScript origins:** `http://localhost:8034`
-   - **Authorized redirect URIs:** `http://localhost:8034/api/auth/connect/google/callback`
+   - **Authorized redirect URIs:** `http://localhost:8034/api/auth/callback/google`
 7. Click "Create"
 8. Copy the **Client ID** and **Client Secret**
 
@@ -900,6 +908,119 @@ aws ssm put-parameter \
 
 The parameter is automatically loaded and converted to `IMAGE_S3_ENV`.
 
+## Asset Cleanup (Orphaned Image Detection)
+
+Jolli includes scheduled jobs that automatically detect and clean up orphaned images - images that have been uploaded but are no longer referenced in any article or draft.
+
+### How It Works
+
+Two jobs run daily:
+
+1. **Detect Orphaned Images** (3 AM): Scans all published articles and drafts for image references, then:
+   - Marks unreferenced images as "orphaned"
+   - Restores previously orphaned images that are now referenced again
+   - Protects recently uploaded images (within the buffer period)
+
+2. **Cleanup Orphaned Images** (4 AM): Permanently deletes images that have been orphaned beyond the grace period:
+   - Deletes from S3 first
+   - Then soft-deletes the database record
+
+### Configuration
+
+Add the following to your `backend/.env.local` to customize the cleanup behavior:
+
+```env
+# Number of days to protect recently uploaded images (default: 7)
+# Images uploaded within this window won't be orphaned even if not yet referenced
+ASSET_CLEANUP_RECENT_UPLOAD_BUFFER_DAYS=7
+
+# Number of days before orphaned images are permanently deleted (default: 30)
+# This grace period allows recovery if an image is accidentally removed
+ASSET_CLEANUP_GRACE_PERIOD_DAYS=30
+```
+
+### Manual Triggering
+
+For testing, you can manually trigger these jobs via the API:
+
+```bash
+# Detect orphaned images
+curl -X POST http://localhost:7034/api/jobs/queue \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"name": "asset:detect-orphaned-images", "params": {}}'
+
+# Cleanup orphaned images (delete old orphans)
+curl -X POST http://localhost:7034/api/jobs/queue \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"name": "asset:cleanup-orphaned-images", "params": {}}'
+```
+
+**Tip:** For local testing, set both config values to `0` in your `.env.local` to disable the protection windows and immediately detect/cleanup orphans.
+
+## Unified Sidebar Navigation
+
+Jolli features a modern unified sidebar for navigation (introduced January 2026). The unified sidebar is feature-complete and available for use, though it's not yet enabled by default to allow for gradual rollout and testing.
+
+### Features
+
+- **Single Navigation Point**: All navigation consolidated in one collapsible sidebar
+- **Org/Tenant Switching**: Quick switcher at the top of the sidebar
+- **Favorite Spaces & Sites**: Pin your most-used spaces and sites for quick access
+- **View All Dropdowns**: Search and browse all spaces/sites with expandable dropdowns
+- **Responsive Design**: Adapts to desktop, tablet, and mobile viewports
+- **Theme Switcher**: Built-in light/dark mode toggle
+- **User Profile Menu**: Quick access to account settings and logout
+
+### Navigation Tabs
+
+The sidebar includes these main tabs:
+- **Inbox** - Recent drafts and activity requiring attention
+- **Dashboard** - Job statistics and system overview
+- **Articles** - Browse and manage documentation articles
+- **Sites** - Create and manage documentation sites (Nextra/Docusaurus)
+- **Integrations** - Configure GitHub and other integrations
+- **Settings** - Application and user preferences
+- **Dev Tools** - Developer utilities (when enabled)
+
+### User Preferences
+
+The sidebar uses browser localStorage to remember:
+- Collapsed/expanded state
+- Favorite spaces and sites
+- Spaces/Sites section expanded state
+
+Preferences are scoped per tenant, so each tenant can have different favorites and settings.
+
+### Enabling the Unified Sidebar
+
+To try the new unified sidebar:
+
+1. Open the browser DevTools console
+2. Run: `localStorage.setItem('tenant:useUnifiedSidebar', 'true')`
+3. Refresh the page
+
+To switch back to legacy navigation:
+```javascript
+localStorage.setItem('tenant:useUnifiedSidebar', 'false')
+```
+
+**Note:** The unified sidebar will become the default in a future release after thorough testing. The legacy two-tier navigation will then be deprecated and eventually removed.
+
+### Development
+
+When working on sidebar components:
+- Main component: `frontend/src/ui/unified-sidebar/UnifiedSidebar.tsx`
+- Tests: `frontend/src/ui/unified-sidebar/UnifiedSidebar.test.tsx`
+- E2E tests: `e2e/tests/UnifiedSidebar.spec.ts`
+- Preferences: `frontend/src/services/preferences/PreferencesRegistry.ts`
+
+To enable the unified sidebar by default (for future release):
+- Change `defaultValue: false` to `defaultValue: true` in `PreferencesRegistry.ts`
+- Ensure all existing tests pass with the new default
+- Update test helpers to include SpaceProvider and SitesProvider by default
+
 ## Running the Application
 
 You can run the app in your IDE (there are run files for VSCode and IntelliJ),
@@ -1003,6 +1124,13 @@ MULTI_TENANT_ENABLED=true
 MULTI_TENANT_REGISTRY_URL=postgres://postgres:yourpassword@localhost:5432/jolli_registry
 BASE_DOMAIN=jolli-local.me
 
+# cookie domain
+COOKIE_DOMAIN=.jolli-local.dev
+
+# better auth secret
+#openssl rand -base64 32
+BETTER_AUTH_SECRET=<32-byte-base64-key>
+
 # Gateway mode (required for nginx gateway)
 USE_GATEWAY=true
 USE_MULTI_TENANT_AUTH=true
@@ -1089,6 +1217,198 @@ Add to your Google Cloud Console OAuth client:
 **nginx won't start on Windows:**
 - Run terminal as Administrator
 - Make sure nginx is in your PATH, or use full path to nginx executable
+
+### Writing Multi-Tenant Safe Raw Queries
+
+When writing raw SQL queries in multi-tenant mode, it's important to understand how schema isolation works:
+
+**ORM queries are automatically safe**: Sequelize uses `options.schema` to generate schema-qualified SQL:
+```sql
+-- Generated by Sequelize with options.schema = "org_engineering"
+SELECT * FROM "org_engineering"."users" WHERE ...
+```
+
+**Raw queries need attention with pooled connections**: The `SET search_path` hook fires once when connecting, but with pooled connections (like Neon's transaction pooling), each transaction may get a different backend connection where `search_path` has been reset.
+
+#### Best Practices for Raw Queries
+
+1. **Prefer ORM methods over raw queries** when possible. Sequelize methods automatically handle schema qualification.
+
+2. **For system catalog queries**, use schema-agnostic functions:
+   ```typescript
+   // SAFE - PostgreSQL functions work regardless of search_path
+   await sequelize.query("SELECT current_schema()");
+   await sequelize.query("SHOW search_path");
+   await sequelize.query("SELECT * FROM information_schema.tables WHERE table_schema = current_schema()");
+   ```
+
+3. **For tenant data queries**, use schema-qualified table names:
+   ```typescript
+   // UNSAFE with pooled connections - relies on search_path
+   await sequelize.query('SELECT * FROM users');
+
+   // SAFE - explicit schema qualification
+   const schema = sequelize.options.schema ?? 'public';
+   await sequelize.query(`SELECT * FROM "${schema}"."users"`);
+   ```
+
+4. **For migration/sync queries** (like those in DAO `postSync` hooks), the queries typically run at startup with a dedicated connection, so they're generally safe. However, prefer schema-qualified names for consistency.
+
+#### When Is This Important?
+
+- **Local development (direct connections)**: The `SET search_path` hook works reliably
+- **Neon pooled connections**: Raw queries without schema qualification may access wrong schema
+- **Production with connection pooler**: Same concern as Neon pooled connections
+
+For implementation details, see the documentation in `backend/src/tenant/TenantSequelizeFactory.ts`.
+
+## Job Worker Service (Multi-Tenant)
+
+In multi-tenant mode, background jobs are processed by a dedicated worker service running in AWS ECS Fargate. This section explains how the worker discovers and processes jobs across tenants.
+
+### Architecture Overview
+
+The worker service processes jobs for all active tenant-org pairs:
+
+1. **WorkerPolling** periodically queries the registry database for active tenants and orgs
+2. **MultiTenantJobSchedulerManager** creates a pg-boss scheduler for each tenant-org pair
+3. Each scheduler connects to the tenant's database with the org's schema
+4. Jobs are stored in pg-boss tables within each org's schema (isolated from other orgs)
+
+```
+                                  ┌─────────────────────────────┐
+                                  │     Registry Database       │
+                                  │  (jolli_registry)           │
+                                  │  - tenants table            │
+                                  │  - orgs table               │
+                                  │  - tenant_db_configs table  │
+                                  └─────────────┬───────────────┘
+                                                │
+                                    polls for   │
+                                  active pairs  │
+                                                ▼
+┌────────────────────────────────────────────────────────────────────────────┐
+│                           Worker Service (ECS Fargate)                     │
+│                                                                            │
+│  ┌───────────────────┐   ┌──────────────────────────────────────────────┐  │
+│  │  WorkerPolling    │──▶│  MultiTenantJobSchedulerManager              │  │
+│  │                   │   │                                              │  │
+│  │  - Poll interval  │   │  Cache:                                      │  │
+│  │  - Max schedulers │   │  ┌─────────────────────────────────────────┐ │  │
+│  └───────────────────┘   │  │ tenant-1:org-1 → Scheduler (pg-boss)    │ │  │
+│                          │  │ tenant-1:org-2 → Scheduler (pg-boss)    │ │  │
+│                          │  │ tenant-2:org-1 → Scheduler (pg-boss)    │ │  │
+│                          │  └─────────────────────────────────────────┘ │  │
+│                          └──────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────────────────┘
+                                                │
+                    each scheduler connects to  │
+                    tenant DB with org schema   │
+                                                ▼
+        ┌───────────────────────────────────────────────────────────────┐
+        │                    Tenant Database                            │
+        │                    (e.g., jolli_tenant1)                      │
+        │                                                               │
+        │  ┌────────────────────┐    ┌────────────────────┐             │
+        │  │  org_default       │    │  org_engineering   │             │
+        │  │  (public schema)   │    │                    │             │
+        │  │                    │    │                    │             │
+        │  │  pgboss.job        │    │  pgboss.job        │  ◀── pg-boss│
+        │  │  pgboss.schedule   │    │  pgboss.schedule   │      tables │
+        │  │  pgboss.archive    │    │  pgboss.archive    │             │
+        │  │                    │    │                    │             │
+        │  │  docs              │    │  docs              │  ◀── app    │
+        │  │  integrations      │    │  integrations      │      tables │
+        │  │  ...               │    │  ...               │             │
+        │  └────────────────────┘    └────────────────────┘             │
+        └───────────────────────────────────────────────────────────────┘
+```
+
+### How Tenant-Orgs Are Discovered
+
+The worker uses **polling** to discover tenant-org pairs - there is no push notification from the manager app. The `WorkerPolling` component periodically queries the registry database:
+
+1. Queries for tenants with `status = 'active'`
+2. For each tenant, queries for orgs with `status = 'active'`
+3. Creates schedulers for new tenant-org pairs (skips existing ones)
+4. Respects `maxConcurrentSchedulers` limit to control memory usage
+
+**When a new tenant or org is provisioned via the manager app:**
+- The manager creates records in the registry database with `status = 'active'`
+- On the next poll cycle, the worker discovers the new tenant-org pair
+- A scheduler is created and started for the new pair
+- Jobs can then be queued and processed for that tenant-org
+
+**Discovery latency:** New tenant-orgs are picked up within the poll interval (default: 60 seconds). There's no immediate notification - the worker must wait for the next poll cycle.
+
+### Job Storage
+
+Each org has its own set of pg-boss tables:
+- `{schema}.pgboss.job` - Job queue
+- `{schema}.pgboss.schedule` - Scheduled jobs
+- `{schema}.pgboss.archive` - Completed jobs
+
+This ensures complete isolation between orgs - jobs in one org cannot affect another.
+
+### How Jobs Get Queued
+
+Jobs enter the queue through several paths:
+1. **Scheduled jobs**: Cron schedules defined in job definitions (e.g., daily cleanup)
+2. **API calls**: Frontend/API calls to `/api/jobs/queue` endpoint
+3. **Event triggers**: GitHub webhooks via JRN adapter, integration sync events
+
+### Job Handler Context
+
+Job handlers run with the correct `TenantOrgContext` set, so:
+- `getTenantContext()` returns the correct tenant and org
+- Database access via `getDatabase()` is scoped to the org's schema
+- All operations are tenant-aware without additional code
+
+### Configuration
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `WORKER_POLL_INTERVAL_MS` | Polling interval for new tenant-orgs | 60000 |
+| `WORKER_MAX_SCHEDULERS` | Max concurrent schedulers | 100 |
+
+### Worker Mode Behavior
+
+The `workerMode` configuration controls whether a process runs job workers inline:
+
+- **Single-tenant mode:** `workerMode: true` (default) - Jobs are processed inline by the main app
+- **Multi-tenant mode:** `workerMode: false` (default) - Jobs are NOT processed by the main app; the separate worker service handles job processing
+
+In multi-tenant local development:
+- The **main app** starts with `workerMode: false` - it queues jobs but does NOT process them
+- The **worker service** (`npm run worker:dev`) starts with `workerMode: true` - it processes jobs and publishes events to Mercure
+
+**IntelliJ Users:** If using the IntelliJ run configurations:
+- `jolli-backend` runs the main app (workerMode defaults to false in multi-tenant mode)
+- `jolli-worker` runs the worker service and should have `WORKER_MODE=true` in its Environment variables
+
+This separation ensures that real-time dashboard updates work correctly - the worker processes jobs and publishes events to Mercure, which the frontend subscribes to for live updates.
+
+### Mercure Integration
+
+When Mercure is enabled (`MERCURE_ENABLED=true`), the worker publishes job events to the Mercure hub:
+- `job:started` - When a job begins execution
+- `job:completed` - When a job finishes successfully
+- `job:failed` - When a job fails
+- `job:cancelled` - When a job is cancelled
+- `job:stats-updated` - When job statistics are updated
+
+Events are published to tenant-org scoped topics (e.g., `/tenants/acme/orgs/engineering/jobs/events`), ensuring subscribers only receive events for their tenant-org. This enables real-time job status updates in the frontend Dashboard.
+
+### Running the Worker Locally
+
+The worker is designed for AWS ECS but can be run locally for testing:
+
+```bash
+cd backend
+npm run worker:dev
+```
+
+This uses `.env.local` configuration. Requires multi-tenant configuration to be set up (see Multi-Tenant Local Development).
 
 ## Mercure Hub for Distributed SSE
 
@@ -1193,6 +1513,140 @@ For production, you'll need to:
   - Verify Mercure Hub is running: `curl http://localhost:3001/.well-known/mercure?topic=health`
   - Check browser DevTools Network tab for EventSource connection
   - Verify JWT secrets match between backend and `docker-compose.mercure.yml`
+
+## Central User Authentication
+
+Jolli uses a centralized authentication system where the Manager DB stores global user credentials and the Backend handles authentication requests. This enables single sign-on across all tenants.
+
+### Architecture Overview
+
+```
+┌─────────────────┐      ┌─────────────────┐      ┌─────────────────┐
+│    Frontend     │      │     Backend     │      │   Manager DB    │
+│   (Any Tenant)  │─────▶│   (better-auth) │─────▶│  (global_users) │
+└─────────────────┘      └─────────────────┘      └─────────────────┘
+                                │                         │
+                                ▼                         │
+                         ┌─────────────────┐             │
+                         │      Redis      │◀────────────┘
+                         │   (Sessions)    │
+                         └─────────────────┘
+```
+
+Key components:
+- **Manager DB**: Stores `global_users`, `global_auths`, and `verifications` tables for centralized user management
+- **Backend**: Uses `better-auth` library for authentication, connected to Manager DB
+- **Redis**: Stores session data for scalability across multiple backend instances
+- **SendGrid**: Sends password reset emails
+
+### Backend Configuration
+
+Add these environment variables to `backend/.env.local`:
+
+```bash
+# Manager DB Connection (Required)
+# Backend connects to Manager DB for authentication
+MULTI_TENANT_REGISTRY_URL=postgresql://user:pass@host:5432/manager_db
+
+# Redis for Session Storage (Recommended for production)
+# Without Redis, sessions are stored in memory (lost on restart)
+REDIS_URL=redis://localhost:6379
+
+# SendGrid for Password Reset Emails (Required for password reset feature)
+SENDGRID_API_KEY=SG.xxxxxxxxxxxxx
+SENDGRID_FROM_EMAIL=noreply@jolli.ai
+SENDGRID_FROM_NAME=Jolli Support
+
+# Bootstrap Secret (Required for Manager integration)
+# Shared secret for HMAC-signed requests from Manager to Backend
+# Must match BOOTSTRAP_SECRET in Manager config
+# Generate secret with: openssl rand -hex 32
+BOOTSTRAP_SECRET=your-secure-random-string-minimum-32-chars
+
+# Bootstrap timestamp tolerance (Optional, default: 300000ms = 5 minutes)
+#BOOTSTRAP_TIMESTAMP_TOLERANCE_MS=300000
+```
+
+### Manager Configuration
+
+Add these environment variables to `manager/.env.local`:
+
+```bash
+# Backend Internal URL (Required for owner/tenant provisioning)
+# URL where Manager can reach Backend's internal admin endpoints
+BACKEND_INTERNAL_URL=http://localhost:8034
+
+# Bootstrap Secret (Required, must match Backend's BOOTSTRAP_SECRET)
+# Used to sign HMAC requests to Backend's /api/admin/bootstrap endpoint
+BOOTSTRAP_SECRET=your-secure-random-string-minimum-32-chars
+```
+
+### How Bootstrap Works
+
+When the Manager creates or provisions a tenant/org, it calls the Backend's bootstrap endpoint:
+
+1. **Manager** creates HMAC-SHA256 signature using `BOOTSTRAP_SECRET`
+2. **Manager** sends signed request to `BACKEND_INTERNAL_URL/api/admin/bootstrap`
+3. **Backend** verifies HMAC signature and timestamp (within `BOOTSTRAP_TIMESTAMP_TOLERANCE_MS`)
+4. **Backend** creates initial data in the tenant's database schema
+
+### Redis Setup
+
+For local development, you can run Redis using Docker:
+
+```bash
+docker run -d --name jolli-redis -p 6379:6379 redis:alpine
+```
+
+Or use Docker Compose:
+
+```yaml
+# docker-compose.redis.yml
+services:
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+volumes:
+  redis-data:
+```
+
+```bash
+docker-compose -f docker-compose.redis.yml up -d
+```
+
+### SendGrid Setup
+
+1. Create a [SendGrid account](https://sendgrid.com/)
+2. Generate an API key in Settings → API Keys
+3. Verify your sender email address or domain
+4. Add the API key and sender info to your environment variables
+
+### Troubleshooting
+
+**Session lost after backend restart:**
+- Configure `REDIS_URL` to persist sessions across restarts
+- Without Redis, sessions are stored in memory only
+
+**Password reset emails not sending:**
+- Verify `SENDGRID_API_KEY` is set correctly
+- Check that `SENDGRID_FROM_EMAIL` is verified in SendGrid
+- Check backend logs for SendGrid API errors
+
+**Bootstrap failed: Could not connect to backend:**
+- Verify `BACKEND_INTERNAL_URL` is correct and Backend is running
+- Check that the URL is reachable from the Manager container/process
+
+**Bootstrap failed: Invalid signature:**
+- Ensure `BOOTSTRAP_SECRET` matches exactly between Manager and Backend
+- Check for trailing whitespace in environment variables
+
+**Bootstrap failed: Request timestamp too old:**
+- Ensure system clocks are synchronized between Manager and Backend
+- Increase `BOOTSTRAP_TIMESTAMP_TOLERANCE_MS` if needed (default: 5 minutes)
 
 ## Testing
 

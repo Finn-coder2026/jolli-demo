@@ -27,6 +27,18 @@ const GitHubIntegrationFlowContent = {
 			en: "Failed to setup GitHub integration",
 			es: "Error al configurar integración de GitHub",
 		}),
+		installationNotAvailable: t({
+			en: "This GitHub organization is already linked to another Jolli workspace.",
+			es: "Esta organización de GitHub ya está vinculada a otro espacio de trabajo de Jolli.",
+		}),
+		waitingForInstall: t({
+			en: "Completing GitHub App installation...",
+			es: "Completando la instalación de la aplicación de GitHub...",
+		}),
+		waitingForInstallHint: t({
+			en: "Complete the installation in the new browser window. This dialog will update automatically.",
+			es: "Completa la instalación en la nueva ventana del navegador. Este diálogo se actualizará automáticamente.",
+		}),
 		goBack: t({ en: "Go Back", es: "Volver" }),
 	},
 } satisfies Dictionary;

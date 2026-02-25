@@ -21,4 +21,13 @@ export type {
 export type { NewTenantDomain, SslStatus, TenantDomain } from "./Domain";
 export { NEON_REGIONS, type NeonRegionId } from "./NeonTypes";
 export type { NewOrg, Org, OrgStatus, OrgSummary } from "./Org";
-export type { DeploymentType, NewTenant, Tenant, TenantStatus, TenantSummary, TenantWithCredentials } from "./Tenant";
+export type {
+	DeploymentType,
+	NewTenant,
+	PricingTier,
+	Tenant,
+	TenantFeatureFlags,
+	TenantStatus,
+	TenantSummary,
+	TenantWithCredentials,
+} from "./Tenant";

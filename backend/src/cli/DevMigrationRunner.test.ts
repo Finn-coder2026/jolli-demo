@@ -48,7 +48,6 @@ describe("DevMigrationRunner", () => {
 		it("returns true when all conditions are met", () => {
 			process.env.NODE_ENV = "development";
 			process.env.MULTI_TENANT_ENABLED = "true";
-			delete process.env.VERCEL;
 			delete process.env.SKIP_DEV_MIGRATIONS;
 
 			expect(shouldRunDevMigrations()).toBe(true);
@@ -61,19 +60,10 @@ describe("DevMigrationRunner", () => {
 			expect(shouldRunDevMigrations()).toBe(false);
 		});
 
-		it("returns false when running on Vercel", () => {
-			process.env.NODE_ENV = "development";
-			process.env.MULTI_TENANT_ENABLED = "true";
-			process.env.VERCEL = "1";
-
-			expect(shouldRunDevMigrations()).toBe(false);
-		});
-
 		it("returns false when SKIP_DEV_MIGRATIONS is true", () => {
 			process.env.NODE_ENV = "development";
 			process.env.MULTI_TENANT_ENABLED = "true";
 			process.env.SKIP_DEV_MIGRATIONS = "true";
-			delete process.env.VERCEL;
 
 			expect(shouldRunDevMigrations()).toBe(false);
 		});
@@ -81,7 +71,6 @@ describe("DevMigrationRunner", () => {
 		it("returns false when multi-tenant is not enabled", () => {
 			process.env.NODE_ENV = "development";
 			process.env.MULTI_TENANT_ENABLED = "false";
-			delete process.env.VERCEL;
 
 			expect(shouldRunDevMigrations()).toBe(false);
 		});

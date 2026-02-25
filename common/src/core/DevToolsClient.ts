@@ -22,7 +22,7 @@ export interface GitHubAppCallbackResponse {
 	};
 }
 
-export type ClearDataType = "articles" | "sites" | "jobs" | "github" | "sync";
+export type ClearDataType = "articles" | "sites" | "jobs" | "github" | "sync" | "spaces";
 
 export interface ClearDataRequest {
 	dataType: ClearDataType;

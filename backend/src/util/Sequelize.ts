@@ -1,5 +1,42 @@
 import { Sequelize } from "sequelize";
 import { getConfig } from "../config/Config";
+import { getLog } from "./Logger";
+import { withRetry } from "./Retry";
+
+const log = getLog(import.meta);
+
+/**
+ * Formats a database connection error with actionable guidance.
+ */
+function formatConnectionError(error: unknown, host: string, port: number): Error {
+	const originalMessage = error instanceof Error ? error.message : String(error);
+	const errorCode = (error as { parent?: { code?: string } })?.parent?.code;
+
+	if (errorCode === "ECONNREFUSED") {
+		const message = [
+			`PostgreSQL connection refused at ${host}:${port}`,
+			"",
+			"Possible causes:",
+			"  1. PostgreSQL is not running",
+			"  2. PostgreSQL is running on a different host/port",
+			"  3. A firewall is blocking the connection",
+			"",
+			"To fix:",
+			"  - Start PostgreSQL: brew services start postgresql (macOS) or sudo systemctl start postgresql (Linux)",
+			"  - Or use in-memory mode: set SEQUELIZE=memory in your .env file",
+			"  - Or check your POSTGRES_HOST and POSTGRES_PORT settings",
+		].join("\n");
+		const wrappedError = new Error(message);
+		wrappedError.cause = error;
+		return wrappedError;
+	}
+
+	// For other errors, return with original message but add context
+	const message = `Failed to connect to PostgreSQL at ${host}:${port}: ${originalMessage}`;
+	const wrappedError = new Error(message);
+	wrappedError.cause = error;
+	return wrappedError;
+}
 
 export async function createSequelize(): Promise<Sequelize> {
 	const config = getConfig();
@@ -8,7 +45,7 @@ export async function createSequelize(): Promise<Sequelize> {
 		case "memory":
 			return await createMemorySequelize();
 		case "postgres":
-			return createPostgresSequelize();
+			return await createPostgresSequelize();
 		default:
 			throw new Error(`Unknown SEQUELIZE type: ${sequelizeMode}`);
 	}
@@ -124,13 +161,69 @@ export async function createMemorySequelize(returnServer?: boolean): Promise<Seq
 	return sequelize;
 }
 
-export function createPostgresSequelize(): Sequelize {
+/**
+ * Determines if a database connection error is transient and worth retrying.
+ * Retryable errors include connection refused, timeouts, and transient auth failures.
+ */
+export function isRetryableConnectionError(error: unknown): boolean {
+	if (!(error instanceof Error)) {
+		return false;
+	}
+
+	const errorCode = (error as { parent?: { code?: string } })?.parent?.code;
+	const message = error.message.toLowerCase();
+
+	// Connection refused - server not ready yet
+	if (errorCode === "ECONNREFUSED") {
+		return true;
+	}
+
+	// Connection reset or aborted
+	if (errorCode === "ECONNRESET" || errorCode === "ECONNABORTED") {
+		return true;
+	}
+
+	// DNS resolution failures (transient)
+	if (errorCode === "ENOTFOUND" || errorCode === "EAI_AGAIN") {
+		return true;
+	}
+
+	// Timeouts
+	if (errorCode === "ETIMEDOUT" || message.includes("timeout")) {
+		return true;
+	}
+
+	// Neon-specific: transient auth or connection issues during cold start
+	if (message.includes("endpoint is not found") || message.includes("could not translate host name")) {
+		return true;
+	}
+
+	return false;
+}
+
+export async function createPostgresSequelize(): Promise<Sequelize> {
 	const config = getConfig();
-	return new Sequelize(getPostgresConnectionUri(config), {
+	const sequelize = new Sequelize(getPostgresConnectionUri(config), {
 		dialect: "postgres",
 		dialectOptions: config.POSTGRES_SSL ? { ssl: { rejectUnauthorized: false } } : {},
 		logging: config.POSTGRES_LOGGING,
 		pool: { max: config.POSTGRES_POOL_MAX },
 		define: { underscored: true },
 	});
+
+	// Test the connection with retry logic for transient failures
+	try {
+		await withRetry(() => sequelize.authenticate(), {
+			maxRetries: config.DB_CONNECT_MAX_RETRIES,
+			baseDelayMs: config.DB_CONNECT_RETRY_BASE_DELAY_MS,
+			maxDelayMs: config.DB_CONNECT_RETRY_MAX_DELAY_MS,
+			isRetryable: isRetryableConnectionError,
+			label: "DB connect",
+		});
+		log.info("PostgreSQL connection established successfully");
+	} catch (error) {
+		throw formatConnectionError(error, config.POSTGRES_HOST, config.POSTGRES_PORT);
+	}
+
+	return sequelize;
 }

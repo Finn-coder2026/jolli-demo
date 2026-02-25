@@ -11,12 +11,14 @@ const mockTenants: Array<TenantListItem> = [
 		slug: "acme",
 		displayName: "Acme Corp",
 		primaryDomain: null,
+		defaultOrgId: "org-1",
 	},
 	{
 		id: "tenant-2",
 		slug: "beta",
 		displayName: "Beta Inc",
 		primaryDomain: "beta.example.com",
+		defaultOrgId: "org-2",
 	},
 ];
 

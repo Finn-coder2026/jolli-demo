@@ -312,10 +312,8 @@ async function initializeDatabase(sequelize: Sequelize, force: boolean, dryRun: 
 		return;
 	}
 
-	// Ensure sync is enabled (override Vercel environment checks)
+	// Ensure sync is enabled
 	delete process.env.SKIP_SEQUELIZE_SYNC;
-	delete process.env.VERCEL;
-	delete process.env.VERCEL_DEPLOYMENT;
 
 	const { createDatabase } = await import("../backend/src/core/Database");
 	await createDatabase(sequelize);

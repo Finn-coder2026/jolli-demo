@@ -20,8 +20,8 @@ const newArticleTitleDialogContent = {
 			es: "Tipo de documento",
 		}),
 		typeMarkdown: t({
-			en: "Markdown / MDX",
-			es: "Markdown / MDX",
+			en: "Markdown",
+			es: "Markdown",
 		}),
 		typeJson: t({
 			en: "OpenAPI Specification (JSON)",

@@ -40,6 +40,7 @@ describe("TenantOrgJobScheduler", () => {
 			stop: vi.fn().mockResolvedValue(undefined),
 			registerJob: vi.fn(),
 			queueJob: vi.fn().mockResolvedValue({ jobId: "job-123" }),
+			getJobExecution: vi.fn().mockResolvedValue(undefined),
 			getEventEmitter: vi.fn().mockReturnValue({
 				on: vi.fn(),
 				off: vi.fn(),
@@ -112,6 +113,23 @@ describe("TenantOrgJobScheduler", () => {
 		await tenantOrgScheduler.start();
 
 		expect(mockScheduler.start).toHaveBeenCalled();
+	});
+
+	it("should delegate getJobExecution to underlying scheduler", async () => {
+		const mockScheduler = createMockScheduler();
+		const mockExecution = { id: "job-456", state: "completed" };
+		vi.mocked(mockScheduler.getJobExecution).mockResolvedValue(mockExecution as never);
+
+		const tenantOrgScheduler = createTenantOrgJobScheduler({
+			tenant: mockTenant,
+			org: mockOrg,
+			scheduler: mockScheduler,
+		});
+
+		const result = await tenantOrgScheduler.getJobExecution("job-456");
+
+		expect(mockScheduler.getJobExecution).toHaveBeenCalledWith("job-456");
+		expect(result).toBe(mockExecution);
 	});
 
 	it("should delegate stop to underlying scheduler", async () => {

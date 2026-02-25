@@ -1,4 +1,6 @@
 import type { DocDao } from "../dao/DocDao";
+import type { SourceDao } from "../dao/SourceDao";
+import { mockSourceDao } from "../dao/SourceDao.mock";
 import {
 	GITHUB_INSTALLATION_REPOSITORIES_ADDED,
 	GITHUB_INSTALLATION_REPOSITORIES_REMOVED,
@@ -7,14 +9,18 @@ import {
 import type { IntegrationsManager } from "../integrations/IntegrationsManager";
 import { createMockIntegrationsManager } from "../integrations/IntegrationsManager.mock";
 import { mockIntegration } from "../model/Integration.mock";
+import { getTenantContext } from "../tenant/TenantContext";
 import type { JobContext, JobDefinition } from "../types/JobTypes";
 import type { JobScheduler } from "./JobScheduler";
 import { createJobsToJrnAdapter } from "./JobsToJrnAdapter";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../tenant/TenantContext");
+
 describe("JobsToJrnAdapter", () => {
 	let integrationsManager: IntegrationsManager;
 	let docDao: DocDao;
+	let sourceDao: SourceDao;
 	let registeredJobs: Array<JobDefinition> = [];
 	let scheduler: JobScheduler;
 
@@ -27,6 +33,7 @@ describe("JobsToJrnAdapter", () => {
 			listDocs: vi.fn().mockResolvedValue([]),
 			createDoc: vi.fn(),
 			readDoc: vi.fn(),
+			readDocsByJrns: vi.fn().mockResolvedValue(new Map()),
 			readDocById: vi.fn(),
 			updateDoc: vi.fn(),
 			updateDocIfVersion: vi.fn(),
@@ -40,7 +47,17 @@ describe("JobsToJrnAdapter", () => {
 			renameDoc: vi.fn(),
 			getMaxSortOrder: vi.fn(),
 			hasDeletedDocs: vi.fn(),
+			getAllContent: vi.fn().mockResolvedValue([]),
+			searchInSpace: vi.fn(),
+			reorderDoc: vi.fn(),
+			moveDoc: vi.fn(),
+			reorderAt: vi.fn(),
+			findFolderByName: vi.fn(),
+			findDocBySourcePath: vi.fn(),
+			findDocBySourcePathAnySpace: vi.fn(),
+			searchArticlesForLink: vi.fn(),
 		};
+		sourceDao = mockSourceDao();
 		registeredJobs = [];
 		scheduler = {
 			registerJob: (def: JobDefinition) => {
@@ -51,7 +68,7 @@ describe("JobsToJrnAdapter", () => {
 	});
 
 	function getRegisteredJobHandler(jobName: string) {
-		const adapter = createJobsToJrnAdapter(integrationsManager, docDao);
+		const adapter = createJobsToJrnAdapter(integrationsManager, docDao, sourceDao);
 		adapter.registerJobs(scheduler);
 		expect(registeredJobs.length).toBe(3);
 		const job = registeredJobs.find(j => j.name === jobName);
@@ -76,7 +93,7 @@ describe("JobsToJrnAdapter", () => {
 
 	describe("registerJobs", () => {
 		it("registers repos-added, repos-removed, and git-push jobs", () => {
-			const adapter = createJobsToJrnAdapter(integrationsManager, docDao);
+			const adapter = createJobsToJrnAdapter(integrationsManager, docDao, sourceDao);
 			adapter.registerJobs(scheduler);
 
 			expect(registeredJobs.length).toBe(3);
@@ -86,7 +103,7 @@ describe("JobsToJrnAdapter", () => {
 		});
 
 		it("registers jobs with correct trigger events", () => {
-			const adapter = createJobsToJrnAdapter(integrationsManager, docDao);
+			const adapter = createJobsToJrnAdapter(integrationsManager, docDao, sourceDao);
 			adapter.registerJobs(scheduler);
 
 			const addedJob = registeredJobs.find(j => j.name === "jrn-adapter:repos-added");
@@ -96,6 +113,86 @@ describe("JobsToJrnAdapter", () => {
 			expect(addedJob?.triggerEvents).toContain(GITHUB_INSTALLATION_REPOSITORIES_ADDED);
 			expect(removedJob?.triggerEvents).toContain(GITHUB_INSTALLATION_REPOSITORIES_REMOVED);
 			expect(gitPushJob?.triggerEvents).toContain(GITHUB_PUSH);
+		});
+
+		it("binds follow-up queueing to the scheduler that registered the handler", async () => {
+			const adapter = createJobsToJrnAdapter(integrationsManager, docDao, sourceDao);
+			const registeredJobsA: Array<JobDefinition> = [];
+			const registeredJobsB: Array<JobDefinition> = [];
+			const queueJobA = vi.fn().mockResolvedValue({ jobId: "queued-a-1", name: "knowledge-graph:cli-impact" });
+			const queueJobB = vi.fn().mockResolvedValue({ jobId: "queued-b-1", name: "knowledge-graph:cli-impact" });
+
+			const schedulerA = {
+				registerJob: (def: JobDefinition) => {
+					registeredJobsA.push(def);
+				},
+				queueJob: queueJobA,
+			} as unknown as JobScheduler;
+			const schedulerB = {
+				registerJob: (def: JobDefinition) => {
+					registeredJobsB.push(def);
+				},
+				queueJob: queueJobB,
+			} as unknown as JobScheduler;
+
+			adapter.registerJobs(schedulerA);
+			adapter.registerJobs(schedulerB);
+
+			docDao.listDocs = vi.fn().mockResolvedValue([]);
+			vi.mocked(sourceDao.findSourcesMatchingJrn).mockResolvedValue([
+				{
+					source: {
+						id: 50,
+						name: "space-org/space-repo",
+						type: "git",
+						repo: "github.com/space-org/space-repo",
+						branch: "main",
+						integrationId: 77,
+						enabled: true,
+						createdAt: new Date(),
+						updatedAt: new Date(),
+					},
+					binding: {
+						spaceId: 400,
+						sourceId: 50,
+						enabled: true,
+						createdAt: new Date(),
+					},
+				},
+			]);
+
+			const schedulerAGitPush = registeredJobsA.find(j => j.name === "jrn-adapter:git-push");
+			if (!schedulerAGitPush) {
+				throw new Error("Expected scheduler A git-push job to be registered");
+			}
+
+			const context = createMockContext(schedulerAGitPush.name);
+			await schedulerAGitPush.handler(
+				{
+					ref: "refs/heads/main",
+					after: "abc123def456",
+					repository: {
+						full_name: "space-org/space-repo",
+						owner: { login: "space-org" },
+						name: "space-repo",
+					},
+				},
+				context,
+			);
+
+			expect(queueJobA).toHaveBeenCalledWith({
+				name: "knowledge-graph:cli-impact",
+				params: {
+					spaceId: 400,
+					sourceId: 50,
+					integrationId: 77,
+					eventJrn: "jrn::path:/home/global/sources/github/space-org/space-repo/main",
+					killSandbox: false,
+					afterSha: "abc123def456",
+					cursorSha: undefined,
+				},
+			});
+			expect(queueJobB).not.toHaveBeenCalled();
 		});
 	});
 
@@ -1597,7 +1694,7 @@ on:
 
 			// Create adapter after setting up docDao mock
 			registeredJobs = [];
-			const adapter = createJobsToJrnAdapter(integrationsManager, docDao);
+			const adapter = createJobsToJrnAdapter(integrationsManager, docDao, sourceDao);
 			adapter.registerJobs(scheduler);
 			const def = registeredJobs.find(j => j.name === "jrn-adapter:repos-added");
 			if (!def) {
@@ -2025,6 +2122,719 @@ on:
 			});
 
 			// Should NOT queue the run-jolliscript job
+			expect(scheduler.queueJob).not.toHaveBeenCalled();
+		});
+	});
+
+	describe("space source triggering", () => {
+		it("queues cli-impact job for matching space source on GIT_PUSH", async () => {
+			const def = getRegisteredJobHandler("jrn-adapter:git-push");
+
+			docDao.listDocs = vi.fn().mockResolvedValue([]);
+			vi.mocked(sourceDao.findSourcesMatchingJrn).mockResolvedValue([
+				{
+					source: {
+						id: 50,
+						name: "space-org/space-repo",
+						type: "git",
+						repo: "github.com/space-org/space-repo",
+						branch: "main",
+						integrationId: 77,
+						enabled: true,
+						createdAt: new Date(),
+						updatedAt: new Date(),
+					},
+					binding: {
+						spaceId: 400,
+						sourceId: 50,
+						enabled: true,
+						createdAt: new Date(),
+					},
+				},
+			]);
+			integrationsManager.listIntegrations = vi.fn().mockResolvedValue([
+				mockIntegration({
+					id: 77,
+					type: "github",
+					name: "space-org/space-repo",
+					metadata: {
+						repo: "space-org/space-repo",
+						branch: "main",
+						features: [],
+						installationId: 88,
+						githubAppId: 1,
+					},
+				}),
+			]);
+
+			const context = createMockContext(def.name);
+			await def.handler(
+				{
+					ref: "refs/heads/main",
+					after: "abc123def456",
+					repository: {
+						full_name: "space-org/space-repo",
+						owner: { login: "space-org" },
+						name: "space-repo",
+					},
+				},
+				context,
+			);
+
+			expect(scheduler.queueJob).toHaveBeenCalledWith({
+				name: "knowledge-graph:cli-impact",
+				params: {
+					spaceId: 400,
+					sourceId: 50,
+					integrationId: 77,
+					eventJrn: "jrn::path:/home/global/sources/github/space-org/space-repo/main",
+					killSandbox: false,
+					afterSha: "abc123def456",
+					cursorSha: undefined,
+				},
+			});
+			expect(context.log).toHaveBeenCalledWith(
+				"space-source-matched",
+				expect.objectContaining({
+					spaceId: 400,
+					sourceId: 50,
+					integrationId: 77,
+					eventJrn: "jrn::path:/home/global/sources/github/space-org/space-repo/main",
+					verb: "GIT_PUSH",
+				}),
+			);
+		});
+
+		it("passes source cursor SHA when source has a cursor", async () => {
+			const def = getRegisteredJobHandler("jrn-adapter:git-push");
+
+			docDao.listDocs = vi.fn().mockResolvedValue([]);
+			vi.mocked(sourceDao.findSourcesMatchingJrn).mockResolvedValue([
+				{
+					source: {
+						id: 60,
+						name: "cursor-org/cursor-repo",
+						type: "git",
+						repo: "github.com/cursor-org/cursor-repo",
+						branch: "main",
+						integrationId: 80,
+						enabled: true,
+						cursor: { value: "prev-sha-111", updatedAt: "2025-01-01T00:00:00Z" },
+						createdAt: new Date(),
+						updatedAt: new Date(),
+					},
+					binding: {
+						spaceId: 500,
+						sourceId: 60,
+						enabled: true,
+						createdAt: new Date(),
+					},
+				},
+			]);
+
+			const context = createMockContext(def.name);
+			await def.handler(
+				{
+					ref: "refs/heads/main",
+					after: "new-sha-222",
+					repository: {
+						full_name: "cursor-org/cursor-repo",
+						owner: { login: "cursor-org" },
+						name: "cursor-repo",
+					},
+				},
+				context,
+			);
+
+			expect(scheduler.queueJob).toHaveBeenCalledWith({
+				name: "knowledge-graph:cli-impact",
+				params: expect.objectContaining({
+					sourceId: 60,
+					afterSha: "new-sha-222",
+					cursorSha: "prev-sha-111",
+				}),
+			});
+		});
+
+		it("clears cursor SHA on force push", async () => {
+			const def = getRegisteredJobHandler("jrn-adapter:git-push");
+
+			docDao.listDocs = vi.fn().mockResolvedValue([]);
+			vi.mocked(sourceDao.findSourcesMatchingJrn).mockResolvedValue([
+				{
+					source: {
+						id: 61,
+						name: "force-org/force-repo",
+						type: "git",
+						repo: "github.com/force-org/force-repo",
+						branch: "main",
+						integrationId: 81,
+						enabled: true,
+						cursor: { value: "old-sha-before-force", updatedAt: "2025-01-01T00:00:00Z" },
+						createdAt: new Date(),
+						updatedAt: new Date(),
+					},
+					binding: {
+						spaceId: 501,
+						sourceId: 61,
+						enabled: true,
+						createdAt: new Date(),
+					},
+				},
+			]);
+
+			const context = createMockContext(def.name);
+			await def.handler(
+				{
+					ref: "refs/heads/main",
+					after: "force-pushed-sha",
+					forced: true,
+					repository: {
+						full_name: "force-org/force-repo",
+						owner: { login: "force-org" },
+						name: "force-repo",
+					},
+				},
+				context,
+			);
+
+			// cursorSha should be undefined because forced=true clears the cursor
+			expect(scheduler.queueJob).toHaveBeenCalledWith({
+				name: "knowledge-graph:cli-impact",
+				params: expect.objectContaining({
+					sourceId: 61,
+					afterSha: "force-pushed-sha",
+					cursorSha: undefined,
+				}),
+			});
+		});
+
+		it("queues both run-jolliscript and cli-impact when article and space source both match", async () => {
+			const def = getRegisteredJobHandler("jrn-adapter:git-push");
+
+			docDao.listDocs = vi.fn().mockResolvedValue([
+				{
+					id: 401,
+					jrn: "/home/space-1/scripts/combined-trigger.md",
+					content: `---
+article_type: jolliscript
+on:
+  jrn: jrn:*:path:/home/*/sources/github/combo-org/combo-repo/main
+  verb: GIT_PUSH
+---
+
+# Jolli_Main
+`,
+					contentType: "text/markdown",
+					createdAt: new Date(),
+					updatedAt: new Date(),
+					updatedBy: "test",
+					source: undefined,
+					sourceMetadata: undefined,
+					contentMetadata: undefined,
+					version: 1,
+				},
+			]);
+			vi.mocked(sourceDao.findSourcesMatchingJrn).mockResolvedValue([
+				{
+					source: {
+						id: 51,
+						name: "combo-org/combo-repo",
+						type: "git",
+						repo: "github.com/combo-org/combo-repo",
+						branch: "main",
+						integrationId: 79,
+						enabled: true,
+						createdAt: new Date(),
+						updatedAt: new Date(),
+					},
+					binding: {
+						spaceId: 402,
+						sourceId: 51,
+						enabled: true,
+						createdAt: new Date(),
+					},
+				},
+			]);
+			integrationsManager.listIntegrations = vi.fn().mockResolvedValue([
+				mockIntegration({
+					id: 79,
+					type: "github",
+					name: "combo-org/combo-repo",
+					metadata: {
+						repo: "combo-org/combo-repo",
+						branch: "main",
+						features: [],
+						installationId: 89,
+						githubAppId: 1,
+					},
+				}),
+			]);
+
+			const context = createMockContext(def.name);
+			await def.handler(
+				{
+					ref: "refs/heads/main",
+					repository: {
+						full_name: "combo-org/combo-repo",
+						owner: { login: "combo-org" },
+						name: "combo-repo",
+					},
+				},
+				context,
+			);
+
+			expect(scheduler.queueJob).toHaveBeenNthCalledWith(1, {
+				name: "knowledge-graph:run-jolliscript",
+				params: { docJrn: "/home/space-1/scripts/combined-trigger.md", killSandbox: false },
+			});
+			expect(scheduler.queueJob).toHaveBeenNthCalledWith(2, {
+				name: "knowledge-graph:cli-impact",
+				params: {
+					spaceId: 402,
+					sourceId: 51,
+					integrationId: 79,
+					eventJrn: "jrn::path:/home/global/sources/github/combo-org/combo-repo/main",
+					killSandbox: false,
+					afterSha: undefined,
+					cursorSha: undefined,
+				},
+			});
+		});
+
+		it("skips source when it has no integrationId", async () => {
+			const def = getRegisteredJobHandler("jrn-adapter:git-push");
+
+			docDao.listDocs = vi.fn().mockResolvedValue([]);
+			vi.mocked(sourceDao.findSourcesMatchingJrn).mockResolvedValue([
+				{
+					source: {
+						id: 60,
+						name: "no-integration",
+						type: "git" as const,
+						repo: "github.com/skip-org/skip-repo",
+						branch: "main",
+						enabled: true,
+						createdAt: new Date(),
+						updatedAt: new Date(),
+					},
+					binding: {
+						spaceId: 500,
+						sourceId: 60,
+						enabled: true,
+						createdAt: new Date(),
+					},
+				},
+			]);
+
+			const context = createMockContext(def.name);
+			await def.handler(
+				{
+					ref: "refs/heads/main",
+					repository: {
+						full_name: "skip-org/skip-repo",
+						owner: { login: "skip-org" },
+						name: "skip-repo",
+					},
+				},
+				context,
+			);
+
+			// Source has no integrationId, so no cli-impact job should be queued
+			expect(scheduler.queueJob).not.toHaveBeenCalledWith(
+				expect.objectContaining({ name: "knowledge-graph:cli-impact" }),
+			);
+		});
+
+		it("logs error when cli-impact job scheduling fails", async () => {
+			const def = getRegisteredJobHandler("jrn-adapter:git-push");
+
+			docDao.listDocs = vi.fn().mockResolvedValue([]);
+			vi.mocked(sourceDao.findSourcesMatchingJrn).mockResolvedValue([
+				{
+					source: {
+						id: 70,
+						name: "fail-source",
+						type: "git" as const,
+						repo: "github.com/fail-org/fail-repo",
+						branch: "main",
+						integrationId: 99,
+						enabled: true,
+						createdAt: new Date(),
+						updatedAt: new Date(),
+					},
+					binding: {
+						spaceId: 600,
+						sourceId: 70,
+						enabled: true,
+						createdAt: new Date(),
+					},
+				},
+			]);
+			integrationsManager.listIntegrations = vi.fn().mockResolvedValue([
+				mockIntegration({
+					id: 99,
+					type: "github",
+					name: "fail-org/fail-repo",
+					metadata: {
+						repo: "fail-org/fail-repo",
+						branch: "main",
+						features: [],
+						installationId: 100,
+						githubAppId: 1,
+					},
+				}),
+			]);
+
+			// Make scheduler.queueJob reject for cli-impact
+			vi.mocked(scheduler.queueJob).mockRejectedValueOnce(new Error("scheduler down"));
+
+			const context = createMockContext(def.name);
+			await def.handler(
+				{
+					ref: "refs/heads/main",
+					repository: {
+						full_name: "fail-org/fail-repo",
+						owner: { login: "fail-org" },
+						name: "fail-repo",
+					},
+				},
+				context,
+			);
+
+			// Should log the failure rather than throwing
+			expect(context.log).toHaveBeenCalledWith(
+				"cli-impact-job-queue-failed",
+				expect.objectContaining({
+					spaceId: 600,
+					sourceId: 70,
+					error: "scheduler down",
+				}),
+			);
+		});
+
+		it("does not queue cli-impact when no sources match the push repo", async () => {
+			const def = getRegisteredJobHandler("jrn-adapter:git-push");
+
+			docDao.listDocs = vi.fn().mockResolvedValue([]);
+			// No matching sources found
+			vi.mocked(sourceDao.findSourcesMatchingJrn).mockResolvedValue([]);
+
+			const context = createMockContext(def.name);
+			await def.handler(
+				{
+					ref: "refs/heads/main",
+					repository: {
+						full_name: "target-org/target-repo",
+						owner: { login: "target-org" },
+						name: "target-repo",
+					},
+				},
+				context,
+			);
+
+			expect(scheduler.queueJob).not.toHaveBeenCalledWith(
+				expect.objectContaining({ name: "knowledge-graph:cli-impact" }),
+			);
+			expect(context.log).not.toHaveBeenCalledWith("space-source-matched", expect.anything());
+		});
+	});
+
+	describe("tenant context DAO resolution", () => {
+		it("uses tenant context docDao and sourceDao when available", async () => {
+			const tenantDocDao = { ...docDao, listDocs: vi.fn().mockResolvedValue([]) };
+			const tenantSourceDao = { ...sourceDao, findSourcesMatchingJrn: vi.fn().mockResolvedValue([]) };
+
+			vi.mocked(getTenantContext).mockReturnValue({
+				database: { docDao: tenantDocDao, sourceDao: tenantSourceDao },
+			} as never);
+
+			const def = getRegisteredJobHandler("jrn-adapter:git-push");
+			const context = createMockContext(def.name);
+			await def.handler(
+				{
+					ref: "refs/heads/main",
+					repository: {
+						full_name: "tenant-org/tenant-repo",
+						owner: { login: "tenant-org" },
+						name: "tenant-repo",
+					},
+				},
+				context,
+			);
+
+			// Tenant DAOs should have been called instead of the defaults
+			expect(tenantDocDao.listDocs).toHaveBeenCalled();
+			expect(tenantSourceDao.findSourcesMatchingJrn).toHaveBeenCalled();
+			expect(docDao.listDocs).not.toHaveBeenCalled();
+
+			// Reset to avoid affecting other tests
+			vi.mocked(getTenantContext).mockReturnValue(undefined as never);
+		});
+	});
+
+	describe("source doc analysis job triggering", () => {
+		it("queues analyze-source-doc job for non-jolliscript article with sourceMetadata on GIT_PUSH", async () => {
+			const def = getRegisteredJobHandler("jrn-adapter:git-push");
+
+			const sourceDoc = {
+				id: 400,
+				jrn: "/home/space-1/docs/imported-article.md",
+				content: `---
+on:
+  jrn: jrn:*:path:/home/*/sources/github/src-org/src-repo/main
+  verb: GIT_PUSH
+---
+
+# Imported Article
+`,
+				contentType: "text/markdown",
+				createdAt: new Date(),
+				updatedAt: new Date(),
+				updatedBy: "test",
+				source: "github",
+				sourceMetadata: { repo: "src-org/src-repo", branch: "main", path: "docs/article.md" },
+				contentMetadata: undefined,
+				version: 1,
+			};
+
+			docDao.listDocs = vi.fn().mockResolvedValue([sourceDoc]);
+
+			const context = createMockContext(def.name);
+			await def.handler(
+				{
+					ref: "refs/heads/main",
+					before: "abc123",
+					after: "def456",
+					repository: {
+						full_name: "src-org/src-repo",
+						owner: { login: "src-org" },
+						name: "src-repo",
+					},
+					commits: [],
+				},
+				context,
+			);
+
+			// Should queue the analyze-source-doc job
+			expect(scheduler.queueJob).toHaveBeenCalledWith({
+				name: "knowledge-graph:analyze-source-doc",
+				params: {
+					docJrn: "/home/space-1/docs/imported-article.md",
+					before: "abc123",
+					after: "def456",
+					owner: "src-org",
+					repo: "src-repo",
+					branch: "main",
+				},
+			});
+
+			// Should log that job was queued
+			expect(context.log).toHaveBeenCalledWith("source-doc-analysis-job-queued", {
+				articleJrn: "/home/space-1/docs/imported-article.md",
+				articleId: 400,
+				jobId: "queued-job-1",
+			});
+		});
+
+		it("does NOT queue analyze-source-doc job for article without sourceMetadata", async () => {
+			const def = getRegisteredJobHandler("jrn-adapter:git-push");
+
+			const noSourceDoc = {
+				id: 401,
+				jrn: "/home/space-1/docs/no-source.md",
+				content: `---
+on:
+  jrn: jrn:*:path:/home/*/sources/github/ns-org/ns-repo/main
+  verb: GIT_PUSH
+---
+
+# No Source Article
+`,
+				contentType: "text/markdown",
+				createdAt: new Date(),
+				updatedAt: new Date(),
+				updatedBy: "test",
+				source: undefined,
+				sourceMetadata: undefined,
+				contentMetadata: undefined,
+				version: 1,
+			};
+
+			docDao.listDocs = vi.fn().mockResolvedValue([noSourceDoc]);
+
+			const context = createMockContext(def.name);
+			await def.handler(
+				{
+					ref: "refs/heads/main",
+					before: "abc123",
+					after: "def456",
+					repository: {
+						full_name: "ns-org/ns-repo",
+						owner: { login: "ns-org" },
+						name: "ns-repo",
+					},
+					commits: [],
+				},
+				context,
+			);
+
+			// Should NOT queue any job
+			expect(scheduler.queueJob).not.toHaveBeenCalled();
+		});
+
+		it("queues jolliscript job (not analyze) for jolliscript article with sourceMetadata", async () => {
+			const def = getRegisteredJobHandler("jrn-adapter:git-push");
+
+			const jolliscriptWithSourceDoc = {
+				id: 402,
+				jrn: "/home/space-1/scripts/jolliscript-with-source.md",
+				content: `---
+article_type: jolliscript
+on:
+  jrn: jrn:*:path:/home/*/sources/github/js-org/js-repo/main
+  verb: GIT_PUSH
+---
+
+# Jolli_Main
+
+\`\`\`joi
+console.log("test");
+\`\`\`
+`,
+				contentType: "text/markdown",
+				createdAt: new Date(),
+				updatedAt: new Date(),
+				updatedBy: "test",
+				source: "github",
+				sourceMetadata: { repo: "js-org/js-repo", branch: "main", path: "scripts/test.md" },
+				contentMetadata: undefined,
+				version: 1,
+			};
+
+			docDao.listDocs = vi.fn().mockResolvedValue([jolliscriptWithSourceDoc]);
+
+			const context = createMockContext(def.name);
+			await def.handler(
+				{
+					ref: "refs/heads/main",
+					before: "abc123",
+					after: "def456",
+					repository: {
+						full_name: "js-org/js-repo",
+						owner: { login: "js-org" },
+						name: "js-repo",
+					},
+					commits: [],
+				},
+				context,
+			);
+
+			// Should queue the jolliscript job, not the analyze job
+			expect(scheduler.queueJob).toHaveBeenCalledWith({
+				name: "knowledge-graph:run-jolliscript",
+				params: { docJrn: "/home/space-1/scripts/jolliscript-with-source.md", killSandbox: false },
+			});
+
+			// Should NOT have queued analyze-source-doc
+			expect(scheduler.queueJob).not.toHaveBeenCalledWith(
+				expect.objectContaining({ name: "knowledge-graph:analyze-source-doc" }),
+			);
+		});
+
+		it("handles queueJob failure for analyze-source-doc gracefully", async () => {
+			const def = getRegisteredJobHandler("jrn-adapter:git-push");
+
+			const sourceDoc = {
+				id: 403,
+				jrn: "/home/space-1/docs/fail-queue-article.md",
+				content: `---
+on:
+  jrn: jrn:*:path:/home/*/sources/github/fq-org/fq-repo/main
+  verb: GIT_PUSH
+---
+
+# Fail Queue Article
+`,
+				contentType: "text/markdown",
+				createdAt: new Date(),
+				updatedAt: new Date(),
+				updatedBy: "test",
+				source: "github",
+				sourceMetadata: { repo: "fq-org/fq-repo", branch: "main", path: "docs/test.md" },
+				contentMetadata: undefined,
+				version: 1,
+			};
+
+			docDao.listDocs = vi.fn().mockResolvedValue([sourceDoc]);
+			(scheduler.queueJob as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("Queue is full"));
+
+			const context = createMockContext(def.name);
+			await def.handler(
+				{
+					ref: "refs/heads/main",
+					before: "abc123",
+					after: "def456",
+					repository: {
+						full_name: "fq-org/fq-repo",
+						owner: { login: "fq-org" },
+						name: "fq-repo",
+					},
+					commits: [],
+				},
+				context,
+			);
+
+			// Should log the failure
+			expect(context.log).toHaveBeenCalledWith("source-doc-analysis-job-queue-failed", {
+				articleJrn: "/home/space-1/docs/fail-queue-article.md",
+				articleId: 403,
+				error: "Queue is full",
+			});
+		});
+
+		it("does NOT queue analyze-source-doc for CREATED events even with sourceMetadata", async () => {
+			const def = getRegisteredJobHandler("jrn-adapter:repos-added");
+
+			const sourceDoc = {
+				id: 404,
+				jrn: "/home/space-1/docs/created-source.md",
+				content: `---
+on:
+  jrn: jrn:*:path:/home/*/sources/github/cr-org/cr-repo/main
+  verb: CREATED
+---
+
+# Created Source Article
+`,
+				contentType: "text/markdown",
+				createdAt: new Date(),
+				updatedAt: new Date(),
+				updatedBy: "test",
+				source: "github",
+				sourceMetadata: { repo: "cr-org/cr-repo", branch: "main", path: "docs/test.md" },
+				contentMetadata: undefined,
+				version: 1,
+			};
+
+			docDao.listDocs = vi.fn().mockResolvedValue([sourceDoc]);
+			integrationsManager.listIntegrations = vi.fn().mockResolvedValue([]);
+
+			const context = createMockContext(def.name);
+			await def.handler(
+				{
+					action: "added",
+					installation: {
+						id: 700,
+						app_id: 1,
+						account: { login: "cr-org", type: "Organization" as const },
+					},
+					repositories_added: [{ full_name: "cr-org/cr-repo", default_branch: "main" }],
+				},
+				context,
+			);
+
+			// Should NOT queue any job (CREATED events don't pass pushInfo)
 			expect(scheduler.queueJob).not.toHaveBeenCalled();
 		});
 	});

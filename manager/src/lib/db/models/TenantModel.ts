@@ -1,4 +1,4 @@
-import type { DeploymentType, Tenant, TenantStatus, TenantSummary } from "../../types";
+import type { DeploymentType, Tenant, TenantFeatureFlags, TenantStatus, TenantSummary } from "../../types";
 import type { ModelDef } from "../../util/ModelDef";
 import { DataTypes, type Sequelize } from "sequelize";
 
@@ -12,7 +12,7 @@ export interface TenantRow {
 	readonly databaseProviderId: string;
 	readonly configs: Record<string, unknown>;
 	readonly configsUpdatedAt: Date | null;
-	readonly featureFlags: Record<string, boolean>;
+	readonly featureFlags: TenantFeatureFlags;
 	readonly primaryDomain: string | null;
 	readonly createdAt: Date;
 	readonly updatedAt: Date;
@@ -24,6 +24,13 @@ export function defineTenants(sequelize: Sequelize): ModelDef<TenantRow> {
 		timestamps: true,
 		underscored: true,
 		tableName: "tenants",
+		indexes: [
+			{
+				fields: ["slug"],
+				name: "tenants_slug_key",
+				unique: true,
+			},
+		],
 	});
 }
 
@@ -36,7 +43,7 @@ const schema = {
 	slug: {
 		type: DataTypes.STRING(63),
 		allowNull: false,
-		unique: true,
+		// unique: true removed - now defined in indexes above
 		validate: {
 			is: /^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/,
 		},
@@ -96,6 +103,16 @@ const schema = {
 
 /** Convert database row to API type */
 export function toTenant(row: TenantRow): Tenant {
+	// Ensure featureFlags has valid structure (default to free tier if missing/malformed)
+	const featureFlags: TenantFeatureFlags = {
+		tier: row.featureFlags?.tier ?? "free",
+		subdomain: row.featureFlags?.subdomain ?? false,
+		customDomain: row.featureFlags?.customDomain ?? false,
+		advancedAnalytics: row.featureFlags?.advancedAnalytics ?? false,
+		sso: row.featureFlags?.sso ?? false,
+		dedicatedSupport: row.featureFlags?.dedicatedSupport ?? false,
+	};
+
 	return {
 		id: row.id,
 		slug: row.slug,
@@ -105,7 +122,7 @@ export function toTenant(row: TenantRow): Tenant {
 		databaseProviderId: row.databaseProviderId,
 		configs: row.configs,
 		configsUpdatedAt: row.configsUpdatedAt,
-		featureFlags: row.featureFlags,
+		featureFlags,
 		primaryDomain: row.primaryDomain,
 		createdAt: row.createdAt,
 		updatedAt: row.updatedAt,

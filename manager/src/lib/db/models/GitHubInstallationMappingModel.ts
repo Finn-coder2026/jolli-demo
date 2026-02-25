@@ -18,6 +18,13 @@ export function defineGitHubInstallationMappings(sequelize: Sequelize): ModelDef
 		timestamps: true,
 		underscored: true,
 		tableName: "github_installation_mappings",
+		indexes: [
+			{
+				fields: ["installation_id"],
+				name: "github_installation_mappings_installation_id_key",
+				unique: true,
+			},
+		],
 	});
 }
 
@@ -30,7 +37,7 @@ const schema = {
 	installationId: {
 		type: DataTypes.BIGINT,
 		allowNull: false,
-		unique: true, // One mapping per installation
+		// unique: true removed - now defined in indexes above (One mapping per installation)
 		field: "installation_id",
 	},
 	tenantId: {

@@ -3,6 +3,7 @@
 import { Breadcrumb } from "../../../components/Breadcrumb";
 import { DangerZoneDialog } from "../../../components/DangerZoneDialog";
 import { ActionsSection } from "./components/ActionsSection";
+import { FeatureFlagsForm } from "./components/FeatureFlagsForm";
 import { ProvisioningSection } from "./components/ProvisioningSection";
 import { TenantConfigForm } from "./components/TenantConfigForm";
 import { useConfig } from "./hooks/useConfig";
@@ -71,13 +72,7 @@ export default function TenantDetailPage() {
 
 	return (
 		<main style={{ padding: "2rem", fontFamily: "system-ui, sans-serif", maxWidth: "800px" }}>
-			<Breadcrumb
-				items={[
-					{ label: "Dashboard", href: "/" },
-					{ label: "Tenants", href: "/tenants" },
-					{ label: tenant.displayName },
-				]}
-			/>
+			<Breadcrumb items={[{ label: "Tenants", href: "/tenants" }, { label: tenant.displayName }]} />
 			<div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
 				<h1>{tenant.displayName}</h1>
 				<StatusBadge status={tenant.status} />
@@ -383,17 +378,12 @@ export default function TenantDetailPage() {
 			</section>
 
 			<section style={{ marginTop: "2rem" }}>
-				<h2>Feature Flags</h2>
-				<pre
-					style={{
-						backgroundColor: "#f5f5f5",
-						padding: "1rem",
-						borderRadius: "4px",
-						overflow: "auto",
-					}}
-				>
-					{JSON.stringify(tenant.featureFlags, null, 2)}
-				</pre>
+				<h2>Feature Flags & Pricing Tier</h2>
+				<p style={{ color: "#666", marginBottom: "1rem" }}>
+					Manage the pricing tier and feature access for this tenant. Features are automatically
+					enabled/disabled based on the selected tier.
+				</p>
+				<FeatureFlagsForm tenantId={tenantId} featureFlags={tenant.featureFlags ?? {}} onSaved={reload} />
 			</section>
 
 			<ActionsSection

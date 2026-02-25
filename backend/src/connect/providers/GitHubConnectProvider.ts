@@ -53,6 +53,18 @@ export class GitHubConnectProvider implements ConnectProvider {
 	) {}
 
 	/**
+	 * Verify that the registry client is available when multi-tenant mode is enabled.
+	 * Without the registry client, cross-tenant installation ownership cannot be verified.
+	 */
+	private ensureRegistryClientInMultiTenantMode(): boolean {
+		if (getConfig().MULTI_TENANT_ENABLED && !this.registryClient) {
+			log.error("Registry client not available in multi-tenant mode — cannot verify installation ownership");
+			return false;
+		}
+		return true;
+	}
+
+	/**
 	 * Get the redirect URL to start the GitHub App installation flow.
 	 */
 	getSetupRedirectUrl(
@@ -237,6 +249,11 @@ export class GitHubConnectProvider implements ConnectProvider {
 		_userAccessToken: string,
 		tenantContext: TenantOrgContext,
 	): Promise<Array<AvailableInstallation>> {
+		// Fail-safe: refuse to list installations without registry client in multi-tenant mode
+		if (!this.ensureRegistryClientInMultiTenantMode()) {
+			return [];
+		}
+
 		const app = getCoreJolliGithubApp();
 		const token = createGitHubAppJWT(app.appId, app.privateKey);
 
@@ -256,6 +273,14 @@ export class GitHubConnectProvider implements ConnectProvider {
 		const availableInstallations: Array<AvailableInstallation> = [];
 
 		for (const installation of installations) {
+			// Skip installations owned by a different tenant
+			if (this.registryClient) {
+				const mapping = await this.registryClient.getTenantOrgByInstallationId(installation.id);
+				if (mapping && mapping.tenant.id !== tenantContext.tenant.id) {
+					continue;
+				}
+			}
+
 			const accountLogin = installation.account.login;
 			const accountType = installation.account.type;
 
@@ -293,7 +318,24 @@ export class GitHubConnectProvider implements ConnectProvider {
 		installationId: number,
 		tenantContext: TenantOrgContext,
 	): Promise<ConnectCompleteResult> {
+		// Fail-safe: refuse to connect installations without registry client in multi-tenant mode
+		if (!this.ensureRegistryClientInMultiTenantMode()) {
+			return { success: false, error: "configuration_error" };
+		}
+
 		const app = getCoreJolliGithubApp();
+
+		// Validate the installation is not owned by another tenant
+		if (this.registryClient) {
+			const mapping = await this.registryClient.getTenantOrgByInstallationId(installationId);
+			if (mapping && mapping.tenant.id !== tenantContext.tenant.id) {
+				log.warn(
+					{ installationId, requestingTenant: tenantContext.tenant.slug },
+					"Attempted to connect installation owned by another tenant",
+				);
+				return { success: false, error: "installation_not_available" };
+			}
+		}
 
 		// Find the installation in the GitHub App
 		const installation = await findInstallationInGithubApp(app, installationId);

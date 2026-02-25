@@ -1,14 +1,15 @@
 import type { Database } from "../core/Database";
+import type { GitHubInstallationDao } from "../dao/GitHubInstallationDao";
 import {
 	GITHUB_INSTALLATION_CREATED,
 	GITHUB_INSTALLATION_DELETED,
 	GITHUB_INSTALLATION_REPOSITORIES_ADDED,
 	GITHUB_INSTALLATION_REPOSITORIES_REMOVED,
-	GITHUB_PUSH,
 } from "../events/GithubEvents";
 import { jobDefinitionBuilder } from "../jobs/JobDefinitions";
 import { getCoreJolliGithubApp } from "../model/GitHubApp";
 import type { Integration, NewIntegration } from "../model/Integration";
+import { getTenantContext } from "../tenant/TenantContext";
 import type { TenantRegistryClient } from "../tenant/TenantRegistryClient";
 import type {
 	GitHubAccount,
@@ -16,7 +17,6 @@ import type {
 	GitHubAppRepository,
 	GitHubInstallationPayload,
 	GitHubInstallationRepositoriesPayload,
-	GitHubPushPayload,
 } from "../types/GithubTypes";
 import type { IntegrationCheckResponse, IntegrationContext, IntegrationTypeBehavior } from "../types/IntegrationTypes";
 import type { JobContext, JobDefinition } from "../types/JobTypes";
@@ -60,10 +60,30 @@ async function checkRepositoryAccess(
 }
 
 export function createIntegrationTypeBehavior(
-	db: Database,
+	defaultDb: Database,
 	integrationsManager: IntegrationsManager,
 	registryClient?: TenantRegistryClient,
 ): IntegrationTypeBehavior {
+	/**
+	 * Get the database to use - prefers tenant context, falls back to default.
+	 * This enables multi-tenant support while maintaining backward compatibility.
+	 * In worker mode, job handlers run within runWithTenantContext(), so
+	 * getTenantContext() returns the tenant-specific database.
+	 * In single-tenant mode, defaultDb is a real database instance.
+	 */
+	function getDatabase(): Database {
+		const tenantContext = getTenantContext();
+		if (tenantContext?.database) {
+			return tenantContext.database;
+		}
+		return defaultDb;
+	}
+
+	/** Get the GitHubInstallationDao from the current database context. */
+	function getGithubInstallationDao(): GitHubInstallationDao {
+		return getDatabase().githubInstallationDao;
+	}
+
 	return {
 		preCreate,
 		handleAccessCheck,
@@ -213,7 +233,7 @@ export function createIntegrationTypeBehavior(
 				await handleInstallationCreated(
 					params as GitHubInstallationPayload,
 					getIntegrationsManager(),
-					db.githubInstallationDao,
+					getGithubInstallationDao(),
 					context,
 				);
 			})
@@ -238,7 +258,7 @@ export function createIntegrationTypeBehavior(
 				await handleInstallationDeleted(
 					params as GitHubInstallationPayload,
 					getIntegrationsManager(),
-					db.githubInstallationDao,
+					getGithubInstallationDao(),
 					context,
 				);
 			},
@@ -262,7 +282,7 @@ export function createIntegrationTypeBehavior(
 				await handleRepositoriesAdded(
 					params as GitHubInstallationRepositoriesPayload,
 					getIntegrationsManager(),
-					db.githubInstallationDao,
+					getGithubInstallationDao(),
 					context,
 				);
 			},
@@ -286,73 +306,12 @@ export function createIntegrationTypeBehavior(
 				await handleRepositoriesRemoved(
 					params as GitHubInstallationRepositoriesPayload,
 					getIntegrationsManager(),
-					db.githubInstallationDao,
+					getGithubInstallationDao(),
 					context,
 				);
 			},
 			triggerEvents: [GITHUB_INSTALLATION_REPOSITORIES_REMOVED],
 		};
-	}
-
-	function getPushJobDefinition(): JobDefinition {
-		// Job to handle push events
-		return jobDefinitionBuilder()
-			.category("github")
-			.name("github:handle-push")
-			.title("GitHub Push Event")
-			.description("Handles GitHub push events - triggers run-jolliscript job for the hardcoded article")
-			.schema(
-				z.object({
-					ref: z.string(),
-					before: z.string(),
-					after: z.string(),
-					repository: z.object({
-						id: z.number(),
-						full_name: z.string(),
-						default_branch: z.string(),
-					}),
-					pusher: z.object({
-						name: z.string(),
-						email: z.string(),
-					}),
-					sender: getAccountSchema(),
-					installation: z
-						.object({
-							id: z.number(),
-						})
-						.optional(),
-					commits: z
-						.array(
-							z.object({
-								id: z.string(),
-								message: z.string(),
-								added: z.array(z.string()),
-								removed: z.array(z.string()),
-								modified: z.array(z.string()),
-							}),
-						)
-						.optional(),
-				}),
-			)
-			.handler(async (params: unknown, context: JobContext) => {
-				await handlePush(params as GitHubPushPayload, context);
-			})
-			.triggerEvents([GITHUB_PUSH])
-			.shouldTriggerEvent((_eventName: string, eventData: unknown) => {
-				const pushPayload = eventData as GitHubPushPayload;
-				// Filter: only trigger for pushes to the default branch
-				const branchName = pushPayload.ref.replace("refs/heads/", "");
-				const isDefaultBranch = branchName === pushPayload.repository.default_branch;
-				if (!isDefaultBranch) {
-					log.debug(
-						"Skipping push event for non-default branch: %s (default: %s)",
-						branchName,
-						pushPayload.repository.default_branch,
-					);
-				}
-				return Promise.resolve(isDefaultBranch);
-			})
-			.build();
 	}
 
 	function getJobDefinitions(): Array<JobDefinition> {
@@ -361,7 +320,6 @@ export function createIntegrationTypeBehavior(
 			getInstallationDeletedJobDefinition(),
 			getReposAddedJobDefinition(),
 			getReposRemovedJobDefinition(),
-			getPushJobDefinition(),
 		];
 	}
 
@@ -372,7 +330,7 @@ export function createIntegrationTypeBehavior(
 	async function handleInstallationCreated(
 		payload: GitHubInstallationPayload,
 		integrationsManager: IntegrationsManager,
-		githubInstallationDao: typeof db.githubInstallationDao,
+		githubInstallationDao: GitHubInstallationDao,
 		context: JobContext,
 	): Promise<void> {
 		const installationId = payload.installation?.id;
@@ -448,7 +406,7 @@ export function createIntegrationTypeBehavior(
 	async function handleRepositoriesAdded(
 		payload: GitHubInstallationRepositoriesPayload,
 		integrationsManager: IntegrationsManager,
-		githubInstallationDao: typeof db.githubInstallationDao,
+		githubInstallationDao: GitHubInstallationDao,
 		context: JobContext,
 	): Promise<void> {
 		const installationId = payload.installation?.id;
@@ -524,7 +482,7 @@ export function createIntegrationTypeBehavior(
 	async function handleRepositoriesRemoved(
 		payload: GitHubInstallationRepositoriesPayload,
 		integrationsManager: IntegrationsManager,
-		githubInstallationDao: typeof db.githubInstallationDao,
+		githubInstallationDao: GitHubInstallationDao,
 		context: JobContext,
 	): Promise<void> {
 		const installationId = payload.installation?.id;
@@ -579,33 +537,13 @@ export function createIntegrationTypeBehavior(
 	}
 
 	/**
-	 * Handle push event - when code is pushed to a repository
-	 * Logs the push event for tracking purposes
-	 */
-	function handlePush(payload: GitHubPushPayload, context: JobContext): Promise<void> {
-		const { repository, ref, pusher } = payload;
-		const branchName = ref.replace("refs/heads/", "");
-
-		context.log(
-			"push-received",
-			{
-				repo: repository.full_name,
-				branch: branchName,
-				pusher: pusher.name,
-			},
-			"info",
-		);
-		return Promise.resolve();
-	}
-
-	/**
 	 * Handle installation.deleted event - when the entire GitHub App installation is uninstalled
 	 * Mark the installation as uninstalled (clear repos) and disable all integrations that use this installation
 	 */
 	async function handleInstallationDeleted(
 		payload: GitHubInstallationPayload,
 		integrationsManager: IntegrationsManager,
-		githubInstallationDao: typeof db.githubInstallationDao,
+		githubInstallationDao: GitHubInstallationDao,
 		context: JobContext,
 	): Promise<void> {
 		const installationId = payload.installation?.id;

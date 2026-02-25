@@ -3,207 +3,420 @@ import { type Dictionary, insert, t } from "intlayer";
 const spaceTreeNavContent = {
 	key: "space-tree-nav",
 	content: {
+		collapseSidebar: t({
+			en: "Collapse sidebar",
+			es: "Contraer barra lateral",
+		}),
 		createFolder: t({
 			en: "New Folder",
 			es: "Nueva Carpeta",
-			zh: "新建文件夹",
 		}),
 		createDoc: t({
 			en: "New Article",
 			es: "Nuevo Artículo",
-			zh: "新建文章",
 		}),
 		newFolderTitle: t({
 			en: "New Folder",
 			es: "Nueva Carpeta",
-			zh: "新建文件夹",
 		}),
 		newDocTitle: t({
 			en: "New Article",
 			es: "Nuevo Artículo",
-			zh: "新建文章",
 		}),
 		newFolderSubtitle: t({
 			en: "Enter a name for your new folder",
 			es: "Ingrese un nombre para su nueva carpeta",
-			zh: "为新文件夹输入名称",
 		}),
 		newArticleSubtitle: t({
 			en: "Enter a name for your new article",
 			es: "Ingrese un nombre para su nuevo artículo",
-			zh: "为新文章输入名称",
 		}),
 		folderNamePlaceholder: t({
 			en: "Folder name...",
 			es: "Nombre de carpeta...",
-			zh: "文件夹名称...",
 		}),
 		docNamePlaceholder: t({
 			en: "Article title...",
 			es: "Título del artículo...",
-			zh: "文章标题...",
 		}),
 		parentFolderLabel: t({
 			en: "Parent Folder",
 			es: "Carpeta Principal",
-			zh: "父文件夹",
 		}),
 		rootFolder: t({
 			en: "(Root)",
 			es: "(Raíz)",
-			zh: "(根目录)",
 		}),
 		typeLabel: t({
 			en: "Document Type",
 			es: "Tipo de documento",
-			zh: "文档类型",
 		}),
 		typeMarkdown: t({
-			en: "Markdown / MDX",
-			es: "Markdown / MDX",
-			zh: "Markdown / MDX",
+			en: "Markdown",
+			es: "Markdown",
 		}),
 		typeJson: t({
 			en: "OpenAPI Specification (JSON)",
 			es: "Especificación OpenAPI (JSON)",
-			zh: "OpenAPI 规范 (JSON)",
 		}),
 		typeYaml: t({
 			en: "OpenAPI Specification (YAML)",
 			es: "Especificación OpenAPI (YAML)",
-			zh: "OpenAPI 规范 (YAML)",
 		}),
 		typeDescription: t({
 			en: "Choose Markdown for documentation articles, or OpenAPI format for API specifications.",
 			es: "Elija Markdown para artículos de documentación, o formato OpenAPI para especificaciones de API.",
-			zh: "选择 Markdown 用于文档文章，或 OpenAPI 格式用于 API 规范。",
 		}),
 		cancel: t({
 			en: "Cancel",
 			es: "Cancelar",
-			zh: "取消",
 		}),
 		create: t({
 			en: "Create",
 			es: "Crear",
-			zh: "创建",
 		}),
 		delete: t({
 			en: "Delete",
 			es: "Eliminar",
-			zh: "删除",
 		}),
 		trash: t({
 			en: "Trash",
 			es: "Papelera",
-			zh: "回收站",
-		}),
-		deletedItems: t({
-			en: "Deleted Items",
-			es: "Elementos eliminados",
-			zh: "已删除项目",
 		}),
 		trashEmpty: t({
 			en: "Trash is empty",
 			es: "La papelera está vacía",
-			zh: "回收站为空",
 		}),
 		loading: t({
 			en: "Loading...",
 			es: "Cargando...",
-			zh: "加载中...",
 		}),
 		empty: t({
 			en: "No documents yet",
 			es: "Aún no hay documentos",
-			zh: "暂无文档",
 		}),
 		emptyTreeDescription: t({
 			en: "Create your first folder or document to get started.",
 			es: "Crea tu primera carpeta o documento para comenzar.",
-			zh: "创建您的第一个文件夹或文档以开始。",
 		}),
 		trashEmptyDescription: t({
 			en: "Deleted items will appear here.",
 			es: "Los elementos eliminados aparecerán aquí.",
-			zh: "已删除的项目将显示在这里。",
 		}),
 		restore: t({
 			en: "Restore",
 			es: "Restaurar",
-			zh: "恢复",
 		}),
 		deleteConfirmTitle: t({
 			en: insert('Delete "{{name}}"?'),
 			es: insert('¿Eliminar "{{name}}"?'),
-			zh: insert('删除 "{{name}}"？'),
 		}),
 		deleteDocDescription: t({
 			en: "This will move the document to trash. You can restore it later.",
 			es: "Esto moverá el documento a la papelera. Puede restaurarlo más tarde.",
-			zh: "此操作将把文档移至回收站。您可以稍后恢复。",
 		}),
 		deleteEmptyFolderDescription: t({
 			en: "This will move the folder to trash. You can restore it later.",
 			es: "Esto moverá la carpeta a la papelera. Puede restaurarla más tarde.",
-			zh: "此操作将把文件夹移至回收站。您可以稍后恢复。",
 		}),
 		deleteFolderWithContentsDescription: t({
 			en: insert("This will move the folder and all {{count}} items to trash. You can restore them later."),
 			es: insert(
 				"Esto moverá la carpeta y todos los {{count}} elementos a la papelera. Puede restaurarlos más tarde.",
 			),
-			zh: insert("此操作将把文件夹及其 {{count}} 个项目移至回收站。您可以稍后恢复。"),
 		}),
 		confirmDelete: t({
 			en: "Delete",
 			es: "Eliminar",
-			zh: "删除",
 		}),
 		rename: t({
 			en: "Rename",
 			es: "Renombrar",
-			zh: "重命名",
 		}),
 		renameFolderTitle: t({
 			en: "Rename Folder",
 			es: "Renombrar Carpeta",
-			zh: "重命名文件夹",
 		}),
 		renameDocTitle: t({
 			en: "Rename Article",
 			es: "Renombrar Artículo",
-			zh: "重命名文章",
 		}),
 		renameFolderSubtitle: t({
 			en: "Enter a new name for the folder",
 			es: "Ingrese un nuevo nombre para la carpeta",
-			zh: "为文件夹输入新名称",
 		}),
 		renameDocSubtitle: t({
 			en: "Enter a new name for the article",
 			es: "Ingrese un nuevo nombre para el artículo",
-			zh: "为文章输入新名称",
 		}),
 		nameLabel: t({
 			en: "Name",
 			es: "Nombre",
-			zh: "名称",
 		}),
 		save: t({
 			en: "Save",
 			es: "Guardar",
-			zh: "保存",
 		}),
 		nameEmptyError: t({
 			en: "Name cannot be empty",
 			es: "El nombre no puede estar vacío",
-			zh: "名称不能为空",
 		}),
 		nameInvalidCharsError: t({
 			en: 'Name cannot contain: / \\ : * ? " < > |',
 			es: 'El nombre no puede contener: / \\ : * ? " < > |',
-			zh: '名称不能包含: / \\ : * ? " < > |',
+		}),
+		// Sort menu
+		sortButton: t({
+			en: "Sort",
+			es: "Ordenar",
+		}),
+		spaceDefault: t({
+			en: "Space default",
+			es: "Predeterminado del espacio",
+		}),
+		resetToDefault: t({
+			en: "Reset to default",
+			es: "Restablecer a predeterminado",
+		}),
+		saveAsSpaceDefault: t({
+			en: "Save as space default",
+			es: "Guardar como predeterminado del espacio",
+		}),
+		appliesToAllMembers: t({
+			en: "Applies to all space members",
+			es: "Se aplica a todos los miembros del espacio",
+		}),
+		spaceDefaultSortSaved: t({
+			en: insert("Default sort saved: {{sortMode}}"),
+			es: insert("Orden predeterminado guardado: {{sortMode}}"),
+		}),
+		sortDefault: t({
+			en: "Default",
+			es: "Predeterminado",
+		}),
+		sortAlphabeticalAsc: t({
+			en: "Alphabetical A→Z",
+			es: "Alfabético A→Z",
+		}),
+		sortAlphabeticalDesc: t({
+			en: "Alphabetical Z→A",
+			es: "Alfabético Z→A",
+		}),
+		sortUpdatedDesc: t({
+			en: "Last Updated (Newest)",
+			es: "Última actualización (más reciente)",
+		}),
+		sortUpdatedAsc: t({
+			en: "Last Updated (Oldest)",
+			es: "Última actualización (más antigua)",
+		}),
+		sortCreatedDesc: t({
+			en: "Created (Newest)",
+			es: "Creado (más reciente)",
+		}),
+		sortCreatedAsc: t({
+			en: "Created (Oldest)",
+			es: "Creado (más antigua)",
+		}),
+		// Move Up/Down
+		moveUp: t({
+			en: "Move Up",
+			es: "Mover arriba",
+		}),
+		moveDown: t({
+			en: "Move Down",
+			es: "Mover abajo",
+		}),
+		// Move To
+		moveTo: t({
+			en: "Move to...",
+			es: "Mover a...",
+		}),
+		moveItemTitle: t({
+			en: insert('Move "{{name}}"'),
+			es: insert('Mover "{{name}}"'),
+		}),
+		moveItemSubtitle: t({
+			en: "Choose a new location for this item",
+			es: "Elija una nueva ubicación para este elemento",
+		}),
+		move: t({
+			en: "Move",
+			es: "Mover",
+		}),
+		moveSuccess: t({
+			en: insert('"{{name}}" moved successfully'),
+			es: insert('"{{name}}" movido exitosamente'),
+		}),
+		moveFailed: t({
+			en: "Failed to move item",
+			es: "Error al mover el elemento",
+		}),
+		moveItemSameLocationWarning: t({
+			en: "This item is already in the selected location. Please choose a different folder.",
+			es: "Este elemento ya está en la ubicación seleccionada. Por favor, elija una carpeta diferente.",
+		}),
+		// Drag and drop
+		dragToReorder: t({
+			en: "Drag to reorder",
+			es: "Arrastrar para reordenar",
+		}),
+		dragToMove: t({
+			en: "Drag to move",
+			es: "Arrastrar para mover",
+		}),
+		reorderFailed: t({
+			en: "Failed to reorder item",
+			es: "Error al reordenar el elemento",
+		}),
+		renameFailed: t({
+			en: "Failed to rename item",
+			es: "Error al renombrar el elemento",
+		}),
+		deleteFailed: t({
+			en: "Failed to delete item",
+			es: "Error al eliminar el elemento",
+		}),
+		errorRolledBack: t({
+			en: "Your changes were not saved",
+			es: "Tus cambios no se guardaron",
+		}),
+		// Create operations
+		createFolderSuccess: t({
+			en: insert('"{{name}}" created successfully'),
+			es: insert('"{{name}}" creada exitosamente'),
+		}),
+		createFolderFailed: t({
+			en: "Failed to create folder",
+			es: "Error al crear la carpeta",
+		}),
+		createDocSuccess: t({
+			en: insert('"{{name}}" created successfully'),
+			es: insert('"{{name}}" creado exitosamente'),
+		}),
+		createDocFailed: t({
+			en: "Failed to create article",
+			es: "Error al crear el artículo",
+		}),
+		// Delete operations
+		deleteSuccess: t({
+			en: insert('"{{name}}" moved to trash'),
+			es: insert('"{{name}}" movido a la papelera'),
+		}),
+		// Rename operations
+		renameSuccess: t({
+			en: insert('"{{name}}" renamed successfully'),
+			es: insert('"{{name}}" renombrado exitosamente'),
+		}),
+		// Reorder operations
+		reorderSuccess: t({
+			en: "Item reordered successfully",
+			es: "Elemento reordenado exitosamente",
+		}),
+		// Restore operations
+		restoreSuccess: t({
+			en: insert('"{{name}}" restored successfully'),
+			es: insert('"{{name}}" restaurado exitosamente'),
+		}),
+		restoreFailed: t({
+			en: "Failed to restore item",
+			es: "Error al restaurar el elemento",
+		}),
+		// Filter menu
+		filtersButton: t({
+			en: "Filters",
+			es: "Filtros",
+		}),
+		filterUpdated: t({
+			en: "Updated Last",
+			es: "Última actualización",
+		}),
+		filterCreator: t({
+			en: "Contributor",
+			es: "Colaborador",
+		}),
+		filterAnyTime: t({
+			en: "Any time",
+			es: "Cualquier momento",
+		}),
+		filterToday: t({
+			en: "Today",
+			es: "Hoy",
+		}),
+		filterLast7Days: t({
+			en: "Last 7 days",
+			es: "Últimos 7 días",
+		}),
+		filterLast30Days: t({
+			en: "Last 30 days",
+			es: "Últimos 30 días",
+		}),
+		filterLast3Months: t({
+			en: "Last 3 months",
+			es: "Últimos 3 meses",
+		}),
+		filterAfterDate: t({
+			en: "After specific date",
+			es: "Después de fecha específica",
+		}),
+		filterAfterDateFormat: t({
+			en: insert("After {{date}}"),
+			es: insert("Después del {{date}}"),
+		}),
+		filterCreatorAll: t({
+			en: "All",
+			es: "Todos",
+		}),
+		filterCreatorPlaceholder: t({
+			en: "Search contributors...",
+			es: "Buscar colaboradores...",
+		}),
+		spaceDefaultFilters: t({
+			en: "Space default",
+			es: "Predeterminado del espacio",
+		}),
+		spaceDefaultFiltersSaved: t({
+			en: insert("Default filters saved: {{description}}"),
+			es: insert("Filtros predeterminados guardados: {{description}}"),
+		}),
+		filterNone: t({
+			en: "None",
+			es: "Ninguno",
+		}),
+		defaultFiltersTooltipTitle: t({
+			en: "Default filters for this space",
+			es: "Configuración de filtros predeterminados",
+		}),
+		filtersSingular: t({
+			en: "filter",
+			es: "filtro",
+		}),
+		filtersPlural: t({
+			en: "filters",
+			es: "filtros",
+		}),
+		// Suggestion indicator
+		hasSuggestedUpdates: t({
+			en: "Has suggested updates",
+			es: "Tiene actualizaciones sugeridas",
+		}),
+		// Add items to folder (shown in action menu)
+		newFolder: t({
+			en: "New Folder",
+			es: "Nueva Carpeta",
+		}),
+		newArticle: t({
+			en: "New Article",
+			es: "Nuevo Artículo",
+		}),
+		untitledArticle: t({
+			en: "Untitled",
+			es: "Sin título",
+		}),
+		// Settings
+		settings: t({
+			en: "Settings",
+			es: "Configuración",
 		}),
 	},
 } satisfies Dictionary;

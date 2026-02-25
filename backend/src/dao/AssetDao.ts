@@ -1,7 +1,7 @@
 import { type Asset, type AssetStatus, defineAssets, type NewAsset } from "../model/Asset";
 import type { TenantOrgContext } from "../tenant/TenantContext";
 import type { DaoProvider } from "./DaoProvider";
-import type { Sequelize } from "sequelize";
+import { Op, type Sequelize } from "sequelize";
 
 /**
  * Asset DAO for managing asset metadata.
@@ -20,6 +20,18 @@ export interface AssetDao {
 	 * @returns The asset if found, undefined otherwise.
 	 */
 	findByS3Key(s3Key: string): Promise<Asset | undefined>;
+
+	/**
+	 * Finds an asset by S3 key with space access validation.
+	 * Returns the asset only if:
+	 * - The asset's spaceId is NULL (org-wide legacy), OR
+	 * - The asset's spaceId is in the provided allowedSpaceIds set
+	 *
+	 * @param s3Key The S3 object key.
+	 * @param allowedSpaceIds Set of space IDs the user has access to. Pass null for org-wide access (e.g., site generation).
+	 * @returns The asset if found AND accessible, undefined otherwise.
+	 */
+	findByS3KeyWithSpaceAccess(s3Key: string, allowedSpaceIds: Set<number> | null): Promise<Asset | undefined>;
 
 	/**
 	 * Finds an asset by its ID.
@@ -71,6 +83,44 @@ export interface AssetDao {
 	 * Deletes all assets (for testing).
 	 */
 	deleteAll(): Promise<void>;
+
+	/**
+	 * Lists all active (non-orphaned, non-deleted) assets.
+	 * Used by cleanup job to compare against referenced images.
+	 * @returns List of active assets.
+	 */
+	listActiveAssets(): Promise<Array<Asset>>;
+
+	/**
+	 * Marks assets as orphaned (sets status="orphaned" and orphanedAt=now).
+	 * Only affects assets that are currently active.
+	 * @param s3Keys Array of S3 keys to mark as orphaned.
+	 * @returns Number of assets actually marked.
+	 */
+	markAsOrphaned(s3Keys: Array<string>): Promise<number>;
+
+	/**
+	 * Restores orphaned assets to active (sets status="active" and orphanedAt=null).
+	 * Used when previously orphaned images are re-referenced.
+	 * @param s3Keys Array of S3 keys to restore.
+	 * @returns Number of assets actually restored.
+	 */
+	restoreToActive(s3Keys: Array<string>): Promise<number>;
+
+	/**
+	 * Finds orphaned assets that have been orphaned for longer than the grace period.
+	 * @param olderThan Only return assets orphaned before this date.
+	 * @returns Assets ready for deletion.
+	 */
+	findOrphanedOlderThan(olderThan: Date): Promise<Array<Asset>>;
+
+	/**
+	 * Finds assets uploaded recently (within the safety buffer period).
+	 * These should not be marked as orphaned even if unreferenced.
+	 * @param uploadedAfter Only return assets created after this date.
+	 * @returns Recently uploaded assets.
+	 */
+	findRecentlyUploaded(uploadedAfter: Date): Promise<Array<Asset>>;
 }
 
 export function createAssetDao(sequelize: Sequelize): AssetDao {
@@ -79,6 +129,7 @@ export function createAssetDao(sequelize: Sequelize): AssetDao {
 	return {
 		createAsset,
 		findByS3Key,
+		findByS3KeyWithSpaceAccess,
 		findById,
 		listAssets,
 		listByUploader,
@@ -86,6 +137,11 @@ export function createAssetDao(sequelize: Sequelize): AssetDao {
 		softDelete,
 		hardDelete,
 		deleteAll,
+		listActiveAssets,
+		markAsOrphaned,
+		restoreToActive,
+		findOrphanedOlderThan,
+		findRecentlyUploaded,
 	};
 
 	async function createAsset(asset: NewAsset): Promise<Asset> {
@@ -99,6 +155,34 @@ export function createAssetDao(sequelize: Sequelize): AssetDao {
 			where: { s3Key, deletedAt: null },
 		});
 		return asset ? asset.get({ plain: true }) : undefined;
+	}
+
+	async function findByS3KeyWithSpaceAccess(
+		s3Key: string,
+		allowedSpaceIds: Set<number> | null,
+	): Promise<Asset | undefined> {
+		const asset = await findByS3Key(s3Key);
+		if (!asset) {
+			return;
+		}
+
+		// Org-wide access (e.g., site generation) - allow all assets
+		if (allowedSpaceIds === null) {
+			return asset;
+		}
+
+		// Legacy org-wide assets (spaceId = NULL) are accessible from any space
+		if (asset.spaceId === null) {
+			return asset;
+		}
+
+		// Check if asset's space is in the allowed set
+		if (allowedSpaceIds.has(asset.spaceId)) {
+			return asset;
+		}
+
+		// Asset exists but user doesn't have access to its space
+		return;
 	}
 
 	async function findById(id: number): Promise<Asset | undefined> {
@@ -155,6 +239,58 @@ export function createAssetDao(sequelize: Sequelize): AssetDao {
 
 	async function deleteAll(): Promise<void> {
 		await Assets.destroy({ where: {} });
+	}
+
+	async function listActiveAssets(): Promise<Array<Asset>> {
+		const assets = await Assets.findAll({
+			where: { status: "active", deletedAt: null },
+			order: [["createdAt", "ASC"]],
+		});
+		return assets.map(asset => asset.get({ plain: true }));
+	}
+
+	async function markAsOrphaned(s3Keys: Array<string>): Promise<number> {
+		if (s3Keys.length === 0) {
+			return 0;
+		}
+		const [affectedCount] = await Assets.update(
+			{ status: "orphaned", orphanedAt: new Date() },
+			{ where: { s3Key: { [Op.in]: s3Keys }, status: "active", deletedAt: null } },
+		);
+		return affectedCount;
+	}
+
+	async function restoreToActive(s3Keys: Array<string>): Promise<number> {
+		if (s3Keys.length === 0) {
+			return 0;
+		}
+		const [affectedCount] = await Assets.update(
+			{ status: "active", orphanedAt: null },
+			{ where: { s3Key: { [Op.in]: s3Keys }, status: "orphaned", deletedAt: null } },
+		);
+		return affectedCount;
+	}
+
+	async function findOrphanedOlderThan(olderThan: Date): Promise<Array<Asset>> {
+		const assets = await Assets.findAll({
+			where: {
+				status: "orphaned",
+				orphanedAt: { [Op.lt]: olderThan },
+				deletedAt: null,
+			},
+			order: [["orphanedAt", "ASC"]],
+		});
+		return assets.map(asset => asset.get({ plain: true }));
+	}
+
+	async function findRecentlyUploaded(uploadedAfter: Date): Promise<Array<Asset>> {
+		const assets = await Assets.findAll({
+			where: {
+				createdAt: { [Op.gte]: uploadedAfter },
+				deletedAt: null,
+			},
+		});
+		return assets.map(asset => asset.get({ plain: true }));
 	}
 }
 

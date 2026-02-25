@@ -12,7 +12,7 @@ export function DevTools(): ReactElement {
 	const { githubAppCreatorEnabled, jobTesterEnabled, dataClearerEnabled, draftGeneratorEnabled } = useDevTools();
 
 	return (
-		<div className="bg-card rounded-lg p-6 border h-full">
+		<div className="p-6 h-full">
 			<div className="mb-6">
 				<h1 className="font-semibold" style={{ fontSize: "2rem", margin: "0 0 8px" }}>
 					{content.title}

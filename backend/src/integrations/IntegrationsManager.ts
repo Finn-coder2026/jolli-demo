@@ -1,7 +1,10 @@
 import type { Database } from "../core/Database";
+import type { DaoProvider } from "../dao/DaoProvider";
+import type { IntegrationDao } from "../dao/IntegrationDao";
 import { jobDefinitionBuilder } from "../jobs/JobDefinitions";
 import type { JobEventEmitter } from "../jobs/JobEventEmitter";
 import { type Integration, IntegrationSchema, type NewIntegration } from "../model/Integration";
+import { getTenantContext } from "../tenant/TenantContext";
 import type { TenantRegistryClient } from "../tenant/TenantRegistryClient";
 import type {
 	CreateIntegrationResponse,
@@ -50,6 +53,10 @@ export interface IntegrationsManager {
 	 */
 	listIntegrations(): Promise<Array<Integration>>;
 	/**
+	 * Returns the number of Integrations currently in the repository.
+	 */
+	countIntegrations(): Promise<number>;
+	/**
 	 * Updates an Integration if one exists.
 	 * @param integration the existing integration being updated.
 	 * @param update the integration update.
@@ -86,8 +93,15 @@ export function createIntegrationManager(
 	db: Database,
 	eventEmitter: JobEventEmitter,
 	registryClient?: TenantRegistryClient,
+	integrationDaoProvider?: DaoProvider<IntegrationDao>,
 ): IntegrationsManager {
-	const { integrationDao: dao } = db;
+	// Use the DAO provider if available (for multi-tenant support), otherwise fall back to db.integrationDao
+	function getDao(): IntegrationDao {
+		if (integrationDaoProvider) {
+			return integrationDaoProvider.getDao(getTenantContext());
+		}
+		return db.integrationDao;
+	}
 
 	function getIntegrationActionEventName(type: IntegrationType, action: IntegrationEventAction) {
 		return `integrations:${type}:${action}`;
@@ -112,6 +126,7 @@ export function createIntegrationManager(
 		createIntegration,
 		getIntegration,
 		listIntegrations,
+		countIntegrations,
 		updateIntegration,
 		deleteIntegration,
 		handleAccessCheck,
@@ -195,7 +210,7 @@ export function createIntegrationManager(
 					...newIntegration,
 				};
 				if (await typeBehavior.preCreate(mutableNewIntegration, context)) {
-					const integration = await dao.createIntegration(mutableNewIntegration as NewIntegration);
+					const integration = await getDao().createIntegration(mutableNewIntegration as NewIntegration);
 					emitIntegrationEvent(integration, "created");
 					return {
 						result: integration,
@@ -209,7 +224,7 @@ export function createIntegrationManager(
 					};
 				}
 			} else {
-				const integration = await dao.createIntegration(newIntegration);
+				const integration = await getDao().createIntegration(newIntegration);
 				emitIntegrationEvent(integration, "created");
 				return {
 					result: integration,
@@ -226,11 +241,15 @@ export function createIntegrationManager(
 	}
 
 	async function getIntegration(id: number): Promise<Integration | undefined> {
-		return await dao.getIntegration(id);
+		return await getDao().getIntegration(id);
 	}
 
 	async function listIntegrations(): Promise<Array<Integration>> {
-		return await dao.listIntegrations();
+		return await getDao().listIntegrations();
+	}
+
+	async function countIntegrations(): Promise<number> {
+		return await getDao().countIntegrations();
 	}
 
 	async function updateIntegration(
@@ -252,7 +271,11 @@ export function createIntegrationManager(
 					(async (i: Integration) =>
 						!typeBehavior.preUpdateTransactional ||
 						(await typeBehavior.preUpdateTransactional(i, context)));
-				const updatedIntegration = await dao.updateIntegration(id, { ...update, id }, preUpdateTransactional);
+				const updatedIntegration = await getDao().updateIntegration(
+					id,
+					{ ...update, id },
+					preUpdateTransactional,
+				);
 				if (updatedIntegration) {
 					if (typeBehavior.postUpdate) {
 						await typeBehavior.postUpdate(updatedIntegration, context);
@@ -295,7 +318,7 @@ export function createIntegrationManager(
 			const shouldDelete = !typeBehavior.preDelete || (await typeBehavior.preDelete(integration, context));
 			if (shouldDelete) {
 				// Delete the integration from database
-				await dao.deleteIntegration(id);
+				await getDao().deleteIntegration(id);
 				if (typeBehavior.postDelete) {
 					await typeBehavior.postDelete(integration, context);
 				}

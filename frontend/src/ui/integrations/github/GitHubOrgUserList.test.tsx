@@ -815,6 +815,57 @@ describe("GitHubOrgUserList", () => {
 			});
 		});
 
+		it("should show localized error when connectExistingInstallation returns installation_not_available", async () => {
+			const connectExistingInstallation = vi.fn().mockResolvedValue({
+				success: false,
+				error: "installation_not_available",
+			});
+
+			mockClient.github.mockReturnValue(
+				createMockGitHubClient({
+					getGitHubInstallations: vi.fn().mockResolvedValue([]),
+					listAvailableInstallations: vi.fn().mockResolvedValue({
+						installations: [
+							{
+								installationId: 123,
+								accountLogin: "existing-org",
+								accountType: "Organization",
+								repos: ["repo1"],
+								alreadyConnectedToCurrentOrg: false,
+							},
+						],
+					}),
+					connectExistingInstallation,
+				}),
+			);
+
+			render(
+				<TestWrapper>
+					<GitHubOrgUserList />
+				</TestWrapper>,
+			);
+
+			await waitFor(() => {
+				expect(screen.getByText("No GitHub installations found")).toBeDefined();
+			});
+
+			const installButtons = screen.getAllByText("Install GitHub App");
+			fireEvent.click(installButtons[0]);
+
+			await waitFor(() => {
+				expect(screen.getByText("existing-org")).toBeDefined();
+			});
+
+			const connectButton = screen.getByText("Connect");
+			fireEvent.click(connectButton);
+
+			await waitFor(() => {
+				expect(
+					screen.getByText("This GitHub organization is already linked to another Jolli workspace."),
+				).toBeDefined();
+			});
+		});
+
 		it("should show error when connectExistingInstallation throws", async () => {
 			const connectExistingInstallation = vi.fn().mockRejectedValue(new Error("Network error"));
 

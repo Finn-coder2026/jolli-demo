@@ -107,42 +107,6 @@ describe("Article", () => {
 		expect(screen.getAllByText("doc:test-article").length).toBe(2);
 	});
 
-	it("should navigate back to articles list", async () => {
-		const mockDoc = {
-			id: 1,
-			jrn: "doc:test",
-			createdAt: "2025-10-01T00:00:00Z",
-			updatedAt: "2025-10-01T00:00:00Z",
-			updatedBy: "system",
-			content: "Test",
-			contentType: "text/markdown",
-			version: 1,
-			contentMetadata: {
-				title: "Test Article",
-			},
-		};
-
-		global.fetch = createFetchMock(() =>
-			Promise.resolve({
-				ok: true,
-				json: async () => mockDoc,
-			} as Response),
-		);
-
-		const pushStateSpy = vi.spyOn(window.history, "pushState");
-
-		renderWithProviders(<Article jrn="doc:test" />, { initialPath: "/articles/doc:test" });
-
-		await waitFor(() => {
-			expect(screen.getByText("Test Article")).toBeDefined();
-		});
-
-		const backButton = screen.getByText("Back to Articles");
-		fireEvent.click(backButton);
-
-		expect(pushStateSpy).toHaveBeenCalledWith({}, "", "/articles");
-	});
-
 	it("should open article preview in new window", async () => {
 		const mockDoc = {
 			id: 1,

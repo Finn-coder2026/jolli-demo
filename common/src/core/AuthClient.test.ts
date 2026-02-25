@@ -1,4 +1,4 @@
-import { createAuthClient } from "./AuthClient";
+import { createAuthClient, TenantSelectionError } from "./AuthClient";
 import type { ClientAuth } from "./Client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -37,13 +37,25 @@ describe("AuthClient", () => {
 		it("should get CLI token successfully", async () => {
 			global.fetch = vi.fn().mockResolvedValue({
 				ok: true,
+				json: vi.fn().mockResolvedValue({ token: "test-token-123", space: "default" }),
+			});
+
+			const client = createAuthClient("", createMockAuth());
+			const result = await client.getCliToken();
+
+			expect(result).toEqual({ token: "test-token-123", space: "default" });
+		});
+
+		it("should get CLI token without space", async () => {
+			global.fetch = vi.fn().mockResolvedValue({
+				ok: true,
 				json: vi.fn().mockResolvedValue({ token: "test-token-123" }),
 			});
 
 			const client = createAuthClient("", createMockAuth());
-			const token = await client.getCliToken();
+			const result = await client.getCliToken();
 
-			expect(token).toBe("test-token-123");
+			expect(result).toEqual({ token: "test-token-123" });
 		});
 
 		it("should throw error when getting CLI token fails", async () => {
@@ -78,72 +90,6 @@ describe("AuthClient", () => {
 		});
 	});
 
-	describe("getEmails", () => {
-		it("should get available emails successfully", async () => {
-			global.fetch = vi.fn().mockResolvedValue({
-				ok: true,
-				json: vi.fn().mockResolvedValue({ emails: ["user1@example.com", "user2@example.com"] }),
-			});
-
-			const client = createAuthClient("", createMockAuth());
-			const emails = await client.getEmails();
-
-			expect(emails).toEqual(["user1@example.com", "user2@example.com"]);
-		});
-
-		it("should throw error when getting emails fails", async () => {
-			global.fetch = vi.fn().mockResolvedValue({
-				ok: false,
-			});
-
-			const client = createAuthClient("", createMockAuth());
-
-			await expect(client.getEmails()).rejects.toThrow("Failed to get emails");
-		});
-	});
-
-	describe("selectEmail", () => {
-		it("should select email successfully", async () => {
-			global.fetch = vi.fn().mockResolvedValue({
-				ok: true,
-				json: () => Promise.resolve({ success: true }),
-			});
-
-			const client = createAuthClient("", createMockAuth());
-			const result = await client.selectEmail("user@example.com");
-
-			expect(global.fetch).toHaveBeenCalledWith(
-				"/api/auth/select-email",
-				expect.objectContaining({
-					method: "POST",
-				}),
-			);
-			expect(result).toEqual({});
-		});
-
-		it("should return redirectTo when present in response", async () => {
-			global.fetch = vi.fn().mockResolvedValue({
-				ok: true,
-				json: () => Promise.resolve({ success: true, redirectTo: "https://tenant.example.com" }),
-			});
-
-			const client = createAuthClient("", createMockAuth());
-			const result = await client.selectEmail("user@example.com");
-
-			expect(result).toEqual({ redirectTo: "https://tenant.example.com" });
-		});
-
-		it("should throw error when selecting email fails", async () => {
-			global.fetch = vi.fn().mockResolvedValue({
-				ok: false,
-			});
-
-			const client = createAuthClient("", createMockAuth());
-
-			await expect(client.selectEmail("user@example.com")).rejects.toThrow("Failed to select email");
-		});
-	});
-
 	describe("getSessionConfig", () => {
 		it("should get session config successfully", async () => {
 			global.fetch = vi.fn().mockResolvedValue({
@@ -174,6 +120,66 @@ describe("AuthClient", () => {
 		});
 	});
 
+	describe("selectTenant", () => {
+		it("should select tenant successfully", async () => {
+			global.fetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: vi.fn().mockResolvedValue({ success: true, url: "https://tenant.jolli.app" }),
+			});
+
+			const client = createAuthClient("http://localhost:7034", createMockAuth());
+			const result = await client.selectTenant("tenant-123", "org-456");
+
+			expect(global.fetch).toHaveBeenCalledWith(
+				"http://localhost:7034/api/auth/tenants/select",
+				expect.objectContaining({
+					method: "POST",
+				}),
+			);
+			expect(result).toEqual({ success: true, url: "https://tenant.jolli.app" });
+		});
+
+		it("should throw TenantSelectionError with error code when selecting tenant fails", async () => {
+			global.fetch = vi.fn().mockResolvedValue({
+				ok: false,
+				json: vi.fn().mockResolvedValue({ error: "user_inactive", message: "Account is inactive" }),
+			});
+
+			const client = createAuthClient("http://localhost:7034", createMockAuth());
+
+			await expect(client.selectTenant("tenant-123", "org-456")).rejects.toThrow(TenantSelectionError);
+			await expect(client.selectTenant("tenant-123", "org-456")).rejects.toMatchObject({
+				code: "user_inactive",
+				message: "Account is inactive",
+			});
+		});
+
+		it("should use fallback values when error response has no error or message fields", async () => {
+			global.fetch = vi.fn().mockResolvedValue({
+				ok: false,
+				json: vi.fn().mockResolvedValue({}),
+			});
+
+			const client = createAuthClient("http://localhost:7034", createMockAuth());
+
+			await expect(client.selectTenant("tenant-123", "org-456")).rejects.toMatchObject({
+				code: "unknown",
+				message: "Failed to select tenant",
+			});
+		});
+
+		it("should throw TenantSelectionError with fallback when response has no json", async () => {
+			global.fetch = vi.fn().mockResolvedValue({
+				ok: false,
+				json: vi.fn().mockRejectedValue(new Error("parse error")),
+			});
+
+			const client = createAuthClient("http://localhost:7034", createMockAuth());
+
+			await expect(client.selectTenant("tenant-123", "org-456")).rejects.toThrow("Failed to select tenant");
+		});
+	});
+
 	describe("checkUnauthorized callback", () => {
 		it("should call checkUnauthorized for getCliToken", async () => {
 			const checkUnauthorized = vi.fn().mockReturnValue(false);
@@ -186,28 +192,6 @@ describe("AuthClient", () => {
 			expect(checkUnauthorized).toHaveBeenCalledWith(mockResponse);
 		});
 
-		it("should call checkUnauthorized for getEmails", async () => {
-			const checkUnauthorized = vi.fn().mockReturnValue(false);
-			const mockResponse = { ok: true, json: vi.fn().mockResolvedValue({ emails: [] }) };
-			global.fetch = vi.fn().mockResolvedValue(mockResponse);
-
-			const client = createAuthClient("", createMockAuth(checkUnauthorized));
-			await client.getEmails();
-
-			expect(checkUnauthorized).toHaveBeenCalledWith(mockResponse);
-		});
-
-		it("should call checkUnauthorized for selectEmail", async () => {
-			const checkUnauthorized = vi.fn().mockReturnValue(false);
-			const mockResponse = { ok: true, json: vi.fn().mockResolvedValue({ success: true }) };
-			global.fetch = vi.fn().mockResolvedValue(mockResponse);
-
-			const client = createAuthClient("", createMockAuth(checkUnauthorized));
-			await client.selectEmail("test@example.com");
-
-			expect(checkUnauthorized).toHaveBeenCalledWith(mockResponse);
-		});
-
 		it("should call checkUnauthorized for getSessionConfig", async () => {
 			const checkUnauthorized = vi.fn().mockReturnValue(false);
 			const mockResponse = { ok: true, json: vi.fn().mockResolvedValue({ idleTimeoutMs: 3600000 }) };
@@ -215,6 +199,20 @@ describe("AuthClient", () => {
 
 			const client = createAuthClient("", createMockAuth(checkUnauthorized));
 			await client.getSessionConfig();
+
+			expect(checkUnauthorized).toHaveBeenCalledWith(mockResponse);
+		});
+
+		it("should call checkUnauthorized for selectTenant", async () => {
+			const checkUnauthorized = vi.fn().mockReturnValue(false);
+			const mockResponse = {
+				ok: true,
+				json: vi.fn().mockResolvedValue({ success: true, url: "https://tenant.jolli.app" }),
+			};
+			global.fetch = vi.fn().mockResolvedValue(mockResponse);
+
+			const client = createAuthClient("http://localhost:7034", createMockAuth(checkUnauthorized));
+			await client.selectTenant("tenant-123", "org-456");
 
 			expect(checkUnauthorized).toHaveBeenCalledWith(mockResponse);
 		});

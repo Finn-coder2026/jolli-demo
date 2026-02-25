@@ -1,7 +1,10 @@
 import { getConfig } from "../config/Config";
 import { createMercureService, type MercureService } from "../services/MercureService";
 import { getLog } from "../util/Logger";
+import type { TokenUtil } from "../util/TokenUtil";
+import { getOrgUserId } from "../util/UserProvisioningMiddleware";
 import express, { type Request, type Response, type Router } from "express";
+import type { UserInfo } from "jolli-common";
 
 const log = getLog(import.meta);
 
@@ -18,7 +21,8 @@ export interface MercureConfigResponse {
  */
 export interface MercureTokenRequest {
 	topics?: Array<string>;
-	type?: "jobs" | "draft" | "convo";
+	type?: "jobs" | "draft" | "convo" | "onboarding";
+	/** Resource ID (required for draft and convo types; ignored for onboarding which uses the authenticated user's ID) */
 	id?: number;
 }
 
@@ -31,17 +35,26 @@ export interface MercureTokenResponse {
 }
 
 /**
+ * Configuration for creating a Mercure router.
+ */
+export interface MercureRouterConfig {
+	/** TokenUtil for extracting authenticated user ID (required for onboarding topic authorization) */
+	tokenUtil: TokenUtil<UserInfo>;
+	/** Optional MercureService for dependency injection (useful for testing) */
+	mercureService?: MercureService;
+}
+
+/**
  * Creates a router for Mercure-related endpoints.
  *
  * Endpoints:
  * - GET /api/mercure/config - Returns Mercure configuration for the frontend
  * - POST /api/mercure/token - Generates a subscriber token for specified topics
- *
- * @param mercureService Optional MercureService for dependency injection (useful for testing)
  */
-export function createMercureRouter(mercureService?: MercureService): Router {
+export function createMercureRouter(config: MercureRouterConfig): Router {
 	const router = express.Router();
-	const service = mercureService ?? createMercureService();
+	const service = config.mercureService ?? createMercureService();
+	const { tokenUtil } = config;
 
 	/**
 	 * GET /api/mercure/config
@@ -105,6 +118,16 @@ export function createMercureRouter(mercureService?: MercureService): Router {
 						}
 						resolvedTopics = [service.getConvoTopic(id)];
 						break;
+					case "onboarding": {
+						// Enforce that onboarding topics are scoped to the authenticated user's own ID
+						// to prevent users from subscribing to other users' onboarding events
+						const userId = getOrgUserId(req, tokenUtil);
+						if (userId === undefined) {
+							return res.status(401).json({ error: "Could not determine authenticated user ID" });
+						}
+						resolvedTopics = [service.getOnboardingTopic(userId)];
+						break;
+					}
 					default:
 						return res.status(400).json({ error: `Invalid type: ${type}` });
 				}

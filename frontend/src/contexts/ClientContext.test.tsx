@@ -17,8 +17,6 @@ describe("ClientContext", () => {
 		);
 
 		expect(client).toBeDefined();
-		expect(client?.chat).toBeDefined();
-		expect(client?.convos).toBeDefined();
 	});
 
 	it("should throw error when useClient is used outside provider", () => {

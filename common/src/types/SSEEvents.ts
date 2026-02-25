@@ -19,6 +19,7 @@ export interface DraftSSEEvent {
 	type: DraftSSEEventType;
 	draftId?: number;
 	userId?: number;
+	clientMutationId?: string;
 	diffs?: Array<ContentDiff>;
 	timestamp: string;
 }
@@ -35,6 +36,7 @@ export interface ConvoSSEEvent {
 	type: ConvoSSEEventType;
 	convoId?: number;
 	userId?: number;
+	clientRequestId?: string;
 	message?: CollabMessage;
 	timestamp: string;
 }

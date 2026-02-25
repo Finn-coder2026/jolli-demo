@@ -426,10 +426,6 @@ describe.skipIf(!process.env.RUN_INTEGRATION_TESTS)("DocHistoryDao Integration T
 		// Test connection
 		await sequelize.authenticate();
 
-		// Create users table first (doc_histories has foreign key to users)
-		const { defineUsers } = await import("../model/User");
-		defineUsers(sequelize);
-
 		// Create docs table (doc_histories has foreign key to docs)
 		const { defineDocs } = await import("../model/Doc");
 		defineDocs(sequelize);
@@ -441,15 +437,8 @@ describe.skipIf(!process.env.RUN_INTEGRATION_TESTS)("DocHistoryDao Integration T
 		// Sync tables
 		await sequelize.sync({ alter: true });
 
-		// Create test user to reference
-		const { createUserDao } = await import("./UserDao");
-		const userDao = createUserDao(sequelize);
-		const testUser = await userDao.createUser({
-			email: `test-history-${Date.now()}@test.com`,
-			name: "Test User",
-			picture: undefined,
-		});
-		testUserId = testUser.id;
+		// Use a fixed userId (doc_histories doesn't enforce FK to users)
+		testUserId = 1;
 
 		// Create test doc to reference
 		const { createDocDao } = await import("./DocDao");

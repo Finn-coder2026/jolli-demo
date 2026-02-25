@@ -1,22 +1,34 @@
 import type { Tab } from "../types/Tab";
 import { useClient } from "./ClientContext";
-import { useDevTools } from "./DevToolsContext";
+import { usePermissions } from "./PermissionContext";
 import { useLocation, useNavigate, useOpen, useRedirect } from "./RouterContext";
 import type { UserInfo } from "jolli-common";
-// import { BarChart3, FileText, Gauge, Globe, Plug, Settings } from "lucide-react";
-// import { createContext, type ReactElement, type ReactNode, useContext, useEffect, useMemo, useState } from "react";
-
-// const TAB_NAMES = ["dashboard", "articles", "docsites", "analytics", "integrations", "settings"] as const;
-import { BarChart3, FileText, Gauge, Globe, Plug, Settings, Wrench } from "lucide-react";
-import { createContext, type ReactElement, type ReactNode, useContext, useEffect, useMemo, useState } from "react";
+import { LayoutGrid } from "lucide-react";
+import { createContext, type ReactElement, type ReactNode, useContext, useEffect, useMemo } from "react";
 import { useIntlayer } from "react-intlayer";
 
-const TAB_NAMES = ["dashboard", "articles", "sites", "analytics", "integrations", "settings", "devtools"] as const;
+const TAB_NAMES = [
+	"inbox",
+	"dashboard",
+	"articles",
+	"sites",
+	"spaces",
+	"analytics",
+	"integrations",
+	"users",
+	"roles",
+	"settings",
+	"devtools",
+	"agent",
+] as const;
 
 export type TabName = (typeof TAB_NAMES)[number];
 
 export type ArticleView = "list" | "detail" | "preview" | "source" | "none";
-export type SiteView = "list" | "detail" | "none";
+export type SiteView = "list" | "detail" | "create" | "none";
+export type SettingsView = "profile" | "preferences" | "none";
+export type SpaceSettingsView = "general" | "sources" | "none";
+export type SiteSettingsView = "general" | "none";
 export type IntegrationView =
 	| "main"
 	| "github"
@@ -30,6 +42,8 @@ export type DraftView = "list" | "edit" | "none";
 interface Navigation {
 	tabs: Array<Tab<TabName>>;
 	activeTab: TabName;
+	currentUserId: number | undefined;
+	currentUserName: string | undefined;
 	articleView: ArticleView;
 	articleJrn: string | undefined;
 	integrationView: IntegrationView;
@@ -38,15 +52,19 @@ interface Navigation {
 	staticFileIntegrationId: number | undefined;
 	draftView: DraftView;
 	draftId: number | undefined;
+	/** Draft ID for inline editing within the articles page (via ?edit=id query param) */
+	inlineEditDraftId: number | undefined;
+	/** Selected document ID for preserving selection state (via ?doc=id query param) */
+	selectedDocId: number | undefined;
 	siteView: SiteView;
 	siteId: number | undefined;
+	settingsView: SettingsView;
+	spaceSettingsView: SpaceSettingsView;
+	spaceSettingsSpaceId: number | undefined;
+	siteSettingsView: SiteSettingsView;
+	siteSettingsSiteId: number | undefined;
 	navigate(pathname: string): void;
 	open(pathname: string): void;
-	hasIntegrations: boolean | undefined;
-	githubSetupComplete: boolean;
-	checkIntegrations(): void;
-	refreshIntegrations(): void;
-	integrationSetupComplete(): void;
 }
 
 const NavigationContext = createContext<Navigation | undefined>(undefined);
@@ -54,7 +72,7 @@ const NavigationContext = createContext<Navigation | undefined>(undefined);
 interface NavigationProviderProps {
 	children: ReactNode;
 	pathname?: string; // For testing
-	userInfo?: UserInfo | undefined; // For integrations checking
+	userInfo?: UserInfo | undefined;
 }
 
 function isTabName(name: string): name is TabName {
@@ -101,24 +119,31 @@ function parseIntegrationRoute(
 	let integrationContainerType: "org" | "user" | undefined;
 	let staticFileIntegrationId: number | undefined;
 
-	if (pathSegments[0] === "integrations") {
-		const secondSegment = getPathSegment(1);
+	// Handle both /integrations/* (standard) and /settings/sources/* (legacy) routes
+	const isIntegrationsRoute = pathSegments[0] === "integrations";
+	const isSettingsSourcesRoute = pathSegments[0] === "settings" && pathSegments[1] === "sources";
+
+	if (isIntegrationsRoute || isSettingsSourcesRoute) {
+		// Offset for settings/sources routes (segments are shifted by 1)
+		const offset = isSettingsSourcesRoute ? 1 : 0;
+		const secondSegment = getPathSegment(1 + offset);
+
 		if (!secondSegment) {
 			integrationView = "main";
 		} else if (secondSegment === "github") {
-			const thirdSegment = getPathSegment(2);
+			const thirdSegment = getPathSegment(2 + offset);
 			if (!thirdSegment) {
 				integrationView = "github";
 			} else if (thirdSegment === "org" || thirdSegment === "user") {
 				integrationContainerType = thirdSegment;
-				const fourthSegment = getPathSegment(3);
+				const fourthSegment = getPathSegment(3 + offset);
 				if (fourthSegment) {
 					integrationContainer = fourthSegment;
 					integrationView = thirdSegment === "org" ? "github-org-repos" : "github-user-repos";
 				}
 			}
 		} else if (secondSegment === "static-file") {
-			const thirdSegment = getPathSegment(2);
+			const thirdSegment = getPathSegment(2 + offset);
 			if (thirdSegment) {
 				const id = Number.parseInt(thirdSegment, 10);
 				if (!Number.isNaN(id)) {
@@ -160,16 +185,129 @@ function parseSiteRoute(
 	let siteId: number | undefined;
 
 	if (pathSegments[0] === "sites") {
+		// Don't match if this is a settings route (/sites/:id/settings/...)
+		if (pathSegments[2] === "settings") {
+			return { siteView, siteId };
+		}
 		const secondSegment = getPathSegment(1);
 		if (!secondSegment) {
 			siteView = "list";
+		} else if (secondSegment === "new") {
+			siteView = "create";
 		} else {
-			siteView = "detail";
-			siteId = Number.parseInt(secondSegment, 10);
+			const parsed = Number.parseInt(secondSegment, 10);
+			if (!Number.isNaN(parsed)) {
+				siteView = "detail";
+				siteId = parsed;
+			}
 		}
 	}
 
 	return { siteView, siteId };
+}
+
+function parseSettingsRoute(
+	pathSegments: Array<string>,
+	getPathSegment: (index: number) => string | undefined,
+): { settingsView: SettingsView } {
+	let settingsView: SettingsView = "none";
+
+	if (pathSegments[0] === "settings") {
+		const secondSegment = getPathSegment(1);
+		if (!secondSegment || secondSegment === "profile") {
+			// Default to profile if no sub-route specified
+			settingsView = "profile";
+		} else if (secondSegment === "preferences") {
+			settingsView = "preferences";
+		}
+	}
+
+	return { settingsView };
+}
+
+function parseSpaceSettingsRoute(
+	pathSegments: Array<string>,
+	getPathSegment: (index: number) => string | undefined,
+): { spaceSettingsView: SpaceSettingsView; spaceSettingsSpaceId: number | undefined } {
+	let spaceSettingsView: SpaceSettingsView = "none";
+	let spaceSettingsSpaceId: number | undefined;
+
+	// Match /spaces/:spaceId/settings or /spaces/:spaceId/settings/general
+	if (pathSegments[0] === "spaces" && pathSegments[2] === "settings") {
+		const spaceIdSegment = getPathSegment(1);
+		if (spaceIdSegment) {
+			const spaceId = Number.parseInt(spaceIdSegment, 10);
+			if (!Number.isNaN(spaceId)) {
+				spaceSettingsSpaceId = spaceId;
+				const settingsSubRoute = getPathSegment(3);
+				// Default to general if no sub-route or explicit general
+				if (!settingsSubRoute || settingsSubRoute === "general") {
+					spaceSettingsView = "general";
+				} else if (settingsSubRoute === "sources") {
+					spaceSettingsView = "sources";
+				}
+			}
+		}
+	}
+
+	return { spaceSettingsView, spaceSettingsSpaceId };
+}
+
+/** Map of route tabs to their required view permissions */
+const ROUTE_PERMISSION_MAP: Record<string, string> = {
+	dashboard: "dashboard.view",
+	articles: "articles.view",
+	sites: "sites.view",
+	integrations: "integrations.view",
+	users: "users.view",
+	roles: "roles.view",
+};
+
+/**
+ * Returns the required permission for a given pathname, or undefined if no permission check is needed.
+ * Returns undefined for the dashboard route (the fallback redirect target) to prevent redirect loops.
+ */
+function getRequiredRoutePermission(pathname: string): string | undefined {
+	const segments = pathname.split("/").filter(Boolean);
+	const firstSegment = segments[0] || "dashboard";
+
+	// Dashboard is the fallback redirect target — never guard it
+	if (firstSegment === "dashboard") {
+		return;
+	}
+
+	// Special case: /settings/sources requires integrations.view
+	if (firstSegment === "settings" && segments[1] === "sources") {
+		return ROUTE_PERMISSION_MAP.integrations;
+	}
+
+	return isTabName(firstSegment) ? ROUTE_PERMISSION_MAP[firstSegment] : undefined;
+}
+
+function parseSiteSettingsRoute(
+	pathSegments: Array<string>,
+	getPathSegment: (index: number) => string | undefined,
+): { siteSettingsView: SiteSettingsView; siteSettingsSiteId: number | undefined } {
+	let siteSettingsView: SiteSettingsView = "none";
+	let siteSettingsSiteId: number | undefined;
+
+	// Match /sites/:siteId/settings or /sites/:siteId/settings/general
+	if (pathSegments[0] === "sites" && pathSegments[2] === "settings") {
+		const siteIdSegment = getPathSegment(1);
+		if (siteIdSegment) {
+			const siteId = Number.parseInt(siteIdSegment, 10);
+			if (!Number.isNaN(siteId)) {
+				siteSettingsSiteId = siteId;
+				const settingsSubRoute = getPathSegment(3);
+				// Default to general if no sub-route or explicit general
+				if (!settingsSubRoute || settingsSubRoute === "general") {
+					siteSettingsView = "general";
+				}
+			}
+		}
+	}
+
+	return { siteSettingsView, siteSettingsSiteId };
 }
 
 export function NavigationProvider({ children, pathname, userInfo }: NavigationProviderProps): ReactElement {
@@ -178,52 +316,21 @@ export function NavigationProvider({ children, pathname, userInfo }: NavigationP
 	const open = useOpen();
 	const redirect = useRedirect();
 	const client = useClient();
-	const { devToolsEnabled } = useDevTools();
+	const { hasPermission, isLoading: isLoadingPermissions } = usePermissions();
 	const content = useIntlayer("app-layout");
 
 	// Define tabs with localized labels
-	const baseTabs: Array<Tab<TabName>> = [
-		{ name: "dashboard", icon: Gauge, label: content.tabDashboard.value },
-		{ name: "articles", icon: FileText, label: content.tabArticles.value },
-		{ name: "sites", icon: Globe, label: content.tabSites.value },
-		{ name: "analytics", icon: BarChart3, label: content.tabAnalytics.value },
-		{ name: "integrations", icon: Plug, label: content.tabIntegrations.value },
-		{ name: "settings", icon: Settings, label: content.tabSettings.value },
-	];
-
-	const devToolsTab: Tab<TabName> = { name: "devtools", icon: Wrench, label: content.tabDevTools.value };
+	// Note: Users, Integrations (Sources), and Roles are now in Settings sidebar
+	// Other routes (articles, sites, analytics, settings) remain functional via direct URLs
+	const baseTabs: Array<Tab<TabName>> = [{ name: "dashboard", icon: LayoutGrid, label: content.tabDashboard.value }];
 
 	// Use pathname prop for testing, otherwise use router's location
 	const currentPathname = pathname ?? location.pathname;
 
-	// Integrations state
-	const [hasIntegrations, setHasIntegrations] = useState<boolean | undefined>(undefined);
-	const [checkingIntegrations, setCheckingIntegrations] = useState(false);
-	const [githubSetupComplete, setGithubSetupComplete] = useState(false);
-
-	// Check for integrations after login
-	useEffect(() => {
-		if (userInfo && !checkingIntegrations && hasIntegrations === undefined) {
-			checkIntegrations();
-		}
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [userInfo, checkingIntegrations, hasIntegrations]);
-
-	// Check for GitHub setup completion and CLI callback in URL params
+	// Check for CLI callback in URL params
 	useEffect(() => {
 		if (userInfo) {
-			const urlParams = new URLSearchParams(location.search);
-			// Check for GitHub setup completion
-			const githubSetup = urlParams.get("github_setup");
-			if (githubSetup === "success") {
-				setGithubSetupComplete(true);
-				setHasIntegrations(true);
-				// Clean up URL
-				navigate("/");
-			}
-
-			// Check for CLI callback
-			let cliCallback = urlParams.get("cli_callback");
+			let cliCallback = new URLSearchParams(location.search).get("cli_callback");
 			if (!cliCallback) {
 				cliCallback = sessionStorage.getItem("cli_callback");
 			}
@@ -237,75 +344,49 @@ export function NavigationProvider({ children, pathname, userInfo }: NavigationP
 	async function handleCliCallback(cliCallback: string): Promise<void> {
 		const callbackUrl = new URL(cliCallback);
 		try {
-			const token = await client.auth().getCliToken();
+			const { token, space } = await client.auth().getCliToken();
 			callbackUrl.searchParams.set("token", token);
+			if (space) {
+				callbackUrl.searchParams.set("space", space);
+			}
 		} catch (_error) {
 			callbackUrl.searchParams.set("error", "failed_to_get_token");
 		}
 		redirect(callbackUrl.toString());
 	}
 
-	function checkIntegrations(): void {
-		setCheckingIntegrations(true);
-		client
-			.integrations()
-			.listIntegrations()
-			.then(async integrations => {
-				if (integrations.length > 0) {
-					setHasIntegrations(true);
-				} else {
-					// No integrations enabled, but check if there are installations
-					try {
-						const installations = await client.github().getGitHubInstallations();
-						if (installations.length > 0) {
-							// Has installations but no enabled integrations
-							// Redirect to the first installation to enable repos
-							// BUT: Don't redirect if user is on devtools tab
-							const pathSegments = currentPathname.split("/").filter(Boolean);
-							const currentTab = pathSegments[0] || "dashboard";
-							if (currentTab !== "devtools") {
-								const first = installations[0];
-								const containerType = first.containerType;
-								const containerName = first.name;
-								navigate(`/integrations/github/${containerType}/${containerName}`);
-							}
-							// Still set hasIntegrations to true to avoid showing getting started
-							setHasIntegrations(true);
-						} else {
-							// No installations and no integrations
-							setHasIntegrations(false);
-						}
-					} catch {
-						// Error fetching installations, treat as no integrations
-						setHasIntegrations(false);
-					}
-				}
-			})
-			.catch(() => {
-				setHasIntegrations(false);
-			})
-			.finally(() => {
-				setCheckingIntegrations(false);
-			});
-	}
-
-	function refreshIntegrations(): void {
-		setHasIntegrations(undefined);
-		setCheckingIntegrations(false);
-	}
-
-	function integrationSetupComplete(): void {
-		setHasIntegrations(true);
-		setGithubSetupComplete(false);
-	}
+	// Route-level permission guard: redirect unauthorized users to /dashboard
+	useEffect(() => {
+		if (isLoadingPermissions) {
+			return;
+		}
+		const requiredPermission = getRequiredRoutePermission(currentPathname);
+		if (requiredPermission && !hasPermission(requiredPermission)) {
+			navigate("/dashboard");
+		}
+	}, [currentPathname, isLoadingPermissions, hasPermission, navigate]);
 
 	const navigationParams = useMemo<Navigation>(() => {
 		const pathSegments = currentPathname.split("/").filter(Boolean);
 		const firstSegment = pathSegments[0] || "dashboard";
 		const activeTab = isTabName(firstSegment) ? firstSegment : "dashboard";
 
-		// Build tabs list - include dev tools tab if enabled
-		const tabs = devToolsEnabled ? [...baseTabs, devToolsTab] : baseTabs;
+		/** Check if a tab should be displayed based on permissions. */
+		function isTabVisible(tab: (typeof baseTabs)[number]): boolean {
+			const requiredPermission = ROUTE_PERMISSION_MAP[tab.name];
+			/* v8 ignore next 3 - all current baseTabs have required permissions; branch kept for future extensibility */
+			if (!requiredPermission) {
+				return true; // No permission required (e.g., settings)
+			}
+			return hasPermission(requiredPermission);
+		}
+
+		// Build tabs list - filter by permissions
+		// Don't filter while permissions are loading to avoid flickering/hiding tabs temporarily
+		const filteredTabs = isLoadingPermissions ? baseTabs : baseTabs.filter(isTabVisible);
+		// Dev Tools, Settings, Analytics, Sites, and Articles tabs are not shown in the navigation
+		// (but can still be accessed via direct URLs)
+		const tabs = filteredTabs;
 
 		function getPathSegment(index: number): string | undefined {
 			const segment = pathSegments[index];
@@ -325,9 +406,29 @@ export function NavigationProvider({ children, pathname, userInfo }: NavigationP
 		// Parse site routing
 		const { siteView, siteId } = parseSiteRoute(pathSegments, getPathSegment);
 
+		// Parse settings routing
+		const { settingsView } = parseSettingsRoute(pathSegments, getPathSegment);
+
+		// Parse inline edit query param (?edit=draftId) for in-place article editing
+		const searchParams = new URLSearchParams(location.search);
+		const editParam = searchParams.get("edit");
+		const inlineEditDraftId = editParam ? Number.parseInt(editParam, 10) : undefined;
+
+		// Parse selected doc query param (?doc=docId) for preserving selection state
+		const docParam = searchParams.get("doc");
+		const selectedDocId = docParam ? Number.parseInt(docParam, 10) : undefined;
+
+		// Parse space settings routing
+		const { spaceSettingsView, spaceSettingsSpaceId } = parseSpaceSettingsRoute(pathSegments, getPathSegment);
+
+		// Parse site settings routing
+		const { siteSettingsView, siteSettingsSiteId } = parseSiteSettingsRoute(pathSegments, getPathSegment);
+
 		return {
 			tabs,
 			activeTab,
+			currentUserId: userInfo?.userId,
+			currentUserName: userInfo?.name,
 			articleView,
 			articleJrn,
 			integrationView,
@@ -336,17 +437,28 @@ export function NavigationProvider({ children, pathname, userInfo }: NavigationP
 			staticFileIntegrationId,
 			draftView,
 			draftId,
+			inlineEditDraftId: Number.isNaN(inlineEditDraftId) ? undefined : inlineEditDraftId,
+			selectedDocId: Number.isNaN(selectedDocId) ? undefined : selectedDocId,
 			siteView,
 			siteId,
+			settingsView,
+			spaceSettingsView,
+			spaceSettingsSpaceId,
+			siteSettingsView,
+			siteSettingsSiteId,
 			navigate,
 			open,
-			hasIntegrations,
-			githubSetupComplete,
-			checkIntegrations,
-			refreshIntegrations,
-			integrationSetupComplete,
 		};
-	}, [currentPathname, navigate, open, hasIntegrations, githubSetupComplete, devToolsEnabled]);
+	}, [
+		currentPathname,
+		location.search,
+		navigate,
+		open,
+		userInfo?.userId,
+		userInfo?.name,
+		hasPermission,
+		isLoadingPermissions,
+	]);
 
 	return <NavigationContext.Provider value={navigationParams}>{children}</NavigationContext.Provider>;
 }
@@ -354,7 +466,7 @@ export function NavigationProvider({ children, pathname, userInfo }: NavigationP
 export function useNavigation(): Navigation {
 	const context = useContext(NavigationContext);
 	if (!context) {
-		throw new Error("userNavigation must be used within a NavigationProvider");
+		throw new Error("useNavigation must be used within a NavigationProvider");
 	}
 	return context;
 }

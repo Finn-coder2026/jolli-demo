@@ -40,6 +40,7 @@ describe("IntegrationClient", () => {
 		expect(client.getIntegration).toBeDefined();
 		expect(client.updateIntegration).toBeDefined();
 		expect(client.deleteIntegration).toBeDefined();
+		expect(client.hasAnyIntegrations).toBeDefined();
 	});
 
 	describe("create", () => {
@@ -296,6 +297,53 @@ describe("IntegrationClient", () => {
 		});
 	});
 
+	describe("hasAnyIntegrations", () => {
+		it("should return true when integrations exist", async () => {
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => ({ exists: true }),
+			});
+			global.fetch = mockFetch;
+
+			const client = createIntegrationClient("", createMockAuth());
+			const result = await client.hasAnyIntegrations();
+
+			expect(mockFetch).toHaveBeenCalledWith("/api/integrations/exists", {
+				method: "GET",
+				headers: {},
+				credentials: "include",
+				body: null,
+			});
+			expect(result).toBe(true);
+		});
+
+		it("should return false when no integrations exist", async () => {
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => ({ exists: false }),
+			});
+			global.fetch = mockFetch;
+
+			const client = createIntegrationClient("", createMockAuth());
+			const result = await client.hasAnyIntegrations();
+
+			expect(result).toBe(false);
+		});
+
+		it("should throw error when check fails", async () => {
+			global.fetch = vi.fn().mockResolvedValue({
+				ok: false,
+				statusText: "Internal Server Error",
+			});
+
+			const client = createIntegrationClient("", createMockAuth());
+
+			await expect(client.hasAnyIntegrations()).rejects.toThrow(
+				"Failed to check integrations: Internal Server Error",
+			);
+		});
+	});
+
 	describe("checkAccess", () => {
 		it("should check access for an integration", async () => {
 			const mockResponse = {
@@ -455,6 +503,17 @@ describe("IntegrationClient", () => {
 
 			const client = createIntegrationClient("", createMockAuth(checkUnauthorized));
 			await client.deleteIntegration(1);
+
+			expect(checkUnauthorized).toHaveBeenCalledWith(mockResponse);
+		});
+
+		it("should call checkUnauthorized for hasAnyIntegrations", async () => {
+			const checkUnauthorized = vi.fn().mockReturnValue(false);
+			const mockResponse = { ok: true, json: async () => ({ exists: true }) };
+			global.fetch = vi.fn().mockResolvedValue(mockResponse);
+
+			const client = createIntegrationClient("", createMockAuth(checkUnauthorized));
+			await client.hasAnyIntegrations();
 
 			expect(checkUnauthorized).toHaveBeenCalledWith(mockResponse);
 		});

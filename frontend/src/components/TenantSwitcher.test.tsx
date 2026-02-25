@@ -12,18 +12,21 @@ const mockTenants: Array<TenantListItem> = [
 		slug: "acme",
 		displayName: "Acme Corp",
 		primaryDomain: null,
+		defaultOrgId: "org-1",
 	},
 	{
 		id: "tenant-2",
 		slug: "beta",
 		displayName: "Beta Inc",
 		primaryDomain: "beta.example.com",
+		defaultOrgId: "org-2",
 	},
 	{
 		id: "tenant-3",
 		slug: "gamma",
 		displayName: "Gamma Ltd",
 		primaryDomain: null,
+		defaultOrgId: "org-3",
 	},
 ];
 
@@ -38,8 +41,15 @@ const mockTenantClient = {
 	listTenants: vi.fn().mockResolvedValue(mockTenantListResponse),
 };
 
+const mockSelectTenant = vi.fn().mockResolvedValue({ success: true, url: "http://localhost:8034/dashboard" });
+
+const mockAuthClient = {
+	selectTenant: mockSelectTenant,
+};
+
 const mockClient = {
 	tenants: vi.fn(() => mockTenantClient),
+	auth: vi.fn(() => mockAuthClient),
 };
 
 vi.mock("jolli-common", async () => {
@@ -50,6 +60,12 @@ vi.mock("jolli-common", async () => {
 	};
 });
 
+// Mock LastAccessedTenantStorage
+const mockSaveLastAccessedTenant = vi.fn();
+vi.mock("../util/AuthCookieUtil", () => ({
+	saveLastAccessedTenant: (...args: Array<unknown>) => mockSaveLastAccessedTenant(...args),
+}));
+
 // Mock window.location and window.open
 const _mockAssign = vi.fn();
 const mockOpen = vi.fn();
@@ -58,6 +74,7 @@ const originalLocation = window.location;
 beforeEach(() => {
 	vi.clearAllMocks();
 	mockTenantClient.listTenants.mockResolvedValue(mockTenantListResponse);
+	mockSelectTenant.mockResolvedValue({ success: true, url: "http://localhost:8034/dashboard" });
 
 	// Mock window.location
 	Object.defineProperty(window, "location", {
@@ -123,7 +140,8 @@ describe("TenantSwitcher", () => {
 		});
 	});
 
-	it("should navigate when clicking on a different tenant", async () => {
+	it("should call selectTenant and navigate when clicking on a different tenant", async () => {
+		mockSelectTenant.mockResolvedValue({ success: true, url: "http://beta.example.com/dashboard" });
 		renderWithProviders(<TenantSwitcher />);
 
 		await waitFor(() => {
@@ -138,11 +156,19 @@ describe("TenantSwitcher", () => {
 
 		fireEvent.click(screen.getByText("Beta Inc"));
 
-		// Should navigate to tenant with primary domain
-		expect(window.location.href).toBe("http://beta.example.com");
+		// Should call selectTenant with correct params
+		await waitFor(() => {
+			expect(mockSelectTenant).toHaveBeenCalledWith("tenant-2", "org-2");
+		});
+
+		// Should navigate to returned URL
+		await waitFor(() => {
+			expect(window.location.href).toBe("http://beta.example.com/dashboard");
+		});
 	});
 
-	it("should navigate to subdomain URL when tenant has no primary domain", async () => {
+	it("should call selectTenant with correct tenant and org", async () => {
+		mockSelectTenant.mockResolvedValue({ success: true, url: "http://gamma.jolli.app/dashboard" });
 		renderWithProviders(<TenantSwitcher />);
 
 		await waitFor(() => {
@@ -157,8 +183,15 @@ describe("TenantSwitcher", () => {
 
 		fireEvent.click(screen.getByText("Gamma Ltd"));
 
-		// Should navigate to subdomain URL
-		expect(window.location.href).toBe("http://gamma.jolli.app");
+		// Should call selectTenant with correct params
+		await waitFor(() => {
+			expect(mockSelectTenant).toHaveBeenCalledWith("tenant-3", "org-3");
+		});
+
+		// Should navigate to returned URL
+		await waitFor(() => {
+			expect(window.location.href).toBe("http://gamma.jolli.app/dashboard");
+		});
 	});
 
 	it("should not navigate when clicking on the current tenant", async () => {
@@ -180,6 +213,9 @@ describe("TenantSwitcher", () => {
 		const acmeItems = screen.getAllByText("Acme Corp");
 		// Click the one in the dropdown (not the trigger)
 		fireEvent.click(acmeItems[acmeItems.length > 1 ? 1 : 0]);
+
+		// Should NOT call selectTenant for current tenant
+		expect(mockSelectTenant).not.toHaveBeenCalled();
 
 		// Should not navigate for current tenant
 		expect(window.location.href).toBe(initialHref);
@@ -332,6 +368,8 @@ describe("TenantSwitcher", () => {
 	});
 
 	it("should use HTTPS for non-localhost domains", async () => {
+		mockSelectTenant.mockResolvedValue({ success: true, url: "https://beta.example.com" });
+
 		// Change hostname to simulate production
 		Object.defineProperty(window, "location", {
 			value: {
@@ -358,8 +396,15 @@ describe("TenantSwitcher", () => {
 
 		fireEvent.click(screen.getByText("Beta Inc"));
 
+		// Should call selectTenant with correct params
+		await waitFor(() => {
+			expect(mockSelectTenant).toHaveBeenCalledWith("tenant-2", "org-2");
+		});
+
 		// Should navigate with HTTPS
-		expect(window.location.href).toBe("https://beta.example.com");
+		await waitFor(() => {
+			expect(window.location.href).toBe("https://beta.example.com");
+		});
 	});
 
 	it("should show fallback text when current tenant is not found", async () => {
@@ -406,5 +451,191 @@ describe("TenantSwitcher", () => {
 
 		// Should fallback to origin since no baseDomain
 		expect(window.location.href).toBe("http://localhost:3000");
+	});
+
+	it("should add timestamp when result URL is same as current URL", async () => {
+		// Mock selectTenant to return same URL as current
+		mockSelectTenant.mockResolvedValue({
+			success: true,
+			url: "http://localhost:3000/dashboard",
+		});
+
+		// Set current location to match the result URL base
+		Object.defineProperty(window, "location", {
+			value: {
+				...originalLocation,
+				href: "http://localhost:3000/dashboard",
+				hostname: "localhost",
+				protocol: "http:",
+				origin: "http://localhost:3000",
+			},
+			writable: true,
+		});
+
+		renderWithProviders(<TenantSwitcher />);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("tenant-switcher-trigger")).toBeDefined();
+		});
+
+		fireEvent.click(screen.getByTestId("tenant-switcher-trigger"));
+
+		await waitFor(() => {
+			expect(screen.getByText("Beta Inc")).toBeDefined();
+		});
+
+		fireEvent.click(screen.getByText("Beta Inc"));
+
+		// Should add timestamp since URLs are same
+		await waitFor(() => {
+			expect(window.location.href).toContain("http://localhost:3000/dashboard?_t=");
+		});
+	});
+
+	it("should append timestamp with & when result URL already has query params and matches current", async () => {
+		// Mock selectTenant to return URL with existing query params
+		mockSelectTenant.mockResolvedValue({
+			success: true,
+			url: "http://localhost:3000/dashboard?existing=param",
+		});
+
+		// Set current location to match the result URL base
+		Object.defineProperty(window, "location", {
+			value: {
+				...originalLocation,
+				href: "http://localhost:3000/dashboard",
+				hostname: "localhost",
+				protocol: "http:",
+				origin: "http://localhost:3000",
+			},
+			writable: true,
+		});
+
+		renderWithProviders(<TenantSwitcher />);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("tenant-switcher-trigger")).toBeDefined();
+		});
+
+		fireEvent.click(screen.getByTestId("tenant-switcher-trigger"));
+
+		await waitFor(() => {
+			expect(screen.getByText("Beta Inc")).toBeDefined();
+		});
+
+		fireEvent.click(screen.getByText("Beta Inc"));
+
+		// Should add timestamp with & since URL already has query params
+		await waitFor(() => {
+			expect(window.location.href).toContain("http://localhost:3000/dashboard?existing=param&_t=");
+		});
+	});
+
+	it("should handle selectTenant error gracefully", async () => {
+		mockSelectTenant.mockRejectedValue(new Error("Network error"));
+
+		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {
+			// Intentionally suppress console.error for this test
+		});
+
+		renderWithProviders(<TenantSwitcher />);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("tenant-switcher-trigger")).toBeDefined();
+		});
+
+		fireEvent.click(screen.getByTestId("tenant-switcher-trigger"));
+
+		await waitFor(() => {
+			expect(screen.getByText("Beta Inc")).toBeDefined();
+		});
+
+		fireEvent.click(screen.getByText("Beta Inc"));
+
+		// Should log the error
+		await waitFor(() => {
+			expect(consoleErrorSpy).toHaveBeenCalledWith("Failed to switch tenant:", expect.any(Error));
+		});
+
+		consoleErrorSpy.mockRestore();
+	});
+
+	it("should use subdomain URL when no primaryDomain but baseDomain exists for open in new tab", async () => {
+		renderWithProviders(<TenantSwitcher />);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("tenant-switcher-trigger")).toBeDefined();
+		});
+
+		fireEvent.click(screen.getByTestId("tenant-switcher-trigger"));
+
+		await waitFor(() => {
+			expect(screen.getByTestId("tenant-open-new-tab-gamma")).toBeDefined();
+		});
+
+		// Click the external link for Gamma (has no primaryDomain, uses baseDomain)
+		fireEvent.click(screen.getByTestId("tenant-open-new-tab-gamma"));
+
+		// Should construct URL using subdomain
+		expect(mockOpen).toHaveBeenCalledWith("http://gamma.jolli.app", "_blank");
+	});
+
+	it("should use origin as fallback when opening tenant in new tab with no primaryDomain and no baseDomain", async () => {
+		mockTenantClient.listTenants.mockResolvedValue({
+			useTenantSwitcher: true,
+			currentTenantId: "tenant-1",
+			baseDomain: null, // No base domain
+			tenants: mockTenants,
+		});
+
+		renderWithProviders(<TenantSwitcher />);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("tenant-switcher-trigger")).toBeDefined();
+		});
+
+		fireEvent.click(screen.getByTestId("tenant-switcher-trigger"));
+
+		await waitFor(() => {
+			expect(screen.getByTestId("tenant-open-new-tab-gamma")).toBeDefined();
+		});
+
+		// Click the external link for Gamma (has no primaryDomain, and baseDomain is null)
+		fireEvent.click(screen.getByTestId("tenant-open-new-tab-gamma"));
+
+		// Should fallback to origin since no baseDomain and no primaryDomain
+		expect(mockOpen).toHaveBeenCalledWith("http://localhost:3000", "_blank");
+	});
+
+	it("should use HTTPS when opening tenant in new tab from non-localhost", async () => {
+		// Simulate production environment
+		Object.defineProperty(window, "location", {
+			value: {
+				...originalLocation,
+				href: "https://acme.jolli.app",
+				hostname: "acme.jolli.app",
+				protocol: "https:",
+				origin: "https://acme.jolli.app",
+			},
+			writable: true,
+		});
+
+		renderWithProviders(<TenantSwitcher />);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("tenant-switcher-trigger")).toBeDefined();
+		});
+
+		fireEvent.click(screen.getByTestId("tenant-switcher-trigger"));
+
+		await waitFor(() => {
+			expect(screen.getByTestId("tenant-open-new-tab-beta")).toBeDefined();
+		});
+
+		// Click the external link for Beta (has primaryDomain)
+		fireEvent.click(screen.getByTestId("tenant-open-new-tab-beta"));
+
+		// Should use HTTPS since not on localhost
+		expect(mockOpen).toHaveBeenCalledWith("https://beta.example.com", "_blank");
 	});
 });

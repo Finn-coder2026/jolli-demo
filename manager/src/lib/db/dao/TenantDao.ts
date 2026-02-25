@@ -1,10 +1,17 @@
 import type { DatabaseProvider, NewTenant, Tenant, TenantStatus, TenantSummary } from "../../types";
 import type { TenantRow } from "../models";
 import { defineDatabaseProviders, defineTenants, toProvider, toTenant, toTenantSummary } from "../models";
-import type { Sequelize } from "sequelize";
+import { QueryTypes, type Sequelize } from "sequelize";
+
+/** Search parameters for tenant search */
+export interface TenantSearchParams {
+	slug?: string;
+	ownerEmail?: string;
+}
 
 export interface TenantDao {
 	listTenants(): Promise<Array<TenantSummary>>;
+	searchTenants(params: TenantSearchParams): Promise<Array<TenantSummary>>;
 	getTenant(id: string): Promise<Tenant | undefined>;
 	getTenantBySlug(slug: string): Promise<Tenant | undefined>;
 	getTenantsByProviderId(providerId: string): Promise<Array<TenantSummary>>;
@@ -67,6 +74,61 @@ export function createTenantDao(sequelize: Sequelize): TenantDao {
 		const tenants = rows.map(row => toTenantSummary(row.dataValues));
 		await attachProviders(tenants);
 		return tenants;
+	}
+
+	/**
+	 * Search tenants by slug or default org owner email.
+	 * Returns max 100 results.
+	 */
+	async function searchTenants(params: TenantSearchParams): Promise<Array<TenantSummary>> {
+		const conditions: Array<string> = [];
+		const replacements: Record<string, string> = {};
+
+		if (params.slug) {
+			conditions.push("t.slug ILIKE :slug");
+			replacements.slug = `%${params.slug}%`;
+		}
+
+		if (params.ownerEmail) {
+			conditions.push(`EXISTS (
+				SELECT 1 FROM orgs o
+				INNER JOIN user_orgs uo ON o.id = uo.org_id AND o.tenant_id = uo.tenant_id
+				INNER JOIN global_users gu ON uo.user_id = gu.id
+				WHERE o.tenant_id = t.id
+				AND o.is_default = true
+				AND uo.role = 'owner'
+				AND gu.email ILIKE :ownerEmail
+			)`);
+			replacements.ownerEmail = `%${params.ownerEmail}%`;
+		}
+
+		if (conditions.length === 0) {
+			return listTenants();
+		}
+
+		const query = `
+			SELECT
+				t.id,
+				t.slug,
+				t.display_name as "displayName",
+				t.status,
+				t.deployment_type as "deploymentType",
+				t.database_provider_id as "databaseProviderId",
+				t.created_at as "createdAt",
+				t.provisioned_at as "provisionedAt"
+			FROM tenants t
+			WHERE ${conditions.join(" OR ")}
+			ORDER BY t.created_at DESC
+			LIMIT 100
+		`;
+
+		const rows = await sequelize.query<TenantSummary>(query, {
+			replacements,
+			type: QueryTypes.SELECT,
+		});
+
+		await attachProviders(rows);
+		return rows;
 	}
 
 	async function getTenant(id: string): Promise<Tenant | undefined> {
@@ -182,6 +244,7 @@ export function createTenantDao(sequelize: Sequelize): TenantDao {
 
 	return {
 		listTenants,
+		searchTenants,
 		getTenant,
 		getTenantBySlug,
 		getTenantsByProviderId,

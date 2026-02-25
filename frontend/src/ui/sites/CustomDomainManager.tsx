@@ -5,7 +5,7 @@ import { getLog } from "../../util/Logger";
 import { copyToClipboard } from "../../util/UrlUtil";
 import type { CustomDomainInfo, SiteWithUpdate } from "jolli-common";
 import { CheckCircle, Clock, Copy, Plus, RefreshCw, Trash2, XCircle } from "lucide-react";
-import { type ReactElement, useEffect, useRef, useState } from "react";
+import { type ReactElement, type ReactNode, useEffect, useRef, useState } from "react";
 import { useIntlayer } from "react-intlayer";
 
 const log = getLog(import.meta);
@@ -134,7 +134,7 @@ export function CustomDomainManager({ site, onUpdate }: CustomDomainManagerProps
 			// Refresh site data
 			const updatedSite = await client.sites().getSite(site.id);
 			if (updatedSite) {
-				onUpdate(updatedSite);
+				onUpdateRef.current(updatedSite);
 			}
 			setIsAddingDomain(false);
 			setNewDomain("");
@@ -166,7 +166,7 @@ export function CustomDomainManager({ site, onUpdate }: CustomDomainManagerProps
 			await client.sites().removeCustomDomain(site.id, domain);
 			const updatedSite = await client.sites().getSite(site.id);
 			if (updatedSite) {
-				onUpdate(updatedSite);
+				onUpdateRef.current(updatedSite);
 			}
 		} catch (err) {
 			log.error(err, "Failed to remove custom domain");
@@ -182,7 +182,7 @@ export function CustomDomainManager({ site, onUpdate }: CustomDomainManagerProps
 			await client.sites().verifyCustomDomain(site.id, domain);
 			const updatedSite = await client.sites().getSite(site.id);
 			if (updatedSite) {
-				onUpdate(updatedSite);
+				onUpdateRef.current(updatedSite);
 			}
 		} catch (err) {
 			log.error(err, "Failed to verify custom domain");
@@ -198,7 +198,7 @@ export function CustomDomainManager({ site, onUpdate }: CustomDomainManagerProps
 			await client.sites().refreshDomainStatuses(site.id);
 			const updatedSite = await client.sites().getSite(site.id);
 			if (updatedSite) {
-				onUpdate(updatedSite);
+				onUpdateRef.current(updatedSite);
 			}
 		} catch (err) {
 			log.error(err, "Failed to refresh domain statuses");
@@ -256,8 +256,7 @@ export function CustomDomainManager({ site, onUpdate }: CustomDomainManagerProps
 		}
 	}
 
-	// biome-ignore lint/suspicious/noExplicitAny: Intlayer returns Proxy objects with unknown structure
-	function getStatusLabel(status: string): any {
+	function getStatusLabel(status: string): ReactNode {
 		switch (status) {
 			case "verified":
 				return content.verifiedStatus;

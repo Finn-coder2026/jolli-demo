@@ -1,4 +1,5 @@
 import { defineSpaces } from "./Space";
+import { DEFAULT_SPACE_FILTERS } from "jolli-common";
 import { DataTypes, type Sequelize } from "sequelize";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -33,10 +34,9 @@ describe("Space", () => {
 		});
 
 		// Validate slug field
-		// allowNull: true to allow migration of existing data; NOT NULL added via postSync
 		expect(schema.slug).toEqual({
 			type: DataTypes.STRING(100),
-			allowNull: true,
+			allowNull: false,
 			unique: "spaces_slug_key",
 		});
 
@@ -57,11 +57,13 @@ describe("Space", () => {
 		expect(schema.ownerId).toEqual({
 			type: DataTypes.INTEGER,
 			allowNull: false,
-			references: {
-				model: "users",
-				key: "id",
-			},
-			onDelete: "CASCADE",
+		});
+
+		// Validate isPersonal field
+		expect(schema.isPersonal).toEqual({
+			type: DataTypes.BOOLEAN,
+			allowNull: false,
+			defaultValue: false,
 		});
 
 		// Validate defaultSort field (merged from defaultSortBy and defaultSortDirection)
@@ -75,7 +77,7 @@ describe("Space", () => {
 		expect(schema.defaultFilters).toEqual({
 			type: DataTypes.JSONB,
 			allowNull: false,
-			defaultValue: {},
+			defaultValue: { ...DEFAULT_SPACE_FILTERS },
 		});
 	});
 

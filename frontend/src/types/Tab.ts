@@ -4,5 +4,5 @@ export interface Tab<TabName extends string> {
 	name: TabName;
 	icon: LucideIcon;
 	label: string;
-	badge?: string;
+	badge?: number;
 }

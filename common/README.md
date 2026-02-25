@@ -1,3 +1,6 @@
+---
+jrn: MKKIR4V0X5AAL5AM
+---
 # Jolli Common
 
 Shared TypeScript types, API clients, and utilities used by both the backend and frontend.
@@ -37,9 +40,7 @@ The `core/` directory contains client classes for frontend-to-backend API commun
 | Client | Purpose |
 |--------|---------|
 | `AuthClient` | Authentication operations |
-| `ChatClient` | AI chat functionality |
 | `CollabConvoClient` | Collaborative conversation management |
-| `ConvoClient` | Conversation CRUD operations |
 | `DevToolsClient` | Developer tools API |
 | `DocClient` | Document operations |
 | `DocDraftClient` | Document draft management |

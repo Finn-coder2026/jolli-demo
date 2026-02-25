@@ -358,10 +358,11 @@ paths: {}`;
 	});
 
 	describe("buildFullNavigationMeta", () => {
-		it("should include hidden index entry", () => {
+		it("should not include hidden index entry", () => {
 			const pages = [{ path: "guide", title: "Getting Started", content: "" }];
 			const meta = buildFullNavigationMeta(pages);
 
+			// Hidden index prevents Nextra from auto-generating Index nav item
 			expect(meta.index).toEqual({ display: "hidden" });
 			expect(meta.guide).toBe("Getting Started");
 		});

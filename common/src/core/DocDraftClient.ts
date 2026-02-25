@@ -22,6 +22,20 @@ export interface ContentValidationResult {
 	errors: Array<OpenApiValidationError>;
 }
 
+/**
+ * Error thrown when saving a draft fails due to validation errors.
+ * This allows the UI to display validation errors inline rather than as a generic error.
+ */
+export class DraftValidationError extends Error {
+	readonly validationErrors: Array<OpenApiValidationError>;
+
+	constructor(message: string, validationErrors: Array<OpenApiValidationError>) {
+		super(message);
+		this.name = "DraftValidationError";
+		this.validationErrors = validationErrors;
+	}
+}
+
 const BASE_PATH = "/api/doc-drafts";
 
 export interface DocDraftClient {
@@ -200,6 +214,11 @@ export function createDocDraftClient(baseUrl: string, auth: ClientAuth): DocDraf
 		auth.checkUnauthorized?.(response);
 
 		if (!response.ok) {
+			// Check if this is a validation error with details
+			const body = await response.json().catch(() => null);
+			if (body?.validationErrors && Array.isArray(body.validationErrors)) {
+				throw new DraftValidationError(body.error || "Validation failed", body.validationErrors);
+			}
 			throw new Error(`Failed to save draft: ${response.statusText}`);
 		}
 

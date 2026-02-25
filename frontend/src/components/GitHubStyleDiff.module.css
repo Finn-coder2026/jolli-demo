@@ -1,0 +1,261 @@
+.diffContainer {
+	border: 1px solid hsl(210 18% 87%);
+	border-radius: 6px;
+	font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+	font-size: 12px;
+	line-height: 20px;
+	overflow: hidden;
+}
+
+:global(.dark) .diffContainer {
+	border-color: hsl(215 14% 25%);
+}
+
+.diffTable {
+	border-collapse: collapse;
+	border-spacing: 0;
+	table-layout: fixed;
+	width: 100%;
+}
+
+/* Reset ProseMirror table styles when diff is inside editor */
+/* Specificity: 2 classes + 1 element beats ProseMirror's 1 class + 2 elements */
+.diffContainer .diffTable {
+	margin: 0;
+}
+
+.diffContainer .diffTable td {
+	border: none;
+	box-sizing: content-box;
+	min-width: auto;
+	padding: 0;
+	position: static;
+}
+
+.diffRow {
+	border: none;
+}
+
+.lineNum {
+	background-color: hsl(210 20% 97%);
+	border-right: 1px solid hsl(210 18% 90%);
+	color: hsl(215 14% 55%);
+	min-width: 25px;
+	padding: 0 8px;
+	text-align: center;
+	user-select: none;
+	vertical-align: top;
+	width: 25px;
+}
+
+:global(.dark) .lineNum {
+	background-color: hsl(220 13% 14%);
+	border-right-color: hsl(215 14% 22%);
+	color: hsl(215 14% 45%);
+}
+
+.oldLineNum {
+	border-right: none;
+}
+
+.newLineNum {
+	border-right: 1px solid hsl(210 18% 90%);
+}
+
+:global(.dark) .newLineNum {
+	border-right-color: hsl(215 14% 22%);
+}
+
+.linePrefix {
+	background-color: inherit;
+	color: inherit;
+	padding: 0 4px 0 8px;
+	text-align: center;
+	user-select: none;
+	vertical-align: top;
+	width: 20px;
+}
+
+.lineContent {
+	overflow-x: auto;
+	padding: 0 16px 0 4px;
+	vertical-align: top;
+	white-space: pre;
+	width: 100%;
+}
+
+.lineText {
+	display: inline;
+}
+
+.unchangedRow {
+	background-color: hsl(0 0% 100%);
+}
+
+:global(.dark) .unchangedRow {
+	background-color: hsl(220 13% 10%);
+}
+
+.addedRow {
+	background-color: hsl(137 55% 92%);
+}
+
+.addedRow .lineNum {
+	background-color: hsl(137 45% 88%);
+	color: hsl(137 40% 35%);
+}
+
+.addedRow .linePrefix {
+	color: hsl(137 60% 30%);
+}
+
+.removedRow {
+	background-color: hsl(0 70% 96%);
+}
+
+.removedRow .lineNum {
+	background-color: hsl(0 55% 92%);
+	color: hsl(0 55% 45%);
+}
+
+.removedRow .linePrefix {
+	color: hsl(0 70% 40%);
+}
+
+:global(.dark) .addedRow {
+	background-color: hsl(137 35% 14%);
+}
+
+:global(.dark) .addedRow .lineNum {
+	background-color: hsl(137 30% 18%);
+	color: hsl(137 40% 55%);
+}
+
+:global(.dark) .addedRow .linePrefix {
+	color: hsl(137 50% 55%);
+}
+
+:global(.dark) .removedRow {
+	background-color: hsl(0 45% 16%);
+}
+
+:global(.dark) .removedRow .lineNum {
+	background-color: hsl(0 40% 20%);
+	color: hsl(0 50% 60%);
+}
+
+:global(.dark) .removedRow .linePrefix {
+	color: hsl(0 60% 60%);
+}
+
+.sideBySideContainer {
+	overflow-x: auto;
+}
+
+.sideBySideTable {
+	min-width: 600px;
+}
+
+.sideBySideContent {
+	overflow-x: auto;
+	padding: 0 8px 0 4px;
+	vertical-align: top;
+	white-space: pre;
+	width: 50%;
+}
+
+.sideBySideDivider {
+	border-left: 2px solid hsl(210 18% 87%);
+}
+
+:global(.dark) .sideBySideDivider {
+	border-left-color: hsl(215 14% 25%);
+}
+
+.removedCell {
+	background-color: hsl(0 70% 96%);
+}
+
+.removedCell.lineNum {
+	background-color: hsl(0 55% 92%);
+	color: hsl(0 55% 45%);
+}
+
+.removedCell.linePrefix {
+	color: hsl(0 70% 40%);
+}
+
+.addedCell {
+	background-color: hsl(137 55% 92%);
+}
+
+.addedCell.lineNum {
+	background-color: hsl(137 45% 88%);
+	color: hsl(137 40% 35%);
+}
+
+.addedCell.linePrefix {
+	color: hsl(137 60% 30%);
+}
+
+.unchangedCell {
+	background-color: hsl(0 0% 100%);
+}
+
+.unchangedCell.lineNum {
+	background-color: hsl(210 20% 97%);
+	color: hsl(215 14% 55%);
+}
+
+.emptyCell {
+	background-color: hsl(210 20% 97%);
+}
+
+:global(.dark) .removedCell {
+	background-color: hsl(0 45% 16%);
+}
+
+:global(.dark) .removedCell.lineNum {
+	background-color: hsl(0 40% 20%);
+	color: hsl(0 50% 60%);
+}
+
+:global(.dark) .removedCell.linePrefix {
+	color: hsl(0 60% 60%);
+}
+
+:global(.dark) .addedCell {
+	background-color: hsl(137 35% 14%);
+}
+
+:global(.dark) .addedCell.lineNum {
+	background-color: hsl(137 30% 18%);
+	color: hsl(137 40% 55%);
+}
+
+:global(.dark) .addedCell.linePrefix {
+	color: hsl(137 50% 55%);
+}
+
+:global(.dark) .unchangedCell {
+	background-color: hsl(220 13% 10%);
+}
+
+:global(.dark) .unchangedCell.lineNum {
+	background-color: hsl(220 13% 14%);
+	color: hsl(215 14% 45%);
+}
+
+:global(.dark) .emptyCell {
+	background-color: hsl(220 13% 14%);
+}
+
+.noChanges {
+	color: var(--color-muted-foreground);
+	font-family: inherit;
+	font-size: 0.875em;
+	font-style: italic;
+	margin: 0;
+	padding: 1rem;
+	text-align: center;
+}

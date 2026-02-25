@@ -1,8 +1,11 @@
 import type { Database } from "../core/Database";
+import type { GitHubInstallationDao } from "../dao/GitHubInstallationDao";
+import type { IntegrationDao } from "../dao/IntegrationDao";
 import type { JobDao } from "../dao/JobDao";
 import * as TenantContextModule from "../tenant/TenantContext";
+import type { TenantRegistryClient } from "../tenant/TenantRegistryClient";
 import type { JobDefinition } from "../types/JobTypes";
-import { createMultiTenantJobSchedulerManager } from "./MultiTenantJobSchedulerManager";
+import { createMultiTenantJobSchedulerManager, repairInstallationMappings } from "./MultiTenantJobSchedulerManager";
 import type { Org, Tenant } from "jolli-common";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -25,6 +28,12 @@ vi.mock("./JobScheduler", () => ({
 // Mock TenantContext
 vi.mock("../tenant/TenantContext", () => ({
 	getTenantContext: vi.fn(() => null),
+	createTenantOrgContext: vi.fn((tenant, org, database) => ({
+		tenant,
+		org,
+		schemaName: org.schemaName,
+		database,
+	})),
 }));
 
 describe("MultiTenantJobSchedulerManager", () => {
@@ -1150,6 +1159,169 @@ describe("MultiTenantJobSchedulerManager", () => {
 
 			// Should not throw
 			expect(manager.getSingleTenantScheduler()).toBeDefined();
+		});
+	});
+
+	describe("repairInstallationMappings", () => {
+		const now = new Date();
+		const mockTenant: Tenant = {
+			id: "tenant-1",
+			slug: "test-tenant",
+			displayName: "Test Tenant",
+			status: "active",
+			deploymentType: "shared",
+			databaseProviderId: "default",
+			configs: {},
+			configsUpdatedAt: null,
+			featureFlags: {},
+			primaryDomain: null,
+			createdAt: now,
+			updatedAt: now,
+			provisionedAt: now,
+		};
+
+		const mockOrg: Org = {
+			id: "org-1",
+			tenantId: "tenant-1",
+			slug: "test-org",
+			displayName: "Test Org",
+			schemaName: "public",
+			isDefault: true,
+			status: "active",
+			createdAt: now,
+			updatedAt: now,
+		};
+
+		function createMockDatabase(installations: Array<Record<string, unknown>> = []): Database {
+			return {
+				githubInstallationDao: {
+					listInstallations: vi.fn().mockResolvedValue(installations),
+					deleteInstallation: vi.fn().mockResolvedValue(undefined),
+				} as unknown as GitHubInstallationDao,
+				integrationDao: {
+					listIntegrations: vi.fn().mockResolvedValue([]),
+					deleteIntegration: vi.fn().mockResolvedValue(undefined),
+				} as unknown as IntegrationDao,
+			} as unknown as Database;
+		}
+
+		it("should create mapping for installations missing from registry", async () => {
+			const installations = [{ id: 1, installationId: 100, name: "my-org", containerType: "org" }];
+			const db = createMockDatabase(installations);
+			const registryClient = {
+				ensureInstallationMapping: vi.fn().mockResolvedValue(true),
+				getTenantOrgByInstallationId: vi.fn(),
+			} as unknown as TenantRegistryClient;
+
+			await repairInstallationMappings(db, registryClient, mockTenant, mockOrg);
+
+			expect(registryClient.ensureInstallationMapping).toHaveBeenCalledWith({
+				installationId: 100,
+				tenantId: "tenant-1",
+				orgId: "org-1",
+				githubAccountLogin: "my-org",
+				githubAccountType: "Organization",
+			});
+		});
+
+		it("should map user installations with User account type", async () => {
+			const installations = [{ id: 2, installationId: 200, name: "my-user", containerType: "user" }];
+			const db = createMockDatabase(installations);
+			const registryClient = {
+				ensureInstallationMapping: vi.fn().mockResolvedValue(true),
+				getTenantOrgByInstallationId: vi.fn(),
+			} as unknown as TenantRegistryClient;
+
+			await repairInstallationMappings(db, registryClient, mockTenant, mockOrg);
+
+			expect(registryClient.ensureInstallationMapping).toHaveBeenCalledWith(
+				expect.objectContaining({ githubAccountType: "User" }),
+			);
+		});
+
+		it("should skip installations without installationId", async () => {
+			const installations = [{ id: 3, installationId: 0, name: "no-id", containerType: "org" }];
+			const db = createMockDatabase(installations);
+			const registryClient = {
+				ensureInstallationMapping: vi.fn(),
+				getTenantOrgByInstallationId: vi.fn(),
+			} as unknown as TenantRegistryClient;
+
+			await repairInstallationMappings(db, registryClient, mockTenant, mockOrg);
+
+			expect(registryClient.ensureInstallationMapping).not.toHaveBeenCalled();
+		});
+
+		it("should do nothing when installation is already mapped to current tenant", async () => {
+			const installations = [{ id: 1, installationId: 100, name: "my-org", containerType: "org" }];
+			const db = createMockDatabase(installations);
+			const registryClient = {
+				ensureInstallationMapping: vi.fn().mockResolvedValue(false),
+				getTenantOrgByInstallationId: vi.fn().mockResolvedValue({
+					tenant: mockTenant,
+					org: mockOrg,
+				}),
+			} as unknown as TenantRegistryClient;
+
+			await repairInstallationMappings(db, registryClient, mockTenant, mockOrg);
+
+			// Should NOT delete the installation since it's ours
+			expect(db.githubInstallationDao.deleteInstallation).not.toHaveBeenCalled();
+		});
+
+		it("should remove orphaned installation when owned by another tenant", async () => {
+			const installations = [{ id: 1, installationId: 100, name: "shared-org", containerType: "org" }];
+			const otherTenant: Tenant = { ...mockTenant, id: "tenant-other", slug: "other-tenant" };
+			const db = createMockDatabase(installations);
+			(db.integrationDao.listIntegrations as ReturnType<typeof vi.fn>).mockResolvedValue([
+				{
+					id: 10,
+					type: "github",
+					metadata: { installationId: 100, repo: "shared-org/repo1" },
+				},
+				{
+					id: 11,
+					type: "github",
+					metadata: { repo: "shared-org/repo2" },
+				},
+				{
+					id: 12,
+					type: "github",
+					metadata: { repo: "other-org/repo3" },
+				},
+			]);
+
+			const registryClient = {
+				ensureInstallationMapping: vi.fn().mockResolvedValue(false),
+				getTenantOrgByInstallationId: vi.fn().mockResolvedValue({
+					tenant: otherTenant,
+					org: mockOrg,
+				}),
+			} as unknown as TenantRegistryClient;
+
+			await repairInstallationMappings(db, registryClient, mockTenant, mockOrg);
+
+			// Should delete the installation
+			expect(db.githubInstallationDao.deleteInstallation).toHaveBeenCalledWith(1);
+			// Should delete matching integrations (installationId match + owner prefix match)
+			expect(db.integrationDao.deleteIntegration).toHaveBeenCalledWith(10);
+			expect(db.integrationDao.deleteIntegration).toHaveBeenCalledWith(11);
+			// Should NOT delete integration for a different owner
+			expect(db.integrationDao.deleteIntegration).not.toHaveBeenCalledWith(12);
+		});
+
+		it("should not throw when repair fails", async () => {
+			const db = createMockDatabase();
+			(db.githubInstallationDao.listInstallations as ReturnType<typeof vi.fn>).mockRejectedValue(
+				new Error("DB error"),
+			);
+			const registryClient = {
+				ensureInstallationMapping: vi.fn(),
+				getTenantOrgByInstallationId: vi.fn(),
+			} as unknown as TenantRegistryClient;
+
+			// Should not throw — error is caught and logged
+			await expect(repairInstallationMappings(db, registryClient, mockTenant, mockOrg)).resolves.toBeUndefined();
 		});
 	});
 });

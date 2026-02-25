@@ -30,7 +30,11 @@ vi.mock("./Select", () => {
 			</button>
 		),
 		SelectValue: ({ placeholder }: { placeholder?: string }) => <div data-testid="select-value">{placeholder}</div>,
-		SelectContent: ({ children }: { children: ReactNode }) => <div data-testid="select-content">{children}</div>,
+		SelectContent: ({ children, className }: { children: ReactNode; className?: string }) => (
+			<div data-testid="select-content" className={className}>
+				{children}
+			</div>
+		),
 		SelectItem: ({ children, value }: { children: ReactNode; value: string }) => (
 			<div data-testid="select-item" data-value={value}>
 				{children}
@@ -116,6 +120,21 @@ describe("SelectBox", () => {
 		expect(screen.getByText("Option 1")).toBeDefined();
 		expect(screen.getByText("Option 2")).toBeDefined();
 		expect(screen.getByText("Option 3")).toBeDefined();
+	});
+
+	it("should pass contentClassName to SelectContent", () => {
+		const mockOnValueChange = vi.fn();
+		render(
+			<SelectBox
+				value="option1"
+				onValueChange={mockOnValueChange}
+				options={mockOptions}
+				contentClassName="max-h-60"
+			/>,
+		);
+
+		const selectContent = screen.getByTestId("select-content");
+		expect(selectContent.className).toContain("max-h-60");
 	});
 
 	it("should handle empty options array", () => {

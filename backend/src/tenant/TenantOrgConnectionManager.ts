@@ -30,10 +30,11 @@
 
 import type { CreateDatabaseOptions, Database } from "../core/Database";
 import { getLog } from "../util/Logger";
+import { withTimeout } from "../util/Timeout";
 import type { TenantDatabaseConfig } from "./TenantDatabaseConfig";
 import type { TenantRegistryClient } from "./TenantRegistryClient";
 import { createTenantDatabase, createTenantSequelize } from "./TenantSequelizeFactory";
-import type { Org, Tenant } from "jolli-common";
+import type { OrgSummary, Tenant } from "jolli-common";
 import type { Sequelize } from "sequelize";
 
 const log = getLog(import.meta);
@@ -48,6 +49,10 @@ interface ConnectionCacheEntry {
 	database: Database;
 	/** Schema name for this org */
 	schemaName: string;
+	/** Tenant slug for display in health checks */
+	tenantSlug: string;
+	/** Org slug for display in health checks */
+	orgSlug: string;
 	/** Timestamp when this entry was last used */
 	lastUsed: number;
 	/** Whether this entry is currently being initialized */
@@ -84,6 +89,44 @@ export interface GetConnectionOptions {
 }
 
 /**
+ * Result of a single connection health check.
+ */
+export interface ConnectionHealthResult {
+	/** Cache key (tenantId:orgId) */
+	key: string;
+	/** Tenant slug for display */
+	tenantSlug?: string;
+	/** Org slug for display */
+	orgSlug?: string;
+	/** Schema name */
+	schemaName: string;
+	/** Health status */
+	status: "healthy" | "unhealthy";
+	/** Latency in milliseconds */
+	latencyMs: number;
+	/** Error message if unhealthy */
+	error?: string;
+}
+
+/**
+ * Result of checking all cached connections.
+ */
+export interface AllConnectionsHealthResult {
+	/** Overall status - unhealthy if any connection is unhealthy */
+	status: "healthy" | "unhealthy";
+	/** Total latency for all checks */
+	latencyMs: number;
+	/** Number of connections checked */
+	total: number;
+	/** Number of healthy connections */
+	healthy: number;
+	/** Number of unhealthy connections */
+	unhealthy: number;
+	/** Individual connection results */
+	connections: Array<ConnectionHealthResult>;
+}
+
+/**
  * Manager for tenant-org database connections with LRU caching.
  * Each cache entry is keyed by `${tenantId}:${orgId}` and contains
  * a Sequelize instance with the search_path set to the org's schema.
@@ -96,7 +139,7 @@ export interface TenantOrgConnectionManager {
 	 * @param org - The org
 	 * @param options - Options including forceSync for bootstrap operations
 	 */
-	getConnection(tenant: Tenant, org: Org, options?: GetConnectionOptions): Promise<Database>;
+	getConnection(tenant: Tenant, org: OrgSummary, options?: GetConnectionOptions): Promise<Database>;
 
 	/**
 	 * Remove a specific connection from the cache and close it.
@@ -117,6 +160,13 @@ export interface TenantOrgConnectionManager {
 	 * Run TTL eviction - removes entries older than ttlMs.
 	 */
 	evictExpired(): Promise<void>;
+
+	/**
+	 * Check health of all cached connections.
+	 * Uses sequelize.authenticate() on each cached connection.
+	 * @param timeoutMs - Timeout per connection check (default: 5000ms)
+	 */
+	checkAllConnectionsHealth(timeoutMs?: number): Promise<AllConnectionsHealthResult>;
 }
 
 /**
@@ -188,15 +238,45 @@ export function createTenantOrgConnectionManager(
 				log.info("LRU eviction for connection: %s", oldestKey);
 				// Close asynchronously - don't wait
 				entry.sequelize.close().catch(err => {
-					log.warn("Error closing evicted connection %s: %s", oldestKey, err);
+					log.warn({ err, key: oldestKey }, "Error closing evicted connection");
 				});
 			}
 		}
 	}
 
-	async function getConnection(tenant: Tenant, org: Org, options?: GetConnectionOptions): Promise<Database> {
+	async function getConnection(tenant: Tenant, org: OrgSummary, options?: GetConnectionOptions): Promise<Database> {
 		const key = getCacheKey(tenant.id, org.id);
 		const now = Date.now();
+
+		// If forceSync is requested, evict any existing cached connection
+		// This ensures bootstrap operations always run schema sync
+		if (options?.forceSync) {
+			const existingForEviction = cache.get(key);
+			if (existingForEviction) {
+				log.info("forceSync requested, evicting cached connection: %s", key);
+				cache.delete(key);
+				if (existingForEviction.initializing) {
+					// Wait for in-flight initialization to complete before proceeding
+					// The in-flight init will call cache.set when it completes, so we must
+					// delete again after waiting and close the connection it created
+					try {
+						const initialized = await existingForEviction.initializing;
+						// Delete again since the init just set the cache
+						cache.delete(key);
+						initialized.sequelize.close().catch(err => {
+							log.warn({ err, key }, "Error closing evicted initializing connection");
+						});
+					} catch {
+						// Initialization failed, nothing to close
+					}
+				} else {
+					// Close the existing connection asynchronously
+					existingForEviction.sequelize.close().catch(err => {
+						log.warn({ err, key }, "Error closing evicted connection");
+					});
+				}
+			}
+		}
 
 		// Check if entry exists in cache
 		const existing = cache.get(key);
@@ -242,6 +322,8 @@ export function createTenantOrgConnectionManager(
 				sequelize,
 				database,
 				schemaName: org.schemaName,
+				tenantSlug: tenant.slug,
+				orgSlug: org.slug,
 				lastUsed: Date.now(),
 			};
 
@@ -258,6 +340,8 @@ export function createTenantOrgConnectionManager(
 			sequelize: null as unknown as Sequelize,
 			database: null as unknown as Database,
 			schemaName: org.schemaName,
+			tenantSlug: tenant.slug,
+			orgSlug: org.slug,
 			lastUsed: now,
 			initializing: initPromise,
 		});
@@ -311,7 +395,7 @@ export function createTenantOrgConnectionManager(
 					}
 					log.debug("Closed connection: %s", key);
 				} catch (err) {
-					log.warn("Error closing connection %s: %s", key, err);
+					log.warn({ err, key }, "Error closing connection");
 				}
 			})();
 			closePromises.push(closePromise);
@@ -349,11 +433,81 @@ export function createTenantOrgConnectionManager(
 						await entry.sequelize.close();
 						log.debug("Closed expired connection: %s", key);
 					} catch (err) {
-						log.warn("Error closing expired connection %s: %s", key, err);
+						log.warn({ err, key }, "Error closing expired connection");
 					}
 				}
 			}
 		}
+	}
+
+	/**
+	 * Check health of all cached connections using sequelize.authenticate().
+	 */
+	async function checkAllConnectionsHealth(timeoutMs = 5000): Promise<AllConnectionsHealthResult> {
+		const start = Date.now();
+		const results: Array<ConnectionHealthResult> = [];
+
+		// Get all non-initializing entries
+		const entriesToCheck: Array<[string, ConnectionCacheEntry]> = [];
+		for (const [key, entry] of cache.entries()) {
+			if (!entry.initializing && entry.sequelize) {
+				entriesToCheck.push([key, entry]);
+			}
+		}
+
+		if (entriesToCheck.length === 0) {
+			return {
+				status: "healthy",
+				latencyMs: Date.now() - start,
+				total: 0,
+				healthy: 0,
+				unhealthy: 0,
+				connections: [],
+			};
+		}
+
+		// Check all connections in parallel
+		const checkPromises = entriesToCheck.map(async ([key, entry]) => {
+			const checkStart = Date.now();
+			try {
+				await withTimeout(entry.sequelize.authenticate(), timeoutMs, "Connection health check timeout");
+				return {
+					key,
+					tenantSlug: entry.tenantSlug,
+					orgSlug: entry.orgSlug,
+					schemaName: entry.schemaName,
+					status: "healthy" as const,
+					latencyMs: Date.now() - checkStart,
+				};
+			} catch (error) {
+				const errorMessage = error instanceof Error ? error.message : String(error);
+				log.warn({ err: error, key }, "Health check failed");
+				return {
+					key,
+					tenantSlug: entry.tenantSlug,
+					orgSlug: entry.orgSlug,
+					schemaName: entry.schemaName,
+					status: "unhealthy" as const,
+					latencyMs: Date.now() - checkStart,
+					error: errorMessage,
+				};
+			}
+		});
+
+		const connectionResults = await Promise.all(checkPromises);
+		results.push(...connectionResults);
+
+		const healthyCount = results.filter(r => r.status === "healthy").length;
+		const unhealthyCount = results.filter(r => r.status === "unhealthy").length;
+
+		return {
+			status: unhealthyCount > 0 ? "unhealthy" : "healthy",
+			latencyMs: Date.now() - start,
+			total: results.length,
+			healthy: healthyCount,
+			unhealthy: unhealthyCount,
+			connections: results,
+		};
 	}
 
 	return {
@@ -362,5 +516,6 @@ export function createTenantOrgConnectionManager(
 		closeAll,
 		getCacheSize,
 		evictExpired,
+		checkAllConnectionsHealth,
 	};
 }

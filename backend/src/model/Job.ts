@@ -214,6 +214,10 @@ const indexes = [
  * Define the Job model
  */
 export function defineJobs(sequelize: Sequelize): ModelDef<Job> {
+	const existing = sequelize.models?.jobs;
+	if (existing) {
+		return existing as ModelDef<Job>;
+	}
 	return sequelize.define("jobs", schema, {
 		timestamps: true,
 		indexes,

@@ -1,4 +1,3 @@
-import type { Agent, AgentConfig, ChatMessage } from "../core/agent";
 import { getLog } from "../util/Logger";
 import type { Response } from "express";
 
@@ -12,14 +11,6 @@ export interface SSEEvent {
 }
 
 /**
- * Chat streaming result containing the full response and metadata
- */
-export interface ChatStreamResult {
-	fullResponse: string;
-	metadata?: Record<string, unknown>;
-}
-
-/**
  * Service for common chat-related functionality
  */
 export class ChatService {
@@ -30,6 +21,8 @@ export class ChatService {
 		res.setHeader("Content-Type", "text/event-stream");
 		res.setHeader("Cache-Control", "no-cache");
 		res.setHeader("Connection", "keep-alive");
+		// Flush headers immediately to establish the SSE connection
+		res.flushHeaders();
 	}
 
 	/**
@@ -81,46 +74,6 @@ export class ChatService {
 	stopKeepAlive(intervalId: NodeJS.Timeout): void {
 		clearInterval(intervalId);
 		log.debug("Stopped SSE keep-alive");
-	}
-
-	/**
-	 * Streams a chat response from an agent to the client via SSE.
-	 * Note: This does NOT call res.end() to allow caller to send additional events.
-	 *
-	 * @param res the Express response object
-	 * @param agent the AI agent to stream from
-	 * @param chatMessages the conversation messages
-	 * @param agentConfig the agent configuration
-	 * @returns the full response text and metadata
-	 */
-	async streamChatResponse(
-		res: Response,
-		agent: Agent,
-		chatMessages: Array<ChatMessage>,
-		agentConfig: AgentConfig,
-	): Promise<ChatStreamResult> {
-		// Set up SSE headers
-		this.setupSSEHeaders(res);
-
-		// Stream the response using the agent
-		/* v8 ignore next 2 - async generator initialization covered by for-await */
-		const stream = agent.stream(chatMessages, agentConfig);
-		let fullResponse = "";
-		let metadata: Record<string, unknown> | undefined;
-
-		for await (const chunk of stream) {
-			if (chunk.type === "content" && chunk.content) {
-				fullResponse += chunk.content;
-				// Send as Server-Sent Event
-				this.sendSSE(res, { content: chunk.content });
-			} else if (chunk.type === "done") {
-				metadata = chunk.metadata;
-				// Send done signal with metadata
-				this.sendSSE(res, { type: "done", metadata: chunk.metadata });
-			}
-		}
-
-		return metadata !== undefined ? { fullResponse, metadata } : { fullResponse };
 	}
 
 	/**

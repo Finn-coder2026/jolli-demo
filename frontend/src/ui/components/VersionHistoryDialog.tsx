@@ -2,11 +2,12 @@ import { UserAvatar } from "../../components/UserAvatar";
 import { Button } from "../../components/ui/Button";
 import { DiffDialog } from "../../components/ui/DiffDialog";
 import { type FetchResult, InfiniteScroll } from "../../components/ui/InfiniteScroll";
+import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/Popover";
 import { useVersionHistoryOptional } from "../../contexts/VersionHistoryContext";
 import { createUnifiedDiff } from "../../util/DiffUtil";
 import { getLog } from "../../util/Logger";
-import { AlertTriangle, Clock, X } from "lucide-react";
-import { type ReactElement, useCallback, useState } from "react";
+import { AlertTriangle, Clock } from "lucide-react";
+import { type ReactElement, type ReactNode, useCallback, useState } from "react";
 import { useIntlayer } from "react-intlayer";
 
 const log = getLog(import.meta);
@@ -70,26 +71,32 @@ export interface CurrentDocInfo {
 }
 
 export interface VersionHistoryDialogProps {
-	isOpen: boolean;
+	/** Trigger element rendered as the popover toggle (e.g. a History button) */
+	children: ReactNode;
 	docId: number;
 	currentDoc: CurrentDocInfo;
 	currentReferVersion?: number | undefined;
-	onClose: () => void;
 	onSelectVersion?: (historyItem: DocHistorySummary) => void;
 	onConfirmRestore?: (historyDetail: DocHistoryDetailResponse) => void;
 }
 
+/**
+ * Version history popover — renders a compact dropdown anchored to the trigger element.
+ * Clicking a version opens a full-screen DiffDialog; restoring uses a confirmation modal.
+ */
 export function VersionHistoryDialog({
-	isOpen,
+	children,
 	docId,
 	currentDoc,
 	currentReferVersion,
-	onClose,
 	onSelectVersion,
 	onConfirmRestore,
-}: VersionHistoryDialogProps): ReactElement | null {
+}: VersionHistoryDialogProps): ReactElement {
 	const content = useIntlayer("version-history-dialog");
 	const versionHistoryContext = useVersionHistoryOptional();
+
+	// Popover open state
+	const [open, setOpen] = useState(false);
 
 	// State for DiffDialog
 	const [showDiffDialog, setShowDiffDialog] = useState(false);
@@ -131,11 +138,15 @@ export function VersionHistoryDialog({
 	);
 
 	/**
-	 * Fetch history detail and show diff dialog
+	 * Fetch history detail and show diff dialog.
+	 * Closes the popover first so the DiffDialog takes over the screen.
 	 */
 	async function handleVersionClick(item: DocHistorySummary) {
 		// Call external handler if provided
 		onSelectVersion?.(item);
+
+		// Close popover — the DiffDialog will take over
+		setOpen(false);
 
 		// Fetch full history detail
 		setLoadingDetail(true);
@@ -187,7 +198,7 @@ export function VersionHistoryDialog({
 				throw new Error(`Failed to restore version: ${response.statusText}`);
 			}
 
-			log.info("Version restored successfully, historyId=%d", selectedHistoryDetail.id);
+			log.debug("Version restored successfully, historyId=%d", selectedHistoryDetail.id);
 
 			// Call external handler if provided
 			onConfirmRestore?.(selectedHistoryDetail);
@@ -199,7 +210,6 @@ export function VersionHistoryDialog({
 			setShowConfirmDialog(false);
 			setShowDiffDialog(false);
 			setSelectedHistoryDetail(null);
-			onClose();
 		} catch (error) {
 			log.error(error, "Error restoring version");
 		} finally {
@@ -223,10 +233,6 @@ export function VersionHistoryDialog({
 		setShowConfirmDialog(false);
 	}
 
-	if (!isOpen) {
-		return null;
-	}
-
 	function formatDate(dateString: string): string {
 		const date = new Date(dateString);
 		return date.toLocaleString();
@@ -242,16 +248,16 @@ export function VersionHistoryDialog({
 		return `${currentDoc.title} (v${currentDoc.version}) vs ${historyTitle} (v${historyVersion})`;
 	}
 
-	// Generate unified diff content
+	// Generate unified diff content (historical as "old", current as "new" so additions show what changed)
 	function getDiffContent(): string {
 		if (!selectedHistoryDetail) {
 			return "";
 		}
 		return createUnifiedDiff(
-			currentDoc.content,
 			selectedHistoryDetail.docSnapshot.content,
-			`Current (v${currentDoc.version})`,
+			currentDoc.content,
 			`Historical (v${selectedHistoryDetail.version})`,
+			`Current (v${currentDoc.version})`,
 		);
 	}
 
@@ -301,43 +307,28 @@ export function VersionHistoryDialog({
 
 	return (
 		<>
-			<div
-				className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-				onClick={e => {
-					if (e.target === e.currentTarget) {
-						onClose();
-					}
-				}}
-				data-testid="version-history-dialog"
-			>
-				<div className="bg-card rounded-lg border shadow-lg w-full max-w-md m-4 flex flex-col">
+			<Popover open={open} onOpenChange={setOpen}>
+				<PopoverTrigger asChild>{children}</PopoverTrigger>
+				<PopoverContent className="w-80 p-0" align="end" data-testid="version-history-dialog">
 					{/* Header */}
-					<div className="flex items-center justify-between p-4 border-b shrink-0">
-						<h2 className="text-lg font-semibold" data-testid="version-history-title">
+					<div className="flex items-center px-3 py-2 border-b shrink-0">
+						<h2 className="text-sm font-semibold" data-testid="version-history-title">
 							{content.title}
 						</h2>
-						<Button
-							variant="ghost"
-							size="icon"
-							onClick={onClose}
-							data-testid="close-version-history-button"
-						>
-							<X className="h-4 w-4" />
-						</Button>
 					</div>
 
-					{/* Loading indicator */}
+					{/* Loading indicator for detail fetch */}
 					{loadingDetail && (
 						<div
-							className="absolute inset-0 flex items-center justify-center bg-black/20 rounded-lg z-10"
+							className="absolute inset-0 flex items-center justify-center bg-black/20 rounded-md z-10"
 							data-testid="loading-detail"
 						>
 							<div className="bg-card px-4 py-2 rounded-md shadow-lg text-sm">{content.loading}</div>
 						</div>
 					)}
 
-					{/* Content with InfiniteScroll - fixed height for scroll to work */}
-					<div className="h-[400px]">
+					{/* Scrollable version list */}
+					<div className="h-80">
 						<InfiniteScroll
 							fetchData={fetchVersionHistory}
 							pageSize={20}
@@ -349,10 +340,10 @@ export function VersionHistoryDialog({
 							testId="version-history-list"
 						/>
 					</div>
-				</div>
-			</div>
+				</PopoverContent>
+			</Popover>
 
-			{/* Diff Dialog */}
+			{/* Diff Dialog — renders as a full-screen modal */}
 			<DiffDialog
 				isOpen={showDiffDialog}
 				title={getDiffTitle()}
@@ -362,7 +353,7 @@ export function VersionHistoryDialog({
 				onConfirm={handleDiffConfirm}
 			/>
 
-			{/* Confirm Restore Dialog */}
+			{/* Confirm Restore Dialog — renders as a modal */}
 			{showConfirmDialog && (
 				<div
 					className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50"

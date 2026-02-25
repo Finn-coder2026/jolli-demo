@@ -125,6 +125,7 @@ describe("TenantSchemaIsolation", () => {
 			getTenantByDomain: vi.fn(),
 			getTenantDatabaseConfig: vi.fn().mockResolvedValue(mockDbConfig),
 			listTenants: vi.fn(),
+			listTenantsWithDefaultOrg: vi.fn(),
 			listAllActiveTenants: vi.fn(),
 			getOrg: vi.fn(),
 			getOrgBySlug: vi.fn(),
@@ -133,6 +134,7 @@ describe("TenantSchemaIsolation", () => {
 			listAllActiveOrgs: vi.fn(),
 			getTenantOrgByInstallationId: vi.fn(),
 			createInstallationMapping: vi.fn(),
+			ensureInstallationMapping: vi.fn(),
 			deleteInstallationMapping: vi.fn(),
 			close: vi.fn(),
 		};

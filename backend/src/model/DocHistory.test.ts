@@ -69,7 +69,10 @@ describe("DocHistory", () => {
 
 		const options = vi.mocked(mockSequelize.define).mock.calls[0][2] as { indexes: Array<unknown> };
 
-		expect(options.indexes).toEqual([{ fields: ["doc_id"] }, { fields: ["doc_id", "version"], unique: true }]);
+		expect(options.indexes).toEqual([
+			{ fields: ["doc_id"] },
+			{ name: "doc_histories_doc_id_version_key", fields: ["doc_id", "version"], unique: true },
+		]);
 	});
 
 	it("should return existing model if already defined", () => {

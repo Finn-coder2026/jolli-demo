@@ -4,11 +4,16 @@
  */
 
 import { ClientProvider } from "../contexts/ClientContext";
+import { CurrentUserProvider } from "../contexts/CurrentUserContext";
 import { DevToolsProvider } from "../contexts/DevToolsContext";
 import { NavigationProvider } from "../contexts/NavigationContext";
 import { OrgProvider } from "../contexts/OrgContext";
+import { PermissionProvider } from "../contexts/PermissionContext";
 import { PreferencesProvider } from "../contexts/PreferencesContext";
 import { RouterProvider } from "../contexts/RouterContext";
+import { SitesProvider } from "../contexts/SitesContext";
+import { SpaceProvider } from "../contexts/SpaceContext";
+import { TenantProvider } from "../contexts/TenantContext";
 import { ThemeProvider } from "../contexts/ThemeContext";
 import type { RenderResult, RenderOptions as RTLRenderOptions } from "@testing-library/preact";
 import { render, renderHook } from "@testing-library/preact";
@@ -34,6 +39,10 @@ export interface RenderWithProvidersOptions extends Omit<RTLRenderOptions, "wrap
 	withPreferences?: boolean;
 	/** Include ThemeProvider (default: false) */
 	withTheme?: boolean;
+	/** Include SpaceProvider (default: true since unified sidebar is now default) */
+	withSpace?: boolean;
+	/** Include SitesProvider (default: true since unified sidebar is now default) */
+	withSites?: boolean;
 	/** User info for NavigationProvider */
 	userInfo?: UserInfo;
 	/** Custom wrapper component to use instead of providers */
@@ -65,6 +74,8 @@ export function renderWithProviders(
 		withOrg = true,
 		withPreferences = true,
 		withTheme = false,
+		withSpace = true,
+		withSites = true,
 		userInfo,
 		client,
 		wrapper,
@@ -81,6 +92,16 @@ export function renderWithProviders(
 			content = <ThemeProvider>{content}</ThemeProvider>;
 		}
 
+		// SpaceProvider and SitesProvider must be inside PreferencesProvider
+		// because they use the usePreference hook
+		if (withSpace) {
+			content = <SpaceProvider>{content}</SpaceProvider>;
+		}
+
+		if (withSites) {
+			content = <SitesProvider>{content}</SitesProvider>;
+		}
+
 		if (withPreferences) {
 			content = <PreferencesProvider>{content}</PreferencesProvider>;
 		}
@@ -93,6 +114,12 @@ export function renderWithProviders(
 			);
 		}
 
+		// CurrentUserProvider wraps NavigationProvider (after PermissionProvider)
+		content = <CurrentUserProvider>{content}</CurrentUserProvider>;
+
+		// PermissionProvider needs ClientProvider, so wrap it after navigation
+		content = <PermissionProvider>{content}</PermissionProvider>;
+
 		if (withDevTools) {
 			content = <DevToolsProvider>{content}</DevToolsProvider>;
 		}
@@ -102,6 +129,9 @@ export function renderWithProviders(
 		if (withOrg) {
 			content = <OrgProvider>{content}</OrgProvider>;
 		}
+
+		// TenantProvider needs ClientProvider, so wrap inside
+		content = <TenantProvider>{content}</TenantProvider>;
 
 		content = client ? (
 			<ClientProvider client={client}>{content}</ClientProvider>
@@ -163,6 +193,12 @@ export function renderHookWithProviders<TResult>(
 			);
 		}
 
+		// CurrentUserProvider wraps NavigationProvider (after PermissionProvider)
+		content = <CurrentUserProvider>{content}</CurrentUserProvider>;
+
+		// PermissionProvider needs ClientProvider, so wrap it after navigation
+		content = <PermissionProvider>{content}</PermissionProvider>;
+
 		if (withDevTools) {
 			content = <DevToolsProvider>{content}</DevToolsProvider>;
 		}
@@ -172,6 +208,9 @@ export function renderHookWithProviders<TResult>(
 		if (withOrg) {
 			content = <OrgProvider>{content}</OrgProvider>;
 		}
+
+		// TenantProvider needs ClientProvider, so wrap inside
+		content = <TenantProvider>{content}</TenantProvider>;
 
 		content = client ? (
 			<ClientProvider client={client}>{content}</ClientProvider>
@@ -284,26 +323,33 @@ export function createMockClient(
 		})),
 		integrations: vi.fn(() => ({
 			listIntegrations: vi.fn().mockResolvedValue([]),
+			hasAnyIntegrations: vi.fn().mockResolvedValue(false),
 			enableIntegration: vi.fn().mockResolvedValue({}),
 			disableIntegration: vi.fn().mockResolvedValue({}),
 		})),
 		auth: vi.fn(() => ({
-			getCliToken: vi.fn().mockResolvedValue("mock-token"),
+			getCliToken: vi.fn().mockResolvedValue({ token: "mock-token", space: "default" }),
 			setAuthToken: vi.fn(),
-			getEmails: vi.fn().mockResolvedValue([]),
-			selectEmail: vi.fn().mockResolvedValue(undefined),
 			getSessionConfig: vi.fn().mockResolvedValue({ idleTimeoutMs: 3600000 }),
-		})),
-		convos: vi.fn(() => ({
-			listConvos: vi.fn().mockResolvedValue([]),
-			createConvo: vi.fn().mockResolvedValue({ id: "convo-1" }),
-		})),
-		chat: vi.fn(() => ({
-			sendMessage: vi.fn().mockResolvedValue({}),
 		})),
 		docs: vi.fn(() => ({
 			listDocs: vi.fn().mockResolvedValue([]),
 			getDoc: vi.fn().mockResolvedValue(null),
+			getDocById: vi.fn().mockResolvedValue(undefined),
+			findDoc: vi.fn().mockResolvedValue(null),
+			createDraftFromArticle: vi.fn().mockResolvedValue({ id: 1 }),
+		})),
+		docDrafts: vi.fn(() => ({
+			listDocDrafts: vi.fn().mockResolvedValue([]),
+			getDraftsWithPendingChanges: vi.fn().mockResolvedValue([]),
+			getSectionChanges: vi.fn().mockResolvedValue({ changes: [], sections: [] }),
+			applySectionChange: vi.fn().mockResolvedValue({}),
+			dismissSectionChange: vi.fn().mockResolvedValue({}),
+		})),
+		userManagement: vi.fn(() => ({
+			listActiveUsers: vi
+				.fn()
+				.mockResolvedValue({ data: [], total: 0, canEditRoles: false, canManageUsers: false }),
 		})),
 		docsites: vi.fn(() => ({
 			listDocsites: vi.fn().mockResolvedValue([]),
@@ -311,16 +357,160 @@ export function createMockClient(
 			deleteDocsite: vi.fn().mockResolvedValue({}),
 			generateDocsite: vi.fn().mockResolvedValue({}),
 		})),
+		profile: vi.fn(() => ({
+			getProfile: vi.fn().mockResolvedValue({
+				id: 1,
+				email: "test@example.com",
+				name: "Test User",
+				image: null,
+			}),
+			updateProfile: vi.fn().mockResolvedValue({
+				id: 1,
+				email: "test@example.com",
+				name: "Test User",
+				image: null,
+			}),
+			hasPassword: vi.fn().mockResolvedValue({ hasPassword: true }),
+			setPassword: vi.fn().mockResolvedValue({ success: true }),
+			changePassword: vi.fn().mockResolvedValue({ success: true }),
+			logoutAllSessions: vi.fn().mockResolvedValue({ success: true }),
+			getPreferences: vi.fn().mockResolvedValue({ favoriteSpaces: [], favoriteSites: [], hash: "EMPTY" }),
+			updatePreferences: vi.fn().mockResolvedValue({ favoriteSpaces: [], favoriteSites: [], hash: "newhash" }),
+		})),
 		orgs: vi.fn(() => ({
 			getCurrent: vi.fn().mockResolvedValue({
 				tenant: null,
 				org: null,
 				availableOrgs: [],
+				favoritesHash: "EMPTY",
 			}),
 			listOrgs: vi.fn().mockResolvedValue({ orgs: [] }),
 		})),
+		tenants: vi.fn(() => ({
+			listTenants: vi.fn().mockResolvedValue({
+				useTenantSwitcher: false,
+				currentTenantId: null,
+				baseDomain: null,
+				tenants: [],
+			}),
+		})),
+		roles: vi.fn(() => ({
+			listRoles: vi.fn().mockResolvedValue([]),
+			getRole: vi.fn().mockResolvedValue(null),
+			cloneRole: vi.fn().mockResolvedValue(null),
+			updateRole: vi.fn().mockResolvedValue(null),
+			deleteRole: vi.fn().mockResolvedValue(undefined),
+			setRolePermissions: vi.fn().mockResolvedValue(null),
+			listPermissions: vi.fn().mockResolvedValue([]),
+			listPermissionsGrouped: vi.fn().mockResolvedValue({
+				sites: [],
+				users: [],
+				profile: [],
+				tenant: [],
+				spaces: [],
+				integrations: [],
+				roles: [],
+				dashboard: [],
+				articles: [],
+				analytics: [],
+				devtools: [],
+			}),
+			getCurrentUserPermissions: vi.fn().mockResolvedValue({
+				role: {
+					id: 1,
+					name: "Owner",
+					slug: "owner",
+					description: null,
+					isBuiltIn: true,
+					isDefault: false,
+					priority: 100,
+					clonedFrom: null,
+					createdAt: "2024-01-01T00:00:00.000Z",
+					updatedAt: "2024-01-01T00:00:00.000Z",
+					permissions: [],
+				},
+				permissions: [
+					// All owner permissions for full access in tests
+					"users.view",
+					"users.edit",
+					"spaces.view",
+					"spaces.edit",
+					"integrations.view",
+					"integrations.edit",
+					"sites.view",
+					"sites.edit",
+					"roles.view",
+					"roles.edit",
+					"dashboard.view",
+					"articles.view",
+					"articles.edit",
+				],
+			}),
+		})),
+		spaces: vi.fn(() => ({
+			listSpaces: vi.fn().mockResolvedValue([
+				{
+					id: 1,
+					name: "Default Space",
+					slug: "default",
+					jrn: "space:default",
+					description: undefined,
+					ownerId: 1,
+					isPersonal: false,
+					defaultSort: "default",
+					defaultFilters: { updated: "any_time", creator: "" },
+					createdAt: "2024-01-01T00:00:00Z",
+					updatedAt: "2024-01-01T00:00:00Z",
+				},
+			]),
+			getDefaultSpace: vi.fn().mockResolvedValue({
+				id: 1,
+				name: "Default Space",
+				slug: "default",
+				jrn: "space:default",
+				description: undefined,
+				ownerId: 1,
+				isPersonal: false,
+				defaultSort: "default",
+				defaultFilters: { updated: "any_time", creator: "" },
+				createdAt: "2024-01-01T00:00:00Z",
+				updatedAt: "2024-01-01T00:00:00Z",
+			}),
+			getSpace: vi.fn().mockResolvedValue(null),
+			getPersonalSpace: vi.fn().mockResolvedValue(null),
+			createSpace: vi.fn().mockResolvedValue({}),
+			updateSpace: vi.fn().mockResolvedValue({}),
+			deleteSpace: vi.fn().mockResolvedValue({}),
+			getTreeContent: vi.fn().mockResolvedValue([]),
+			getTrashContent: vi.fn().mockResolvedValue([]),
+			hasTrash: vi.fn().mockResolvedValue({ hasTrash: false }),
+			updatePreferences: vi.fn().mockResolvedValue({}),
+			getPreferences: vi.fn().mockResolvedValue(null),
+		})),
+		syncChangesets: vi.fn(() => ({
+			listChangesets: vi.fn().mockResolvedValue([]),
+			listChangesetsPage: vi.fn().mockResolvedValue({ changesets: [], hasMore: false }),
+			getChangeset: vi.fn().mockResolvedValue(undefined),
+			getChangesetFiles: vi.fn().mockResolvedValue([]),
+			reviewChangesetFile: vi.fn().mockResolvedValue({}),
+			publishChangeset: vi.fn().mockResolvedValue({}),
+		})),
+		onboarding: vi.fn(() => ({
+			getState: vi.fn().mockResolvedValue({
+				state: undefined,
+				needsOnboarding: false,
+			}),
+			// biome-ignore lint/suspicious/useAwait: Mock async generator doesn't need real async operations
+			chat: vi.fn().mockImplementation(async function* () {
+				yield { type: "content", content: "Mock response" };
+				yield { type: "done", state: undefined };
+			}),
+			skip: vi.fn().mockResolvedValue({ success: true, state: {} }),
+			complete: vi.fn().mockResolvedValue({ success: true, state: {} }),
+			restart: vi.fn().mockResolvedValue({ success: true, state: {} }),
+		})),
 		getUserInfo: vi.fn().mockResolvedValue(null),
-		login: vi.fn().mockResolvedValue({}),
+		login: vi.fn().mockResolvedValue({ user: undefined }),
 		logout: vi.fn().mockResolvedValue({}),
 		...otherOverrides,
 	} as unknown as Client;

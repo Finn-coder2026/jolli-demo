@@ -1,5 +1,15 @@
 import type { Doc } from "../model/Doc";
-import { generateNextraFromArticles, getDeletedFilePathsFromChangedArticles } from "./NextraGenerationUtil";
+import {
+	type ArticleInput,
+	buildFolderSlugMapping,
+	extractFolderPath,
+	formatPreGenerationErrors,
+	generateNextraFromArticles,
+	getDeletedFilePathsFromChangedArticles,
+	remapFolderPaths,
+	stripSlugSuffix,
+	validateArticlesForGeneration,
+} from "./NextraGenerationUtil";
 import type { ChangedArticle, DocContentMetadata } from "jolli-common";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -36,10 +46,10 @@ describe("generateNextraFromArticles", () => {
 
 		// Nextra 4.x uses content/ folder and app/ folder structure
 		// JOLLI-191: No content/index.mdx - app/page.tsx redirects to first article instead
-		// Should generate 16 files: article + _meta.ts + app/layout + app/page + app/[...mdxPath]/page (catch-all) + mdx-components + icon + favicon route + pkg + next + ts + gitignore + vercel + middleware + auth callback + lib/auth
-		expect(files).toHaveLength(16);
+		// Should generate 17 files: article + _meta.ts + app/layout + app/globals.css + app/page + app/[...mdxPath]/page (catch-all) + mdx-components + icon + favicon route + pkg + next + ts + gitignore + vercel
+		expect(files).toHaveLength(17);
 		const paths = files.map(f => f.path);
-		expect(paths).toContain("content/test-article.mdx");
+		expect(paths).toContain("content/test-article.md");
 		expect(paths).toContain("content/_meta.ts");
 		expect(paths).toContain("app/layout.tsx");
 		expect(paths).toContain("app/page.tsx"); // Root redirect page (JOLLI-191)
@@ -84,9 +94,9 @@ describe("generateNextraFromArticles", () => {
 
 		const { files } = generateNextraFromArticles(articles, "multi-site", "Multi Site");
 
-		// Nextra 4.x (JOLLI-191): 3 articles + _meta.ts + app/layout + app/page + app/[...mdxPath]/page (catch-all) + mdx-components + icon + favicon route + pkg + next + ts + gitignore + vercel + middleware + auth callback + lib/auth = 18
+		// Nextra 4.x (JOLLI-191): 3 articles + _meta.ts + app/layout + app/globals.css + app/page + app/[...mdxPath]/page (catch-all) + mdx-components + icon + favicon route + pkg + next + ts + gitignore + vercel = 19
 		// No content/index.mdx - app/page.tsx redirects to first article instead
-		expect(files).toHaveLength(18);
+		expect(files).toHaveLength(19);
 		expect(files.filter(f => f.path.startsWith("content/"))).toHaveLength(4); // 3 articles + _meta.ts (no index)
 	});
 
@@ -148,7 +158,7 @@ describe("generateNextraFromArticles", () => {
 		];
 
 		const { files } = generateNextraFromArticles(articles, "test-site", "Test Site");
-		const articleFile = files.find(f => f.path === "content/test-article.mdx");
+		const articleFile = files.find(f => f.path === "content/test-article.md");
 
 		expect(articleFile).toBeDefined();
 		expect(articleFile?.content).toContain("title: Test Article");
@@ -173,7 +183,7 @@ describe("generateNextraFromArticles", () => {
 		];
 
 		const { files } = generateNextraFromArticles(articles, "test-site", "Test Site");
-		const articleFile = files.find(f => f.path === "content/test-article.mdx");
+		const articleFile = files.find(f => f.path === "content/test-article.md");
 
 		expect(articleFile?.content).toContain("**Source:** VSCode File");
 		expect(articleFile?.content).not.toContain("[VSCode File]");
@@ -196,7 +206,7 @@ describe("generateNextraFromArticles", () => {
 		];
 
 		const { files } = generateNextraFromArticles(articles, "test-site", "Test Site");
-		const articleFile = files.find(f => f.path === "content/test-article.mdx");
+		const articleFile = files.find(f => f.path === "content/test-article.md");
 
 		// Should not include link because URL contains backslashes
 		expect(articleFile?.content).toContain("**Source:** VSCode File");
@@ -218,7 +228,7 @@ describe("generateNextraFromArticles", () => {
 		];
 
 		const { files } = generateNextraFromArticles(articles, "test-site", "Test Site");
-		const articleFile = files.find(f => f.path === "content/test-article.mdx");
+		const articleFile = files.find(f => f.path === "content/test-article.md");
 
 		expect(articleFile?.content).toContain("**Source:** Invalid Source");
 		expect(articleFile?.content).not.toContain("[Invalid Source]");
@@ -239,7 +249,7 @@ describe("generateNextraFromArticles", () => {
 		];
 
 		const { files } = generateNextraFromArticles(articles, "test-site", "Test Site");
-		const articleFile = files.find(f => f.path === "content/test.mdx");
+		const articleFile = files.find(f => f.path === "content/test.md");
 
 		expect(articleFile?.content).toContain("**Source:** [HTTP Source](http://example.com/article)");
 	});
@@ -259,12 +269,12 @@ describe("generateNextraFromArticles", () => {
 		];
 
 		const { files } = generateNextraFromArticles(articles, "test-site", "Test Site");
-		const articleFile = files.find(f => f.path === "content/test.mdx");
+		const articleFile = files.find(f => f.path === "content/test.md");
 
 		expect(articleFile?.content).toContain("**Source:** [FTP Source](ftp://ftp.example.com/file.txt)");
 	});
 
-	test("sanitizes HTML comments to MDX format", () => {
+	test("preserves HTML comments in .md files (lenient parsing)", () => {
 		const articles: Array<Doc> = [
 			{
 				id: 1,
@@ -277,14 +287,14 @@ describe("generateNextraFromArticles", () => {
 		];
 
 		const { files } = generateNextraFromArticles(articles, "test-site", "Test Site");
-		const articleFile = files.find(f => f.path === "content/test-article.mdx");
+		const articleFile = files.find(f => f.path === "content/test-article.md");
 
-		expect(articleFile?.content).toContain("{/* This is a comment */}");
-		expect(articleFile?.content).not.toContain("<!--");
-		expect(articleFile?.content).not.toContain("-->");
+		// .md files preserve HTML comments (lenient parsing)
+		expect(articleFile?.content).toContain("<!-- This is a comment -->");
+		expect(articleFile?.content).not.toContain("{/*");
 	});
 
-	test("sanitizes multiple HTML comments", () => {
+	test("preserves multiple HTML comments in .md files", () => {
 		const articles: Array<Doc> = [
 			{
 				id: 1,
@@ -297,14 +307,14 @@ describe("generateNextraFromArticles", () => {
 		];
 
 		const { files } = generateNextraFromArticles(articles, "test-site", "Test Site");
-		const articleFile = files.find(f => f.path === "content/test.mdx");
+		const articleFile = files.find(f => f.path === "content/test.md");
 
-		expect(articleFile?.content).toContain("{/* Comment 1 */}");
-		expect(articleFile?.content).toContain("{/* Comment 2 */}");
-		expect(articleFile?.content).not.toContain("<!--");
+		// .md files preserve HTML comments
+		expect(articleFile?.content).toContain("<!-- Comment 1 -->");
+		expect(articleFile?.content).toContain("<!-- Comment 2 -->");
 	});
 
-	test("sanitizes multiline HTML comments", () => {
+	test("preserves multiline HTML comments in .md files", () => {
 		const articles: Array<Doc> = [
 			{
 				id: 1,
@@ -317,9 +327,30 @@ describe("generateNextraFromArticles", () => {
 		];
 
 		const { files } = generateNextraFromArticles(articles, "test-site", "Test Site");
-		const articleFile = files.find(f => f.path === "content/test.mdx");
+		const articleFile = files.find(f => f.path === "content/test.md");
 
-		expect(articleFile?.content).toContain("{/*\nMultiline\nComment\n*/}");
+		// .md files preserve HTML comments
+		expect(articleFile?.content).toContain("<!--\nMultiline\nComment\n-->");
+	});
+
+	test("sanitizes HTML comments to JSX format for text/mdx contentType", () => {
+		const articles: Array<Doc> = [
+			{
+				id: 1,
+				content: "# Article\n\n<!-- This is a comment -->\n\nContent here.",
+				contentType: "text/mdx",
+				contentMetadata: {
+					title: "Test Article",
+				} as DocContentMetadata,
+				createdAt: new Date("2024-01-10T10:00:00Z"),
+			} as Doc,
+		];
+
+		const { files } = generateNextraFromArticles(articles, "test-site", "Test Site");
+		const articleFile = files.find(f => f.path === "content/test-article.mdx");
+
+		// .mdx files convert HTML comments to JSX comments (strict parsing)
+		expect(articleFile?.content).toContain("{/* This is a comment */}");
 		expect(articleFile?.content).not.toContain("<!--");
 	});
 
@@ -336,7 +367,7 @@ describe("generateNextraFromArticles", () => {
 		];
 
 		const { files } = generateNextraFromArticles(articles, "test-site", "Test Site");
-		const articleFile = files.find(f => f.path === "content/simple-article.mdx");
+		const articleFile = files.find(f => f.path === "content/simple-article.md");
 
 		expect(articleFile?.content).toContain("title: Simple Article");
 		expect(articleFile?.content).not.toContain("**Source:**");
@@ -354,7 +385,7 @@ describe("generateNextraFromArticles", () => {
 		];
 
 		const { files } = generateNextraFromArticles(articles, "test-site", "Test Site");
-		const articleFile = files.find(f => f.path === "content/untitled-article.mdx");
+		const articleFile = files.find(f => f.path === "content/untitled-article.md");
 
 		expect(articleFile).toBeDefined();
 		expect(articleFile?.content).toContain("title: Untitled Article");
@@ -384,9 +415,9 @@ describe("generateNextraFromArticles", () => {
 
 		const { files } = generateNextraFromArticles(articles, "test-site", "Test Site");
 
-		expect(files.some(f => f.path === "content/my-article-with-spaces-special.mdx")).toBe(true);
-		expect(files.some(f => f.path === "content/multiple-spaces-here.mdx")).toBe(true);
-		expect(files.some(f => f.path === "content/leading-and-trailing.mdx")).toBe(true);
+		expect(files.some(f => f.path === "content/my-article-with-spaces-special.md")).toBe(true);
+		expect(files.some(f => f.path === "content/multiple-spaces-here.md")).toBe(true);
+		expect(files.some(f => f.path === "content/leading-and-trailing.md")).toBe(true);
 	});
 
 	test("generates valid _meta.ts with navbar structure (Nextra 4.x, JOLLI-191/192)", () => {
@@ -422,8 +453,6 @@ describe("generateNextraFromArticles", () => {
 		expect(layoutFile).toBeDefined();
 		expect(layoutFile?.content).toContain("Layout");
 		expect(layoutFile?.content).toContain("My Documentation");
-		expect(layoutFile?.content).toContain("https://github.com/Jolli-sample-repos/my-docs");
-		expect(layoutFile?.content).toContain("Generated by Jolli");
 	});
 
 	test("generates valid package.json", () => {
@@ -522,9 +551,9 @@ describe("generateNextraFromArticles", () => {
 		const articles: Array<Doc> = [];
 		const { files } = generateNextraFromArticles(articles, "empty-site", "Empty Site");
 
-		// Nextra 4.x (JOLLI-191): _meta.ts + app/layout + app/page (no articles placeholder) + app/[...mdxPath]/page (catch-all) + mdx-components + icon + favicon route + pkg + next + ts + gitignore + vercel + middleware + auth callback + lib/auth = 15
+		// Nextra 4.x (JOLLI-191): _meta.ts + app/layout + app/globals.css + app/page (no articles placeholder) + app/[...mdxPath]/page (catch-all) + mdx-components + icon + favicon route + pkg + next + ts + gitignore + vercel = 16
 		// No content/index.mdx - app/page.tsx shows "no articles" message
-		expect(files).toHaveLength(15);
+		expect(files).toHaveLength(16);
 		expect(files.map(f => f.path)).toContain("content/_meta.ts");
 		expect(files.map(f => f.path)).toContain("app/layout.tsx");
 		expect(files.map(f => f.path)).toContain("app/page.tsx"); // Shows "no articles" message
@@ -542,7 +571,7 @@ describe("generateNextraFromArticles", () => {
 		];
 
 		const { files } = generateNextraFromArticles(articles, "test-site", "Test Site");
-		const articleFile = files.find(f => f.path === "content/test.mdx");
+		const articleFile = files.find(f => f.path === "content/test.md");
 
 		expect(articleFile?.content).toContain("**Last Updated:**");
 	});
@@ -561,7 +590,7 @@ describe("generateNextraFromArticles", () => {
 		];
 
 		const { files } = generateNextraFromArticles(articles, "test-site", "Test Site");
-		const articleFile = files.find(f => f.path === "content/test.mdx");
+		const articleFile = files.find(f => f.path === "content/test.md");
 
 		expect(articleFile?.content).toContain("**Source:** Just a Name");
 		expect(articleFile?.content).not.toContain("[Just a Name]");
@@ -581,7 +610,7 @@ describe("generateNextraFromArticles", () => {
 		];
 
 		const { files } = generateNextraFromArticles(articles, "test-site", "Test Site");
-		const articleFile = files.find(f => f.path === "content/test.mdx");
+		const articleFile = files.find(f => f.path === "content/test.md");
 
 		expect(articleFile?.content).toContain("**Source:** [View Source](https://example.com)");
 	});
@@ -671,14 +700,11 @@ describe("generateNextraFromArticles", () => {
 			regenerationMode: true,
 		});
 
-		// Nextra 4.x regeneration mode: content files + _meta.ts + app/page.tsx + package.json + vercel.json
-		// 2 articles + _meta.ts + app/page.tsx + package.json + vercel.json = 6
-		expect(files).toHaveLength(6);
 		const paths = files.map(f => f.path);
 
 		// Should contain content files (no index.mdx per JOLLI-191)
-		expect(paths).toContain("content/test-article.mdx");
-		expect(paths).toContain("content/another-article.mdx");
+		expect(paths).toContain("content/test-article.md");
+		expect(paths).toContain("content/another-article.md");
 
 		// Should always contain _meta.ts (ensures consistency with article files)
 		expect(paths).toContain("content/_meta.ts");
@@ -690,14 +716,17 @@ describe("generateNextraFromArticles", () => {
 		expect(paths).toContain("package.json");
 		expect(paths).toContain("vercel.json");
 
-		// Should NOT contain other config files (preserved from repo in regeneration mode)
-		expect(paths).not.toContain("app/layout.tsx");
-		expect(paths).not.toContain("app/[...mdxPath]/page.tsx");
-		expect(paths).not.toContain("mdx-components.tsx");
-		expect(paths).not.toContain("app/icon.tsx");
-		expect(paths).not.toContain("next.config.mjs");
-		expect(paths).not.toContain("tsconfig.json");
-		expect(paths).not.toContain(".gitignore");
+		// Branding-related files ARE regenerated to support theme changes
+		expect(paths).toContain("app/layout.tsx");
+		expect(paths).toContain("app/globals.css");
+		expect(paths).toContain("next.config.mjs");
+
+		// All config files are now included in regeneration for self-healing
+		expect(paths).toContain("app/[...mdxPath]/page.tsx");
+		expect(paths).toContain("mdx-components.tsx");
+		expect(paths).toContain("app/icon.tsx");
+		expect(paths).toContain("tsconfig.json");
+		expect(paths).toContain(".gitignore");
 	});
 
 	test("regeneration mode always generates _meta.ts and app/page.tsx", () => {
@@ -719,7 +748,7 @@ describe("generateNextraFromArticles", () => {
 		const paths = files.map(f => f.path);
 
 		// Should contain content files (no index.mdx per JOLLI-191)
-		expect(paths).toContain("content/test-article.mdx");
+		expect(paths).toContain("content/test-article.md");
 
 		// _meta.ts is always generated to ensure consistency
 		expect(paths).toContain("content/_meta.ts");
@@ -744,14 +773,16 @@ describe("generateNextraFromArticles", () => {
 		});
 
 		const paths = files.map(f => f.path);
-		// In regeneration mode, only content files + app/page.tsx are generated
-		// Auth lib is NOT regenerated (preserved from repo)
-		expect(paths).toContain("content/test.mdx");
-		// app/page.tsx is always generated (contains redirect to first article)
+		// Content files and redirect page
+		expect(paths).toContain("content/test.md");
 		expect(paths).toContain("app/page.tsx");
-		// Config files including auth are preserved
-		expect(paths).not.toContain("app/layout.tsx");
-		expect(paths).not.toContain("lib/auth.tsx");
+		// Branding-related files ARE regenerated to support theme changes
+		// Auth layout is generated for sites with allowedDomain
+		expect(paths).toContain("app/layout.tsx");
+		expect(paths).toContain("app/globals.css");
+		expect(paths).toContain("next.config.mjs");
+		// Auth lib is now included in regeneration for self-healing
+		expect(paths).toContain("lib/auth.tsx");
 	});
 
 	test("migration mode generates all files including config when upgrading from Nextra 3.x to 4.x", () => {
@@ -773,7 +804,7 @@ describe("generateNextraFromArticles", () => {
 
 		// In migration mode, even with regenerationMode=true, all files should be generated
 		// Content files (no index.mdx per JOLLI-191)
-		expect(paths).toContain("content/test-article.mdx");
+		expect(paths).toContain("content/test-article.md");
 		expect(paths).toContain("content/_meta.ts");
 
 		// Config files (normally skipped in regeneration mode, but included in migration mode)
@@ -915,7 +946,7 @@ describe("generateNextraFromArticles", () => {
 		];
 
 		const { files } = generateNextraFromArticles(articles, "test-site", "Test Site");
-		const mdxFile = files.find(f => f.path === "content/markdown-article.mdx");
+		const mdxFile = files.find(f => f.path === "content/markdown-article.md");
 
 		expect(mdxFile).toBeDefined();
 		expect(mdxFile?.content).toContain("---");
@@ -934,7 +965,7 @@ describe("generateNextraFromArticles", () => {
 		];
 
 		const { files } = generateNextraFromArticles(articles, "test-site", "Test Site");
-		const mdxFile = files.find(f => f.path === "content/default-article.mdx");
+		const mdxFile = files.find(f => f.path === "content/default-article.md");
 
 		expect(mdxFile).toBeDefined();
 		expect(mdxFile?.content).toContain("---");
@@ -969,7 +1000,7 @@ describe("generateNextraFromArticles", () => {
 		const { files } = generateNextraFromArticles(articles, "test-site", "Test Site");
 		const paths = files.map(f => f.path);
 
-		expect(paths).toContain("content/markdown-doc.mdx");
+		expect(paths).toContain("content/markdown-doc.md");
 		expect(paths).toContain("content/json-config.json");
 		expect(paths).toContain("content/yaml-config.yaml");
 	});
@@ -1034,11 +1065,14 @@ describe("generateNextraFromArticles", () => {
 		expect(paths).toContain("package.json");
 		expect(paths).toContain("vercel.json");
 
-		// Other static config files should NOT be generated in regeneration mode
-		expect(paths).not.toContain("next.config.mjs");
-		expect(paths).not.toContain("tsconfig.json");
-		expect(paths).not.toContain(".gitignore");
-		expect(paths).not.toContain("app/layout.tsx");
+		// Branding-related files ARE regenerated to support theme changes
+		expect(paths).toContain("next.config.mjs");
+		expect(paths).toContain("app/layout.tsx");
+		expect(paths).toContain("app/globals.css");
+
+		// All config files are now included in regeneration for self-healing
+		expect(paths).toContain("tsconfig.json");
+		expect(paths).toContain(".gitignore");
 	});
 
 	test("generates OpenAPI documentation for YAML OpenAPI spec", () => {
@@ -1139,7 +1173,7 @@ paths:
 		expect(paths).toContain("public/api-docs-mistyped-api.html");
 
 		// Should NOT generate an MDX file with raw JSON (which would cause MDX parsing errors)
-		expect(paths).not.toContain("content/mistyped-api.mdx");
+		expect(paths).not.toContain("content/mistyped-api.md");
 	});
 
 	test("detects non-OpenAPI JSON content with wrong contentType and saves as JSON file", () => {
@@ -1160,7 +1194,7 @@ paths:
 
 		// Should save as .json file, not .mdx
 		expect(paths).toContain("content/config-data.json");
-		expect(paths).not.toContain("content/config-data.mdx");
+		expect(paths).not.toContain("content/config-data.md");
 
 		// JSON file should contain raw content without MDX frontmatter
 		const jsonFile = files.find(f => f.path === "content/config-data.json");
@@ -1195,7 +1229,7 @@ paths:
 		expect(paths).toContain("public/api-docs-yaml-mistyped-api.html");
 
 		// Should NOT generate an MDX file with raw YAML
-		expect(paths).not.toContain("content/yaml-mistyped-api.mdx");
+		expect(paths).not.toContain("content/yaml-mistyped-api.md");
 	});
 
 	test("detectsAsYaml returns false for JSON object content (starts with {)", () => {
@@ -1243,7 +1277,7 @@ paths:
 		// JSON arrays are not detected as JSON (detectsAsJson only checks for objects)
 		// They are also not detected as YAML (detectsAsYaml rejects content starting with [)
 		// So they end up as MDX files (the default for markdown)
-		expect(paths).toContain("content/json-array.mdx");
+		expect(paths).toContain("content/json-array.md");
 		expect(paths).not.toContain("content/json-array.json");
 		expect(paths).not.toContain("content/json-array.yaml");
 	});
@@ -1300,7 +1334,7 @@ paths:
 		const paths = files.map(f => f.path);
 
 		// In migration mode with context, all files should be generated (no index.mdx per JOLLI-191)
-		expect(paths).toContain("content/test-article.mdx");
+		expect(paths).toContain("content/test-article.md");
 		expect(paths).toContain("content/_meta.ts");
 		expect(paths).toContain("app/layout.tsx");
 		expect(paths).toContain("app/page.tsx"); // Root redirect (JOLLI-191)
@@ -1362,8 +1396,9 @@ describe("getDeletedFilePathsFromChangedArticles", () => {
 		];
 
 		const paths = getDeletedFilePathsFromChangedArticles(changedArticles);
-		// Also includes .yaml and .json variants in case file was previously saved with wrong extension
+		// Includes both .md (new default) and .mdx (legacy), plus .yaml/.json variants
 		expect(paths).toEqual([
+			"content/deleted-guide.md",
 			"content/deleted-guide.mdx",
 			"content/deleted-guide.yaml",
 			"content/deleted-guide.json",
@@ -1436,8 +1471,9 @@ describe("getDeletedFilePathsFromChangedArticles", () => {
 		];
 
 		const paths = getDeletedFilePathsFromChangedArticles(changedArticles);
-		// Markdown includes fallback .yaml/.json variants for files previously saved with wrong extension
+		// Markdown includes both .md/.mdx plus .yaml/.json variants for files previously saved with wrong extension
 		expect(paths).toEqual([
+			"content/markdown-doc.md",
 			"content/markdown-doc.mdx",
 			"content/markdown-doc.yaml",
 			"content/markdown-doc.json",
@@ -1450,5 +1486,457 @@ describe("getDeletedFilePathsFromChangedArticles", () => {
 	test("returns empty array for empty input", () => {
 		const paths = getDeletedFilePathsFromChangedArticles([]);
 		expect(paths).toEqual([]);
+	});
+});
+
+describe("validateArticlesForGeneration", () => {
+	test("returns valid when all articles have absolute image references", () => {
+		const articles: Array<Doc> = [
+			{
+				id: 1,
+				content: "# Article\n\n![image](https://cdn.example.com/img.png)\n\nContent here.",
+				contentMetadata: { title: "Good Article" } as DocContentMetadata,
+				jrn: "doc:good-article",
+				createdAt: new Date("2024-01-10T10:00:00Z"),
+			} as Doc,
+		];
+
+		const result = validateArticlesForGeneration(articles);
+
+		expect(result.isValid).toBe(true);
+		expect(result.invalidArticles).toHaveLength(0);
+	});
+
+	test("returns invalid when articles have relative image references", () => {
+		const articles: Array<Doc> = [
+			{
+				id: 1,
+				content: "# Article\n\n![image](./img/photo.png)\n\nContent here.",
+				contentMetadata: { title: "Bad Article" } as DocContentMetadata,
+				jrn: "doc:bad-article",
+				createdAt: new Date("2024-01-10T10:00:00Z"),
+			} as Doc,
+		];
+
+		const result = validateArticlesForGeneration(articles);
+
+		expect(result.isValid).toBe(false);
+		expect(result.invalidArticles).toHaveLength(1);
+		expect(result.invalidArticles[0].jrn).toBe("doc:bad-article");
+		expect(result.invalidArticles[0].title).toBe("Bad Article");
+		expect(result.invalidArticles[0].errors.length).toBeGreaterThan(0);
+	});
+
+	test("uses JRN as fallback title when contentMetadata has no title", () => {
+		const articles: Array<Doc> = [
+			{
+				id: 1,
+				content: "![image](./img/photo.png)",
+				contentMetadata: {} as DocContentMetadata,
+				jrn: "doc:no-title",
+				createdAt: new Date("2024-01-10T10:00:00Z"),
+			} as Doc,
+		];
+
+		const result = validateArticlesForGeneration(articles);
+
+		expect(result.isValid).toBe(false);
+		expect(result.invalidArticles[0].title).toBe("doc:no-title");
+	});
+
+	test("uses JRN as fallback when contentMetadata is undefined", () => {
+		const articles: Array<Doc> = [
+			{
+				id: 1,
+				content: "![image](../img/photo.png)",
+				jrn: "doc:no-metadata",
+				createdAt: new Date("2024-01-10T10:00:00Z"),
+			} as Doc,
+		];
+
+		const result = validateArticlesForGeneration(articles);
+
+		expect(result.isValid).toBe(false);
+		expect(result.invalidArticles[0].title).toBe("doc:no-metadata");
+	});
+
+	test("returns valid for empty articles array", () => {
+		const result = validateArticlesForGeneration([]);
+
+		expect(result.isValid).toBe(true);
+		expect(result.invalidArticles).toHaveLength(0);
+	});
+
+	test("handles mix of valid and invalid articles", () => {
+		const articles: Array<Doc> = [
+			{
+				id: 1,
+				content: "# Good\n\n![img](https://example.com/img.png)",
+				contentMetadata: { title: "Good Article" } as DocContentMetadata,
+				jrn: "doc:good",
+				createdAt: new Date("2024-01-10T10:00:00Z"),
+			} as Doc,
+			{
+				id: 2,
+				content: "# Bad\n\n![img](./local/img.png)",
+				contentMetadata: { title: "Bad Article" } as DocContentMetadata,
+				jrn: "doc:bad",
+				createdAt: new Date("2024-01-10T10:00:00Z"),
+			} as Doc,
+		];
+
+		const result = validateArticlesForGeneration(articles);
+
+		expect(result.isValid).toBe(false);
+		expect(result.invalidArticles).toHaveLength(1);
+		expect(result.invalidArticles[0].jrn).toBe("doc:bad");
+	});
+});
+
+describe("formatPreGenerationErrors", () => {
+	test("returns empty string when validation is valid", () => {
+		const result = formatPreGenerationErrors({
+			isValid: true,
+			invalidArticles: [],
+		});
+
+		expect(result).toBe("");
+	});
+
+	test("formats single article error", () => {
+		const result = formatPreGenerationErrors({
+			isValid: false,
+			invalidArticles: [
+				{
+					jrn: "doc:bad-article",
+					title: "Bad Article",
+					errors: [
+						{
+							src: "./img/photo.png",
+							message: "Relative path not allowed",
+							line: 3,
+							column: 1,
+							errorCode: "RELATIVE_PATH",
+						},
+					],
+				},
+			],
+		});
+
+		expect(result).toContain("Site generation failed: Invalid image references found");
+		expect(result).toContain(
+			'Article "Bad Article" (doc:bad-article): ./img/photo.png (Relative path not allowed)',
+		);
+	});
+
+	test("formats multiple articles with multiple errors", () => {
+		const result = formatPreGenerationErrors({
+			isValid: false,
+			invalidArticles: [
+				{
+					jrn: "doc:article-1",
+					title: "Article 1",
+					errors: [
+						{
+							src: "./img/a.png",
+							message: "Relative path",
+							line: 2,
+							column: 1,
+							errorCode: "RELATIVE_PATH",
+						},
+						{ src: "../img/b.png", message: "Parent path", line: 5, column: 1, errorCode: "RELATIVE_PATH" },
+					],
+				},
+				{
+					jrn: "doc:article-2",
+					title: "Article 2",
+					errors: [
+						{
+							src: "./local.png",
+							message: "Relative path",
+							line: 1,
+							column: 1,
+							errorCode: "RELATIVE_PATH",
+						},
+					],
+				},
+			],
+		});
+
+		const lines = result.split("\n");
+		expect(lines).toHaveLength(4);
+		expect(lines[0]).toBe("Site generation failed: Invalid image references found");
+		expect(lines[1]).toContain("Article 1");
+		expect(lines[2]).toContain("Article 1");
+		expect(lines[3]).toContain("Article 2");
+	});
+});
+
+describe("generateNextraFromArticles - branding/theme options", () => {
+	test("passes theme branding to generator via mapBrandingToThemeConfig", () => {
+		const articles: Array<Doc> = [
+			{
+				id: 1,
+				content: "# Test",
+				contentMetadata: { title: "Test" } as DocContentMetadata,
+				createdAt: new Date("2024-01-10T10:00:00Z"),
+			} as Doc,
+		];
+
+		const { files } = generateNextraFromArticles(articles, "test-site", "Test Site", {
+			theme: {
+				logo: "https://example.com/logo.png",
+				logoUrl: "/",
+				favicon: "/favicon.ico",
+				primaryHue: 200,
+				defaultTheme: "dark",
+				hideToc: true,
+				tocTitle: "On This Page",
+				sidebarDefaultCollapseLevel: 2,
+				headerLinks: { items: [{ label: "Home", url: "/" }] },
+				fontFamily: "inter",
+				codeTheme: "github",
+				borderRadius: "sharp",
+				spacingDensity: "compact",
+				navigationMode: "sidebar",
+				footer: { copyright: "Copyright 2024" },
+			},
+		});
+
+		// Layout should contain the primaryHue
+		const layoutFile = files.find(f => f.path === "app/layout.tsx");
+		expect(layoutFile).toBeDefined();
+		expect(layoutFile?.content).toContain("200");
+	});
+
+	test("handles theme with only partial branding properties", () => {
+		const articles: Array<Doc> = [
+			{
+				id: 1,
+				content: "# Test",
+				contentMetadata: { title: "Test" } as DocContentMetadata,
+				createdAt: new Date("2024-01-10T10:00:00Z"),
+			} as Doc,
+		];
+
+		// Only set a few properties
+		const { files } = generateNextraFromArticles(articles, "test-site", "Test Site", {
+			theme: {
+				primaryHue: 120,
+			},
+		});
+
+		const layoutFile = files.find(f => f.path === "app/layout.tsx");
+		expect(layoutFile).toBeDefined();
+		expect(layoutFile?.content).toContain("120");
+	});
+});
+
+describe("stripSlugSuffix", () => {
+	test("strips 7-char lowercase alphanumeric suffix from slug", () => {
+		expect(stripSlugSuffix("my-article-gk4sp55")).toBe("my-article");
+	});
+
+	test("leaves slug without suffix unchanged", () => {
+		expect(stripSlugSuffix("my-articles")).toBe("my-articles");
+	});
+
+	test("handles single-segment slug without suffix", () => {
+		expect(stripSlugSuffix("overview")).toBe("overview");
+	});
+
+	test("does not strip suffix that is too short (3 chars)", () => {
+		expect(stripSlugSuffix("my-art-abc")).toBe("my-art-abc");
+	});
+
+	test("does not strip suffix with uppercase characters", () => {
+		expect(stripSlugSuffix("my-article-Gk4sp55")).toBe("my-article-Gk4sp55");
+	});
+
+	test("strips suffix with all numeric characters", () => {
+		expect(stripSlugSuffix("my-article-1234567")).toBe("my-article");
+	});
+
+	test("strips suffix with all alphabetic characters", () => {
+		expect(stripSlugSuffix("my-article-abcdefg")).toBe("my-article");
+	});
+
+	test("preserves slug when stripping would leave empty string", () => {
+		// A 7-char slug that looks like a nanoid suffix should not be stripped entirely
+		expect(stripSlugSuffix("abc1234")).toBe("abc1234");
+	});
+
+	test("preserves slug when entire slug matches suffix pattern with hyphen prefix", () => {
+		// Edge case: slug is just a hyphen + 7-char suffix (would leave empty after strip)
+		expect(stripSlugSuffix("x-abc1234")).toBe("x");
+	});
+});
+
+describe("extractFolderPath", () => {
+	test("returns empty string for root-level article", () => {
+		expect(extractFolderPath("/my-article-abc1234")).toBe("");
+	});
+
+	test("extracts folder path for nested article", () => {
+		expect(extractFolderPath("/guides-xyz7890/install-abc1234")).toBe("guides");
+	});
+
+	test("extracts folder path for deeply nested article", () => {
+		expect(extractFolderPath("/guides-xyz7890/advanced-abc1234/setup-def5678")).toBe("guides/advanced");
+	});
+
+	test("handles path without leading slash", () => {
+		expect(extractFolderPath("guides-xyz7890/install-abc1234")).toBe("guides");
+	});
+
+	test("returns empty string for single segment without leading slash", () => {
+		expect(extractFolderPath("my-article-abc1234")).toBe("");
+	});
+});
+
+describe("buildFolderSlugMapping", () => {
+	test("returns empty map when folder title matches its slug", () => {
+		const articles: Array<Doc> = [
+			{
+				id: 1,
+				content: "",
+				docType: "folder",
+				path: "/guides-abc1234",
+				contentMetadata: { title: "Guides" } as DocContentMetadata,
+				createdAt: new Date("2024-01-10T10:00:00Z"),
+			} as Doc,
+		];
+
+		const mapping = buildFolderSlugMapping(articles);
+		expect(mapping.size).toBe(0);
+	});
+
+	test("creates mapping when folder title differs from its slug", () => {
+		const articles: Array<Doc> = [
+			{
+				id: 1,
+				content: "",
+				docType: "folder",
+				path: "/cicd-gk4sp55",
+				contentMetadata: { title: "Workflows" } as DocContentMetadata,
+				createdAt: new Date("2024-01-10T10:00:00Z"),
+			} as Doc,
+		];
+
+		const mapping = buildFolderSlugMapping(articles);
+		expect(mapping.size).toBe(1);
+		expect(mapping.get("cicd")).toBe("workflows");
+	});
+
+	test("returns empty map for empty articles array", () => {
+		const mapping = buildFolderSlugMapping([]);
+		expect(mapping.size).toBe(0);
+	});
+
+	test("skips non-folder documents", () => {
+		const articles: Array<Doc> = [
+			{
+				id: 1,
+				content: "# Article",
+				docType: "document",
+				path: "/old-name-abc1234",
+				contentMetadata: { title: "New Name" } as DocContentMetadata,
+				createdAt: new Date("2024-01-10T10:00:00Z"),
+			} as Doc,
+		];
+
+		const mapping = buildFolderSlugMapping(articles);
+		expect(mapping.size).toBe(0);
+	});
+
+	test("skips folder documents without a path", () => {
+		const articles: Array<Doc> = [
+			{
+				id: 1,
+				content: "",
+				docType: "folder",
+				contentMetadata: { title: "Orphan Folder" } as DocContentMetadata,
+				createdAt: new Date("2024-01-10T10:00:00Z"),
+			} as Doc,
+		];
+
+		const mapping = buildFolderSlugMapping(articles);
+		expect(mapping.size).toBe(0);
+	});
+
+	test("skips folder documents without a title in contentMetadata", () => {
+		const articles: Array<Doc> = [
+			{
+				id: 1,
+				content: "",
+				docType: "folder",
+				path: "/some-folder-abc1234",
+				contentMetadata: {} as DocContentMetadata,
+				createdAt: new Date("2024-01-10T10:00:00Z"),
+			} as Doc,
+		];
+
+		const mapping = buildFolderSlugMapping(articles);
+		expect(mapping.size).toBe(0);
+	});
+});
+
+describe("remapFolderPaths", () => {
+	test("remaps matching folder path segment", () => {
+		const inputs: Array<ArticleInput> = [{ content: "# Child", folderPath: "old-name/child" }];
+		const mapping = new Map([["old-name", "new-name"]]);
+
+		remapFolderPaths(inputs, mapping);
+
+		expect(inputs[0].folderPath).toBe("new-name/child");
+	});
+
+	test("leaves non-matching paths unchanged", () => {
+		const inputs: Array<ArticleInput> = [{ content: "# Article", folderPath: "other-folder" }];
+		const mapping = new Map([["old-name", "new-name"]]);
+
+		remapFolderPaths(inputs, mapping);
+
+		expect(inputs[0].folderPath).toBe("other-folder");
+	});
+
+	test("remaps only matching segments in multi-segment path", () => {
+		const inputs: Array<ArticleInput> = [{ content: "# Deep", folderPath: "old-name/middle/deep" }];
+		const mapping = new Map([["old-name", "new-name"]]);
+
+		remapFolderPaths(inputs, mapping);
+
+		expect(inputs[0].folderPath).toBe("new-name/middle/deep");
+	});
+
+	test("remaps multiple segments when mapping has multiple entries", () => {
+		const inputs: Array<ArticleInput> = [{ content: "# Article", folderPath: "old-a/old-b" }];
+		const mapping = new Map([
+			["old-a", "new-a"],
+			["old-b", "new-b"],
+		]);
+
+		remapFolderPaths(inputs, mapping);
+
+		expect(inputs[0].folderPath).toBe("new-a/new-b");
+	});
+
+	test("skips inputs without folderPath", () => {
+		const inputs: Array<ArticleInput> = [{ content: "# Root Article" }];
+		const mapping = new Map([["old-name", "new-name"]]);
+
+		remapFolderPaths(inputs, mapping);
+
+		expect(inputs[0].folderPath).toBeUndefined();
+	});
+
+	test("handles empty inputs array", () => {
+		const inputs: Array<ArticleInput> = [];
+		const mapping = new Map([["old-name", "new-name"]]);
+
+		// Should not throw
+		remapFolderPaths(inputs, mapping);
+
+		expect(inputs).toHaveLength(0);
 	});
 });

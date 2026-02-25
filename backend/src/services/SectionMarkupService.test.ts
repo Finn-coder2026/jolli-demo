@@ -1,7 +1,12 @@
 import type { Database } from "../core/Database";
 import type { DocDraftSectionChangesDao } from "../dao/DocDraftSectionChangesDao";
+import { getTenantContext } from "../tenant/TenantContext";
 import { createSectionMarkupService } from "./SectionMarkupService";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../tenant/TenantContext", () => ({
+	getTenantContext: vi.fn().mockReturnValue(undefined),
+}));
 
 describe("SectionMarkupService", () => {
 	let mockDb: Database;
@@ -427,6 +432,253 @@ describe("SectionMarkupService", () => {
 			expect(result).toContain("---\ntitle: My Article\n---");
 			expect(result).toContain("# New Section");
 			expect(result).toContain("# Section 1");
+		});
+	});
+
+	describe("enrichSectionChangeContent", () => {
+		it("should re-extract section content from draft markdown for pending update changes", async () => {
+			const draftContent = "# Features\n\nThe platform provides:\n\n- Item one\n- Item two\n- Item three";
+
+			mockDocDraftDao.getDocDraft.mockResolvedValue({
+				id: 1,
+				docId: undefined,
+				title: "Test Draft",
+				content: draftContent,
+				createdBy: 1,
+				createdAt: new Date("2025-01-01T00:00:00Z"),
+				updatedAt: new Date("2025-01-01T00:00:00Z"),
+				contentLastEditedAt: null,
+				contentLastEditedBy: null,
+				contentMetadata: undefined,
+			});
+
+			const changes = [
+				{
+					id: 1,
+					draftId: 1,
+					docId: 10,
+					changeType: "update" as const,
+					path: "/sections/1",
+					content: "The platform provides:Item oneItem twoItem three",
+					proposed: [
+						{
+							for: "content" as const,
+							who: { type: "agent" as const },
+							description: "test",
+							value: "new",
+							appliedAt: undefined,
+						},
+					],
+					comments: [],
+					applied: false,
+					dismissed: false,
+					createdAt: new Date("2025-01-01T00:00:00Z"),
+					updatedAt: new Date("2025-01-01T00:00:00Z"),
+				},
+			];
+
+			const result = await service.enrichSectionChangeContent(draftContent, 1, changes);
+
+			expect(result[0].content).toContain("- Item one");
+			expect(result[0].content).toContain("- Item two");
+			expect(result[0].content).toContain("- Item three");
+		});
+
+		it("should not modify applied or dismissed changes", async () => {
+			const draftContent = "# Section\n\nContent here";
+
+			mockDocDraftDao.getDocDraft.mockResolvedValue({
+				id: 1,
+				docId: undefined,
+				title: "Test Draft",
+				content: draftContent,
+				createdBy: 1,
+				createdAt: new Date("2025-01-01T00:00:00Z"),
+				updatedAt: new Date("2025-01-01T00:00:00Z"),
+				contentLastEditedAt: null,
+				contentLastEditedBy: null,
+				contentMetadata: undefined,
+			});
+
+			const changes = [
+				{
+					id: 1,
+					draftId: 1,
+					docId: 10,
+					changeType: "update" as const,
+					path: "/sections/1",
+					content: "stripped content",
+					proposed: [
+						{
+							for: "content" as const,
+							who: { type: "agent" as const },
+							description: "test",
+							value: "new",
+							appliedAt: undefined,
+						},
+					],
+					comments: [],
+					applied: true,
+					dismissed: false,
+					createdAt: new Date("2025-01-01T00:00:00Z"),
+					updatedAt: new Date("2025-01-01T00:00:00Z"),
+				},
+			];
+
+			const result = await service.enrichSectionChangeContent(draftContent, 1, changes);
+
+			expect(result[0].content).toBe("stripped content");
+		});
+
+		it("should not enrich pending insert-type changes", async () => {
+			const draftContent = "# Section\n\nContent here";
+
+			mockDocDraftDao.getDocDraft.mockResolvedValue({
+				id: 1,
+				docId: undefined,
+				title: "Test Draft",
+				content: draftContent,
+				createdBy: 1,
+				createdAt: new Date("2025-01-01T00:00:00Z"),
+				updatedAt: new Date("2025-01-01T00:00:00Z"),
+				contentLastEditedAt: null,
+				contentLastEditedBy: null,
+				contentMetadata: undefined,
+			});
+
+			const changes = [
+				{
+					id: 1,
+					draftId: 1,
+					docId: 10,
+					changeType: "insert-after" as const,
+					path: "/sections/1",
+					content: "original insert content",
+					proposed: [
+						{
+							for: "content" as const,
+							who: { type: "agent" as const },
+							description: "test",
+							value: "new section content",
+							appliedAt: undefined,
+						},
+					],
+					comments: [],
+					applied: false,
+					dismissed: false,
+					createdAt: new Date("2025-01-01T00:00:00Z"),
+					updatedAt: new Date("2025-01-01T00:00:00Z"),
+				},
+			];
+
+			const result = await service.enrichSectionChangeContent(draftContent, 1, changes);
+
+			// Insert-type changes should be returned unchanged (not enriched)
+			expect(result[0].content).toBe("original insert content");
+		});
+
+		it("should return change unchanged when section path does not match any section", async () => {
+			const draftContent = "# Section 1\n\nContent here";
+
+			mockDocDraftDao.getDocDraft.mockResolvedValue({
+				id: 1,
+				docId: undefined,
+				title: "Test Draft",
+				content: draftContent,
+				createdBy: 1,
+				createdAt: new Date("2025-01-01T00:00:00Z"),
+				updatedAt: new Date("2025-01-01T00:00:00Z"),
+				contentLastEditedAt: null,
+				contentLastEditedBy: null,
+				contentMetadata: undefined,
+			});
+
+			const changes = [
+				{
+					id: 1,
+					draftId: 1,
+					docId: 10,
+					changeType: "update" as const,
+					path: "/sections/999",
+					content: "orphaned content",
+					proposed: [
+						{
+							for: "content" as const,
+							who: { type: "agent" as const },
+							description: "test",
+							value: "new",
+							appliedAt: undefined,
+						},
+					],
+					comments: [],
+					applied: false,
+					dismissed: false,
+					createdAt: new Date("2025-01-01T00:00:00Z"),
+					updatedAt: new Date("2025-01-01T00:00:00Z"),
+				},
+			];
+
+			const result = await service.enrichSectionChangeContent(draftContent, 1, changes);
+
+			// Non-matching path should return change unchanged
+			expect(result[0].content).toBe("orphaned content");
+		});
+
+		it("should return empty array unchanged", async () => {
+			const result = await service.enrichSectionChangeContent("# Test", 1, []);
+			expect(result).toEqual([]);
+		});
+	});
+
+	describe("tenant context DAO resolution", () => {
+		it("should prefer tenant context DAOs when available", async () => {
+			const tenantSectionChangesDao: DocDraftSectionChangesDao = {
+				findByDraftId: vi.fn().mockResolvedValue([
+					{
+						id: 1,
+						draftId: 1,
+						docId: 1,
+						changeType: "update",
+						path: "/sections/0",
+						content: "Tenant content",
+						proposed: [],
+						comments: [],
+						applied: false,
+						dismissed: false,
+						createdAt: new Date("2025-01-01T00:00:00Z"),
+						updatedAt: new Date("2025-01-01T00:00:00Z"),
+					},
+				]),
+			} as unknown as DocDraftSectionChangesDao;
+			const tenantDocDraftDao = {
+				getDocDraft: vi.fn().mockResolvedValue({
+					id: 1,
+					docId: undefined,
+					title: "Tenant Draft",
+					content: "# Tenant Section\n\nTenant content",
+					createdBy: 1,
+					createdAt: new Date("2025-01-01T00:00:00Z"),
+					updatedAt: new Date("2025-01-01T00:00:00Z"),
+					contentLastEditedAt: null,
+					contentLastEditedBy: null,
+					contentMetadata: undefined,
+				}),
+			};
+
+			vi.mocked(getTenantContext).mockReturnValue({
+				database: {
+					docDraftSectionChangesDao: tenantSectionChangesDao,
+					docDraftDao: tenantDocDraftDao,
+				},
+			} as never);
+
+			const result = await service.annotateDocDraft(1, "# Tenant Section\n\nTenant content");
+
+			expect(result).toHaveLength(1);
+			// Verify tenant DAOs were used, not default ones
+			expect(tenantDocDraftDao.getDocDraft).toHaveBeenCalledWith(1);
+			expect(tenantSectionChangesDao.findByDraftId).toHaveBeenCalledWith(1);
+			expect(mockDocDraftSectionChangesDao.findByDraftId).not.toHaveBeenCalled();
 		});
 	});
 });

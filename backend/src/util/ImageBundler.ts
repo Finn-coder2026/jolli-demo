@@ -5,6 +5,14 @@
  * and returns FileTree entries for bundled images.
  *
  * Framework-agnostic: can be used with any site generator.
+ *
+ * Security: Images are validated at multiple layers:
+ * 1. Tenant validation - ImageBundler ensures images belong to the correct tenant
+ * 2. Space validation - Handled at article save time (image reference validation)
+ *    prevents articles from referencing images in other spaces
+ *
+ * By the time content reaches site generation, cross-space image references
+ * have already been blocked, so no additional space validation is needed here.
  */
 
 import type { FileTree } from "../github/DocsiteGitHub";
@@ -92,6 +100,7 @@ export function extractImageReferences(content: string): Array<string> {
  * Transform image URLs in content from API paths to static paths.
  *
  * For markdown images: ![alt](/api/images/...) -> <img src="/images/..." alt="alt" />
+ * For markdown images with width percentage: ![alt](/api/images/...){width=XX%} -> <img src="/images/..." alt="alt" style="width: XX%" />
  * For HTML images: src="/api/images/..." -> src="/images/..."
  *
  * Markdown images are converted to HTML to bypass Next.js/Nextra image optimization,
@@ -112,9 +121,17 @@ export function transformImageUrls(content: string, filenameMap: Map<string, str
 		const escaped = s3Key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 		const newPath = `/images/${bundledFilename}`;
 
-		// Transform markdown images to HTML img tags to bypass Next.js image optimization
-		// Match: ![alt text](/api/images/s3Key)
-		const markdownRegex = new RegExp(`!\\[([^\\]]*)\\]\\(/api/images/${escaped}\\)`, "g");
+		// Transform markdown images with width percentage to HTML img tags with style
+		// Match: ![alt text](/api/images/s3Key){width=XX%}
+		const markdownWithWidthRegex = new RegExp(
+			`!\\[([^\\]]*)\\]\\(/api/images/${escaped}\\)\\{width=(\\d+)%\\}`,
+			"g",
+		);
+		result = result.replace(markdownWithWidthRegex, `<img src="${newPath}" alt="$1" style="width: $2%" />`);
+
+		// Transform markdown images without width to HTML img tags
+		// Match: ![alt text](/api/images/s3Key) (not followed by {width=...})
+		const markdownRegex = new RegExp(`!\\[([^\\]]*)\\]\\(/api/images/${escaped}\\)(?!\\{width=)`, "g");
 		result = result.replace(markdownRegex, `<img src="${newPath}" alt="$1" />`);
 
 		// Transform HTML image src attributes (already HTML, just update the path)

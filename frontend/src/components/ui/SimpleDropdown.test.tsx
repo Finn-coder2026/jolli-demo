@@ -96,6 +96,51 @@ describe("SimpleDropdown", () => {
 		expect(dropdownContent).toBeDefined();
 	});
 
+	it("should render with below position by default", () => {
+		const { container } = render(
+			<SimpleDropdown trigger={<button>Trigger</button>}>
+				<SimpleDropdownItem>Item</SimpleDropdownItem>
+			</SimpleDropdown>,
+		);
+
+		const trigger = screen.getByText("Trigger");
+		trigger.click();
+
+		// Verify dropdown has top-full class (below position)
+		const dropdownContent = container.querySelector(".top-full");
+		expect(dropdownContent).toBeDefined();
+	});
+
+	it("should render with above position", () => {
+		const { container } = render(
+			<SimpleDropdown trigger={<button>Trigger</button>} position="above">
+				<SimpleDropdownItem>Item</SimpleDropdownItem>
+			</SimpleDropdown>,
+		);
+
+		const trigger = screen.getByText("Trigger");
+		trigger.click();
+
+		// Verify dropdown has bottom-full class (above position)
+		const dropdownContent = container.querySelector(".bottom-full");
+		expect(dropdownContent).toBeDefined();
+	});
+
+	it("should render with below position", () => {
+		const { container } = render(
+			<SimpleDropdown trigger={<button>Trigger</button>} position="below">
+				<SimpleDropdownItem>Item</SimpleDropdownItem>
+			</SimpleDropdown>,
+		);
+
+		const trigger = screen.getByText("Trigger");
+		trigger.click();
+
+		// Verify dropdown has top-full class (below position)
+		const dropdownContent = container.querySelector(".top-full");
+		expect(dropdownContent).toBeDefined();
+	});
+
 	it("should render SimpleDropdownItem with onClick", () => {
 		const onClick = vi.fn();
 

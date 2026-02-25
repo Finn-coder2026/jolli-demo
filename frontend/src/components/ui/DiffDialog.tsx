@@ -114,10 +114,10 @@ export function DiffDialog({
 				</div>
 
 				{/* Diff Content Area */}
-				<div className="flex-1 overflow-auto p-4" data-testid="diff-dialog-content">
+				<div className="flex-1 overflow-auto p-4 scrollbar-thin relative" data-testid="diff-dialog-content">
 					{diffContent ? (
 						<div
-							className="diff-container text-sm [&_.d2h-file-header]:hidden [&_.d2h-file-name-wrapper]:invisible"
+							className="diff-container text-sm [&_.d2h-file-header]:hidden [&_.d2h-file-name-wrapper]:invisible [&_.d2h-wrapper]:overflow-x-auto [&_.d2h-file-side-diff]:table-fixed [&_.d2h-code-line-ctn]:break-all [&_.d2h-code-line-ctn]:whitespace-pre-wrap"
 							// biome-ignore lint/security/noDangerouslySetInnerHtml: diff2html generates safe HTML
 							dangerouslySetInnerHTML={{ __html: diffHtml }}
 						/>

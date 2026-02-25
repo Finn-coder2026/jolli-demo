@@ -163,7 +163,7 @@ export function JobsRunningList(): ReactElement | null {
 	};
 
 	// Don't render anything while loading or if there are no jobs
-	if (loading || jobs.length === 0) {
+	if (loading || !jobs || jobs.length === 0) {
 		return null;
 	}
 

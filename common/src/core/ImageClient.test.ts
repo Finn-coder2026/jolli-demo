@@ -26,6 +26,19 @@ function createMockAuth(checkUnauthorized?: (response: Response) => boolean): Cl
 	return auth;
 }
 
+// Helper to create a mock auth object that returns no headers (to test fallback)
+function createMockAuthWithoutHeaders(): ClientAuth {
+	return {
+		createRequest: (method, _body, additional) => {
+			return {
+				method,
+				credentials: "include" as RequestCredentials,
+				...additional,
+			};
+		},
+	};
+}
+
 describe("ImageClient", () => {
 	beforeEach(() => {
 		global.fetch = vi.fn();
@@ -82,7 +95,7 @@ describe("ImageClient", () => {
 
 			const client = createImageClient("http://localhost", createMockAuth());
 			const blob = new Blob(["test"], { type: "image/jpeg" });
-			const result = await client.uploadImage(blob, "custom.jpg");
+			const result = await client.uploadImage(blob, { filename: "custom.jpg" });
 
 			expect(result).toEqual(mockResult);
 			expect(mockFetch).toHaveBeenCalledWith(
@@ -93,6 +106,66 @@ describe("ImageClient", () => {
 					headers: expect.objectContaining({
 						"Content-Type": "image/jpeg",
 						"X-Original-Filename": "custom.jpg",
+					}),
+				}),
+			);
+		});
+
+		it("should upload with spaceId header when provided", async () => {
+			const mockResult = {
+				imageId: "tenant/org/my-space/uuid.png",
+				url: "/api/images/tenant/org/my-space/uuid.png",
+			};
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => mockResult,
+			});
+			global.fetch = mockFetch;
+
+			const client = createImageClient("http://localhost", createMockAuth());
+			const file = new File(["test"], "test.png", { type: "image/png" });
+			const result = await client.uploadImage(file, { spaceId: 42 });
+
+			expect(result).toEqual(mockResult);
+			expect(mockFetch).toHaveBeenCalledWith(
+				"http://localhost/api/images",
+				expect.objectContaining({
+					method: "POST",
+					body: file,
+					headers: expect.objectContaining({
+						"Content-Type": "image/png",
+						"X-Original-Filename": "test.png",
+						"X-Space-Id": "42",
+					}),
+				}),
+			);
+		});
+
+		it("should upload with both filename and spaceId options", async () => {
+			const mockResult = {
+				imageId: "tenant/org/my-space/uuid.png",
+				url: "/api/images/tenant/org/my-space/uuid.png",
+			};
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => mockResult,
+			});
+			global.fetch = mockFetch;
+
+			const client = createImageClient("http://localhost", createMockAuth());
+			const blob = new Blob(["test"], { type: "image/jpeg" });
+			const result = await client.uploadImage(blob, { filename: "custom.jpg", spaceId: 123 });
+
+			expect(result).toEqual(mockResult);
+			expect(mockFetch).toHaveBeenCalledWith(
+				"http://localhost/api/images",
+				expect.objectContaining({
+					method: "POST",
+					body: blob,
+					headers: expect.objectContaining({
+						"Content-Type": "image/jpeg",
+						"X-Original-Filename": "custom.jpg",
+						"X-Space-Id": "123",
 					}),
 				}),
 			);
@@ -136,7 +209,7 @@ describe("ImageClient", () => {
 
 			const client = createImageClient("http://localhost", createMockAuth());
 			const blob = new Blob(["test"]); // No type specified
-			await client.uploadImage(blob, "noext");
+			await client.uploadImage(blob, { filename: "noext" });
 
 			expect(mockFetch).toHaveBeenCalledWith(
 				"http://localhost/api/images",
@@ -205,6 +278,35 @@ describe("ImageClient", () => {
 			const file = new File(["test"], "test.png", { type: "image/png" });
 
 			await expect(client.uploadImage(file)).rejects.toThrow("Upload failed");
+		});
+
+		it("should handle auth that returns no headers", async () => {
+			const mockResult = {
+				imageId: "tenant/org/_default/uuid.png",
+				url: "/api/images/tenant/org/_default/uuid.png",
+			};
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => mockResult,
+			});
+			global.fetch = mockFetch;
+
+			const client = createImageClient("http://localhost", createMockAuthWithoutHeaders());
+			const file = new File(["test"], "test.png", { type: "image/png" });
+			const result = await client.uploadImage(file);
+
+			expect(result).toEqual(mockResult);
+			expect(mockFetch).toHaveBeenCalledWith(
+				"http://localhost/api/images",
+				expect.objectContaining({
+					method: "POST",
+					body: file,
+					headers: expect.objectContaining({
+						"Content-Type": "image/png",
+						"X-Original-Filename": "test.png",
+					}),
+				}),
+			);
 		});
 	});
 

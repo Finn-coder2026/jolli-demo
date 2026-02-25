@@ -6,6 +6,28 @@ export type TenantStatus = "provisioning" | "active" | "suspended" | "migrating"
 /** Type of deployment for the tenant */
 export type DeploymentType = "shared" | "isolated";
 
+/** Pricing tier for tenant */
+export type PricingTier = "free" | "pro" | "enterprise";
+
+/**
+ * Feature flags for tenant - stored in the JSONB feature_flags column.
+ * Defines which features are enabled for the tenant based on their pricing tier.
+ */
+export interface TenantFeatureFlags {
+	/** Pricing tier (free/pro/enterprise) */
+	tier?: PricingTier;
+	/** Subdomain access enabled (e.g., tenant.jolli.ai) */
+	subdomain?: boolean;
+	/** Custom domain enabled (e.g., docs.acme.com) */
+	customDomain?: boolean;
+	/** Advanced analytics features */
+	advancedAnalytics?: boolean;
+	/** SSO integration (SAML, OAuth) */
+	sso?: boolean;
+	/** Dedicated support access */
+	dedicatedSupport?: boolean;
+}
+
 /** Tenant information stored in the registry */
 export interface Tenant {
 	id: string;
@@ -21,7 +43,7 @@ export interface Tenant {
 	// Metadata
 	configs: Record<string, unknown>;
 	configsUpdatedAt: Date | null;
-	featureFlags: Record<string, boolean>;
+	featureFlags: TenantFeatureFlags;
 	primaryDomain: string | null;
 
 	createdAt: Date;
@@ -33,9 +55,10 @@ export interface Tenant {
 export interface NewTenant {
 	slug: string;
 	displayName: string;
+	ownerEmail?: string;
 	databaseProviderId?: string;
 	configs?: Record<string, unknown>;
-	featureFlags?: Record<string, boolean>;
+	featureFlags?: TenantFeatureFlags;
 }
 
 /** @deprecated Database credentials are now stored on the Provider, not the Tenant */

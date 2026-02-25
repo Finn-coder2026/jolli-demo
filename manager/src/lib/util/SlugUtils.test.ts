@@ -1,4 +1,4 @@
-import { generateProviderSlug, isValidProviderSlug } from "./SlugUtils";
+import { generateProviderSlug, isValidProviderSlug, slugToPostgresIdentifier } from "./SlugUtils";
 import { describe, expect, it } from "vitest";
 
 describe("SlugUtils", () => {
@@ -74,6 +74,34 @@ describe("SlugUtils", () => {
 		it("returns true for exactly max length", () => {
 			const maxSlug = "a".repeat(50);
 			expect(isValidProviderSlug(maxSlug)).toBe(true);
+		});
+	});
+
+	describe("slugToPostgresIdentifier", () => {
+		it("converts hyphens to underscores", () => {
+			expect(slugToPostgresIdentifier("pie-project")).toBe("pie_project");
+			expect(slugToPostgresIdentifier("my-tenant-name")).toBe("my_tenant_name");
+		});
+
+		it("handles slugs without hyphens unchanged", () => {
+			expect(slugToPostgresIdentifier("project")).toBe("project");
+			expect(slugToPostgresIdentifier("myproject123")).toBe("myproject123");
+		});
+
+		it("handles multiple consecutive hyphens", () => {
+			expect(slugToPostgresIdentifier("my--project")).toBe("my__project");
+		});
+
+		it("handles empty string", () => {
+			expect(slugToPostgresIdentifier("")).toBe("");
+		});
+
+		it("handles single character slug", () => {
+			expect(slugToPostgresIdentifier("a")).toBe("a");
+		});
+
+		it("handles slug with hyphen at multiple positions", () => {
+			expect(slugToPostgresIdentifier("a-b-c-d")).toBe("a_b_c_d");
 		});
 	});
 });

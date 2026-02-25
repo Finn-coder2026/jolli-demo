@@ -4,9 +4,13 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/preact";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock the lucide-react icons
-vi.mock("lucide-react", () => ({
-	Play: () => <div data-testid="play-icon" />,
-}));
+vi.mock("lucide-react", async importOriginal => {
+	const actual = await importOriginal<typeof import("lucide-react")>();
+	return {
+		...actual,
+		Play: () => <div data-testid="play-icon" />,
+	};
+});
 
 const mockIntegrationsClient = {
 	listIntegrations: vi.fn(),

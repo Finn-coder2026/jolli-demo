@@ -5,7 +5,8 @@ import type { Tool as AnthropicTool, MessageParam } from "@anthropic-ai/sdk/reso
 // Default max output tokens if not specified - should be set by factory
 const DEFAULT_MAX_OUTPUT_TOKENS = 8192;
 
-function toAnthropicMessages(messages: Array<Message>) {
+/** @internal Exported for testing */
+export function toAnthropicMessages(messages: Array<Message>) {
 	// Anthropic has no "system" role in the array (uses separate `system`).
 	// Strategy: lift first system message (if any) to `system`, remove from list.
 	let system: string | undefined;
@@ -60,8 +61,9 @@ function toAnthropicMessages(messages: Array<Message>) {
 			i = j - 1; // advance outer loop to last consumed index
 			continue;
 		}
-		// regular user/assistant
-		if (m.role === "user" || m.role === "assistant") {
+		// regular user/assistant — skip messages with empty content to avoid
+		// Anthropic "text content blocks must be non-empty" validation error
+		if ((m.role === "user" || m.role === "assistant") && m.content && m.content.trim().length > 0) {
 			rest.push({ role: m.role, content: [{ type: "text", text: m.content }] as Array<object> });
 		}
 	}
@@ -120,6 +122,8 @@ export class AnthropicLLMClient implements LLMClient {
 			})) as unknown as MessageStream;
 
 			// Track tool_use input deltas per content block index so we emit after completion
+			let sawTextDelta = false;
+			const emittedToolCallIds = new Set<string>();
 			const toolUseState = new Map<
 				number,
 				{
@@ -143,6 +147,7 @@ export class AnthropicLLMClient implements LLMClient {
 				) {
 					const text = "text" in event.delta && typeof event.delta.text === "string" ? event.delta.text : "";
 					if (text) {
+						sawTextDelta = true;
 						yield { type: "text_delta", delta: text };
 					}
 					continue;
@@ -250,6 +255,7 @@ export class AnthropicLLMClient implements LLMClient {
 						}
 					}
 					yield { type: "tool_call", call };
+					emittedToolCallIds.add(call.id);
 					toolUseState.delete(idx);
 				}
 
@@ -257,6 +263,48 @@ export class AnthropicLLMClient implements LLMClient {
 			}
 
 			const finalMsg = await stream.finalMessage();
+			const finalBlocks = Array.isArray(finalMsg.content) ? finalMsg.content : [];
+
+			// Some SDK/runtime combinations can surface text only in finalMessage.content.
+			// Emit a fallback text delta to preserve downstream expectations.
+			if (!sawTextDelta) {
+				const fallbackText = finalBlocks
+					.filter(
+						(block): block is { type: "text"; text?: string } =>
+							typeof block === "object" && block !== null && "type" in block && block.type === "text",
+					)
+					.map(block => (typeof block.text === "string" ? block.text : ""))
+					.join("");
+				if (fallbackText.length > 0) {
+					yield { type: "text_delta", delta: fallbackText };
+				}
+			}
+
+			// Likewise, recover missed tool_use blocks from final message content.
+			for (let i = 0; i < finalBlocks.length; i++) {
+				const block = finalBlocks[i];
+				if (!(typeof block === "object" && block !== null && "type" in block && block.type === "tool_use")) {
+					continue;
+				}
+
+				const id = "id" in block && typeof block.id === "string" ? block.id : `tool_use_${i}`;
+				if (emittedToolCallIds.has(id)) {
+					continue;
+				}
+
+				const call: ToolCall = {
+					id,
+					name: "name" in block && typeof block.name === "string" ? block.name : "",
+					arguments: "input" in block ? block.input : {},
+					providerMeta: {
+						source: "final_message",
+						index: i,
+					},
+				};
+				yield { type: "tool_call", call };
+				emittedToolCallIds.add(id);
+			}
+
 			const finish_reason_raw = finalMsg.stop_reason;
 			const finish_reason =
 				finish_reason_raw === "end_turn"

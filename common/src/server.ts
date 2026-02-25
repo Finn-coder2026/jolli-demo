@@ -7,5 +7,7 @@
  * Usage: import { ... } from "jolli-common/server"
  */
 export * from "./util/BootstrapAuth";
+export * from "./util/EmojiShortcode";
+export * from "./util/MdxSanitization";
 export * from "./util/PasswordCrypto";
 export * from "./util/SlugUtils";

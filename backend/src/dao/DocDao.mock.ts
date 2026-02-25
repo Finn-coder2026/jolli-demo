@@ -5,6 +5,7 @@ export function mockDocDao(partial?: Partial<DocDao>): DocDao {
 	return {
 		createDoc: vi.fn(),
 		readDoc: vi.fn(),
+		readDocsByJrns: vi.fn().mockResolvedValue(new Map()),
 		readDocById: vi.fn(),
 		listDocs: vi.fn(),
 		updateDoc: vi.fn(),
@@ -20,6 +21,15 @@ export function mockDocDao(partial?: Partial<DocDao>): DocDao {
 		renameDoc: vi.fn(),
 		getMaxSortOrder: vi.fn(),
 		hasDeletedDocs: vi.fn(),
+		getAllContent: vi.fn().mockResolvedValue([]),
+		searchInSpace: vi.fn(),
+		reorderDoc: vi.fn(),
+		moveDoc: vi.fn(),
+		reorderAt: vi.fn(),
+		findFolderByName: vi.fn(),
+		findDocBySourcePath: vi.fn(),
+		findDocBySourcePathAnySpace: vi.fn(),
+		searchArticlesForLink: vi.fn(),
 		...partial,
 	};
 }

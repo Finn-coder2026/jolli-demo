@@ -7,6 +7,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Mock dependencies
 vi.mock("server-only", () => ({}));
 
+// Mock auth module - returns a SuperAdmin user by default
+vi.mock("@/lib/auth", () => ({
+	getUserFromRequest: vi.fn(() => ({
+		userId: 1,
+		email: "admin@test.com",
+		role: "super_admin",
+	})),
+	unauthorizedResponse: vi.fn(() => NextResponse.json({ error: "Unauthorized" }, { status: 401 })),
+	forbiddenResponse: vi.fn((msg: string) => NextResponse.json({ error: msg }, { status: 403 })),
+	isSuperAdmin: vi.fn((role: string) => role === "super_admin"),
+}));
+
 vi.mock("../../../../lib/Config", () => ({
 	env: {
 		ADMIN_POSTGRES_URL: "postgresql://admin:password@localhost:5432/postgres",

@@ -1,11 +1,13 @@
 import {
 	generateId,
 	hashFingerprint,
+	keepBothStrategy,
 	matchesAnyGlob,
 	parseYamlFrontmatter,
 	parseYamlList,
 	passthroughObfuscator,
 	purgeSnapshots,
+	recursiveScanner,
 	renameFile,
 	type SyncState,
 	toYamlFrontmatter,
@@ -416,5 +418,349 @@ describe("renameFile", () => {
 		const { readFile } = await import("node:fs/promises");
 		const resultContent = await readFile(newPath, "utf-8");
 		expect(resultContent).toBe(content);
+	});
+});
+
+describe("keepBothStrategy", () => {
+	const testDir = "/tmp/jolli-keep-both-test";
+
+	beforeEach(async () => {
+		await mkdir(testDir, { recursive: true });
+	});
+
+	afterEach(async () => {
+		await rm(testDir, { recursive: true, force: true });
+	});
+
+	test("creates conflict file and returns keep-both action", async () => {
+		const conflicts = [
+			{
+				fileId: "FILE1",
+				clientPath: `${testDir}/note.md`,
+				localContent: "Local version",
+				serverContent: "Server version",
+				serverVersion: 2,
+				baseContent: null,
+			},
+		];
+
+		const results = await keepBothStrategy.merge(conflicts);
+
+		expect(results).toHaveLength(1);
+		expect(results[0].action).toBe("keep-both");
+		expect(results[0].resolved).toBe("Local version");
+	});
+});
+
+describe("recursiveScanner", () => {
+	const testDir = "/tmp/jolli-scanner-test";
+
+	beforeEach(async () => {
+		await mkdir(`${testDir}/subdir`, { recursive: true });
+		await writeFile(`${testDir}/file1.md`, "content1");
+		await writeFile(`${testDir}/file2.txt`, "content2");
+		await writeFile(`${testDir}/subdir/nested.md`, "nested");
+	});
+
+	afterEach(async () => {
+		await rm(testDir, { recursive: true, force: true });
+	});
+
+	test("getFiles returns matching files", async () => {
+		const originalCwd = process.cwd();
+		try {
+			process.chdir(testDir);
+			const files = await recursiveScanner.getFiles({ include: ["**/*.md"] });
+			expect(files).toContain("file1.md");
+			expect(files).toContain("subdir/nested.md");
+			expect(files).not.toContain("file2.txt");
+		} finally {
+			process.chdir(originalCwd);
+		}
+	});
+
+	test("getFiles respects exclude patterns", async () => {
+		const originalCwd = process.cwd();
+		try {
+			process.chdir(testDir);
+			const files = await recursiveScanner.getFiles({
+				include: ["**/*.md"],
+				exclude: ["subdir/**"],
+			});
+			expect(files).toContain("file1.md");
+			expect(files).not.toContain("subdir/nested.md");
+		} finally {
+			process.chdir(originalCwd);
+		}
+	});
+
+	test("getFiles uses default include pattern", async () => {
+		const originalCwd = process.cwd();
+		try {
+			process.chdir(testDir);
+			const files = await recursiveScanner.getFiles();
+			expect(files).toContain("file1.md");
+			expect(files).toContain("subdir/nested.md");
+		} finally {
+			process.chdir(originalCwd);
+		}
+	});
+});
+
+describe("parseYamlFrontmatter with space", () => {
+	test("parses space field", () => {
+		const content = `---
+lastCursor: 5
+space: "my-workspace"
+files:
+---`;
+		const state = parseYamlFrontmatter(content);
+		expect(state.space).toBe("my-workspace");
+		expect(state.lastCursor).toBe(5);
+	});
+
+	test("returns undefined space when not present", () => {
+		const content = `---
+lastCursor: 0
+files:
+---`;
+		const state = parseYamlFrontmatter(content);
+		expect(state.space).toBeUndefined();
+	});
+});
+
+describe("toYamlFrontmatter with space", () => {
+	test("serializes space field", () => {
+		const state: SyncState = {
+			lastCursor: 5,
+			space: "engineering",
+			files: [],
+		};
+		const yaml = toYamlFrontmatter(state);
+		expect(yaml).toContain('space: "engineering"');
+	});
+
+	test("omits space when not set", () => {
+		const state: SyncState = {
+			lastCursor: 0,
+			files: [],
+		};
+		const yaml = toYamlFrontmatter(state);
+		expect(yaml).not.toContain("space:");
+	});
+
+	test("roundtrip preserves space field", () => {
+		const original: SyncState = {
+			lastCursor: 42,
+			space: "my-workspace",
+			files: [
+				{
+					clientPath: "readme.md",
+					fileId: "FILE1",
+					serverPath: "readme.md",
+					fingerprint: "hash1",
+					serverVersion: 5,
+				},
+			],
+		};
+		const yaml = toYamlFrontmatter(original);
+		const parsed = parseYamlFrontmatter(yaml);
+
+		expect(parsed.space).toBe("my-workspace");
+		expect(parsed.lastCursor).toBe(42);
+		expect(parsed.files).toHaveLength(1);
+		expect(parsed.files[0].fileId).toBe("FILE1");
+	});
+});
+
+describe("parseYamlFrontmatter with deleted files", () => {
+	test("parses deleted file entry", () => {
+		const content = `---
+lastCursor: 10
+files:
+  - clientPath: "deleted.md"
+    fileId: "DEL1"
+    serverPath: "deleted.md"
+    fingerprint: "hash"
+    serverVersion: 2
+    deleted: true
+    deletedAt: 1700000000000
+    trashPath: ".sync/trash/deleted.md"
+---`;
+		const state = parseYamlFrontmatter(content);
+		expect(state.files[0]?.deleted).toBe(true);
+		expect(state.files[0]?.deletedAt).toBe(1700000000000);
+		expect(state.files[0]?.trashPath).toBe(".sync/trash/deleted.md");
+	});
+});
+
+describe("toYamlFrontmatter with deleted files", () => {
+	test("serializes deleted file entry", () => {
+		const state: SyncState = {
+			lastCursor: 10,
+			files: [
+				{
+					clientPath: "deleted.md",
+					fileId: "DEL1",
+					serverPath: "deleted.md",
+					fingerprint: "hash",
+					serverVersion: 2,
+					deleted: true,
+					deletedAt: 1700000000000,
+					trashPath: ".sync/trash/deleted.md",
+				},
+			],
+		};
+		const yaml = toYamlFrontmatter(state);
+		expect(yaml).toContain("deleted: true");
+		expect(yaml).toContain("deletedAt: 1700000000000");
+		expect(yaml).toContain('trashPath: ".sync/trash/deleted.md"');
+	});
+});
+
+describe("parseYamlList edge cases", () => {
+	test("handles list with inline comments", () => {
+		const yaml = `include:
+  - "**/*.md"
+  - docs/** # documentation files`;
+		const result = parseYamlList(yaml, "include");
+		expect(result).toHaveLength(2);
+	});
+
+	test("handles list with multiple spaces", () => {
+		const yaml = `include:
+    - "**/*.md"
+    - "docs/**"`;
+		expect(parseYamlList(yaml, "include")).toEqual(["**/*.md", "docs/**"]);
+	});
+});
+
+describe("hashFingerprint edge cases", () => {
+	test("handles content with multiple jrn lines", () => {
+		const content = `---
+jrn: ABC123
+jrn: XYZ789
+---
+# Note`;
+		const hash = hashFingerprint.computeFromContent(content);
+		expect(hash).toMatch(/^[0-9a-f]+$/);
+	});
+
+	test("handles empty content", () => {
+		const hash = hashFingerprint.computeFromContent("");
+		expect(hash).toMatch(/^[0-9a-f]+$/);
+	});
+
+	test("handles content with only whitespace", () => {
+		const hash = hashFingerprint.computeFromContent("   \n\t  ");
+		expect(hash).toMatch(/^[0-9a-f]+$/);
+	});
+});
+
+describe("matchesAnyGlob edge cases", () => {
+	test("matches directory patterns", () => {
+		expect(matchesAnyGlob("dir/file.md", ["dir/**"])).toBe(true);
+	});
+
+	test("matches root level files", () => {
+		expect(matchesAnyGlob("file.md", ["**/*.md"])).toBe(true);
+		expect(matchesAnyGlob("file.md", ["*.md"])).toBe(true);
+	});
+
+	test("handles deep nesting", () => {
+		expect(matchesAnyGlob("a/b/c/d/e.md", ["**/*.md"])).toBe(true);
+	});
+});
+
+describe("toYamlFrontmatter edge cases", () => {
+	test("handles state with empty config", () => {
+		const state: SyncState = {
+			lastCursor: 0,
+			config: {},
+			files: [],
+		};
+		const yaml = toYamlFrontmatter(state);
+		expect(yaml).toContain("lastCursor: 0");
+	});
+
+	test("handles large cursor values", () => {
+		const state: SyncState = {
+			lastCursor: 999999999,
+			files: [],
+		};
+		const yaml = toYamlFrontmatter(state);
+		expect(yaml).toContain("lastCursor: 999999999");
+	});
+
+	test("handles files with special characters in paths", () => {
+		const state: SyncState = {
+			lastCursor: 0,
+			files: [
+				{
+					clientPath: "docs/my file (1).md",
+					fileId: "FILE1",
+					serverPath: "docs/my file (1).md",
+					fingerprint: "hash",
+					serverVersion: 1,
+				},
+			],
+		};
+		const yaml = toYamlFrontmatter(state);
+		expect(yaml).toContain('clientPath: "docs/my file (1).md"');
+	});
+
+	test("handles only include patterns", () => {
+		const state: SyncState = {
+			lastCursor: 0,
+			config: {
+				include: ["**/*.md"],
+			},
+			files: [],
+		};
+		const yaml = toYamlFrontmatter(state);
+		expect(yaml).toContain("include:");
+		expect(yaml).toContain('"**/*.md"');
+	});
+
+	test("handles only exclude patterns", () => {
+		const state: SyncState = {
+			lastCursor: 0,
+			config: {
+				exclude: ["node_modules/**"],
+			},
+			files: [],
+		};
+		const yaml = toYamlFrontmatter(state);
+		expect(yaml).toContain("exclude:");
+		expect(yaml).toContain('"node_modules/**"');
+	});
+});
+
+describe("recursiveScanner edge cases", () => {
+	const testDir = "/tmp/jolli-scanner-edge-test";
+
+	beforeEach(async () => {
+		await mkdir(`${testDir}/.jolli`, { recursive: true });
+		await mkdir(`${testDir}/.sync`, { recursive: true });
+		await writeFile(`${testDir}/normal.md`, "content");
+		await writeFile(`${testDir}/.jolli/state.md`, "state");
+		await writeFile(`${testDir}/.sync/data.md`, "data");
+	});
+
+	afterEach(async () => {
+		await rm(testDir, { recursive: true, force: true });
+	});
+
+	test("excludes .jolli and .sync directories", async () => {
+		const originalCwd = process.cwd();
+		try {
+			process.chdir(testDir);
+			const files = await recursiveScanner.getFiles({ include: ["**/*.md"] });
+			expect(files).toContain("normal.md");
+			expect(files).not.toContain(".jolli/state.md");
+			expect(files).not.toContain(".sync/data.md");
+		} finally {
+			process.chdir(originalCwd);
+		}
 	});
 });

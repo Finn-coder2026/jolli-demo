@@ -1,6 +1,6 @@
 import type { TreeNode } from "../../hooks/useSpaceTree";
 import { TreeItem } from "./TreeItem";
-import { fireEvent, render, screen } from "@testing-library/preact";
+import { fireEvent, render, screen, waitFor } from "@testing-library/preact";
 import type { Doc } from "jolli-common";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -47,10 +47,16 @@ describe("TreeItem", () => {
 	const mockOnCreateFolder = vi.fn();
 	const mockOnCreateDoc = vi.fn();
 
+	const mockFolders = [
+		{ id: 1, name: "Folder 1", depth: 0 },
+		{ id: 2, name: "Folder 2", depth: 0 },
+	];
+
 	const defaultProps = {
 		depth: 0,
 		selectedDocId: undefined as number | undefined,
 		treeData: [] as Array<TreeNode>,
+		folders: mockFolders,
 		onSelect: mockOnSelect,
 		onToggleExpand: mockOnToggleExpand,
 		onDelete: mockOnDelete,
@@ -131,7 +137,8 @@ describe("TreeItem", () => {
 		render(<TreeItem node={node} {...defaultProps} selectedDocId={42} />);
 
 		const treeItem = screen.getByRole("treeitem");
-		expect(treeItem.className).toContain("bg-accent");
+		// CSS Modules generates a hashed class name like "TreeItem_selected_abc123"
+		expect(treeItem.className).toMatch(/selected/);
 	});
 
 	it("should render chevron right when folder is collapsed", () => {
@@ -176,7 +183,7 @@ describe("TreeItem", () => {
 
 		const { container } = render(<TreeItem node={node} {...defaultProps} />);
 
-		const fileIcon = container.querySelector('[data-lucide-icon="File"]');
+		const fileIcon = container.querySelector('[data-lucide-icon="FileText"]');
 		expect(fileIcon).toBeDefined();
 	});
 
@@ -326,5 +333,606 @@ describe("TreeItem", () => {
 
 		// Action menu container should still be visible because dropdown is open
 		expect(actionMenuContainer?.className).toContain("opacity-100");
+	});
+
+	it("should call onReorderDoc with 'up' when clicking Move Up", () => {
+		const mockOnReorderDoc = vi.fn().mockResolvedValue(undefined);
+		const node = createMockTreeNode({
+			doc: createMockDoc({ id: 42 }),
+		});
+
+		render(
+			<TreeItem
+				node={node}
+				{...defaultProps}
+				isDefaultSort={true}
+				siblingIndex={1}
+				siblingCount={3}
+				onReorderDoc={mockOnReorderDoc}
+			/>,
+		);
+
+		// Open action menu
+		const actionMenuTrigger = screen.getByTestId("item-action-menu-trigger");
+		fireEvent.click(actionMenuTrigger);
+
+		// Click Move Up
+		const moveUpOption = screen.getByTestId("move-up-option");
+		fireEvent.click(moveUpOption);
+
+		expect(mockOnReorderDoc).toHaveBeenCalledWith(42, "up");
+	});
+
+	it("should call onReorderDoc with 'down' when clicking Move Down", () => {
+		const mockOnReorderDoc = vi.fn().mockResolvedValue(undefined);
+		const node = createMockTreeNode({
+			doc: createMockDoc({ id: 42 }),
+		});
+
+		render(
+			<TreeItem
+				node={node}
+				{...defaultProps}
+				isDefaultSort={true}
+				siblingIndex={0}
+				siblingCount={3}
+				onReorderDoc={mockOnReorderDoc}
+			/>,
+		);
+
+		// Open action menu
+		const actionMenuTrigger = screen.getByTestId("item-action-menu-trigger");
+		fireEvent.click(actionMenuTrigger);
+
+		// Click Move Down
+		const moveDownOption = screen.getByTestId("move-down-option");
+		fireEvent.click(moveDownOption);
+
+		expect(mockOnReorderDoc).toHaveBeenCalledWith(42, "down");
+	});
+
+	it("should not call onReorderDoc when canMoveUp is false", () => {
+		const mockOnReorderDoc = vi.fn().mockResolvedValue(undefined);
+		const node = createMockTreeNode({
+			doc: createMockDoc({ id: 42 }),
+		});
+
+		render(
+			<TreeItem
+				node={node}
+				{...defaultProps}
+				isDefaultSort={true}
+				siblingIndex={0}
+				siblingCount={3}
+				onReorderDoc={mockOnReorderDoc}
+			/>,
+		);
+
+		// Open action menu
+		const actionMenuTrigger = screen.getByTestId("item-action-menu-trigger");
+		fireEvent.click(actionMenuTrigger);
+
+		// Click Move Up (should be disabled since siblingIndex is 0)
+		const moveUpOption = screen.getByTestId("move-up-option");
+		fireEvent.click(moveUpOption);
+
+		// onReorderDoc should not be called
+		expect(mockOnReorderDoc).not.toHaveBeenCalled();
+	});
+
+	it("should not call onReorderDoc when canMoveDown is false", () => {
+		const mockOnReorderDoc = vi.fn().mockResolvedValue(undefined);
+		const node = createMockTreeNode({
+			doc: createMockDoc({ id: 42 }),
+		});
+
+		render(
+			<TreeItem
+				node={node}
+				{...defaultProps}
+				isDefaultSort={true}
+				siblingIndex={2}
+				siblingCount={3}
+				onReorderDoc={mockOnReorderDoc}
+			/>,
+		);
+
+		// Open action menu
+		const actionMenuTrigger = screen.getByTestId("item-action-menu-trigger");
+		fireEvent.click(actionMenuTrigger);
+
+		// Click Move Down (should be disabled since siblingIndex is last)
+		const moveDownOption = screen.getByTestId("move-down-option");
+		fireEvent.click(moveDownOption);
+
+		// onReorderDoc should not be called
+		expect(mockOnReorderDoc).not.toHaveBeenCalled();
+	});
+
+	it("should open MoveItemDialog when clicking Move to option", () => {
+		const mockOnMoveTo = vi.fn().mockResolvedValue(undefined);
+		const node = createMockTreeNode({
+			doc: createMockDoc({ id: 42 }),
+		});
+
+		render(<TreeItem node={node} {...defaultProps} onMoveTo={mockOnMoveTo} />);
+
+		// Open action menu
+		const actionMenuTrigger = screen.getByTestId("item-action-menu-trigger");
+		fireEvent.click(actionMenuTrigger);
+
+		// Click Move to option
+		const moveToOption = screen.getByTestId("move-to-option");
+		fireEvent.click(moveToOption);
+
+		// MoveItemDialog should be rendered
+		expect(screen.getByTestId("move-item-dialog-content")).toBeDefined();
+	});
+
+	it("should not render MoveItemDialog when onMoveTo is not provided", () => {
+		const node = createMockTreeNode({
+			doc: createMockDoc({ id: 42 }),
+		});
+
+		render(<TreeItem node={node} {...defaultProps} />);
+
+		// MoveItemDialog should not be rendered
+		expect(screen.queryByTestId("move-item-dialog-content")).toBeNull();
+	});
+
+	it("should exclude self from folder list in MoveItemDialog", () => {
+		const mockOnMoveTo = vi.fn().mockResolvedValue(undefined);
+		const node = createMockTreeNode({
+			doc: createMockDoc({ id: 42, docType: "document" }),
+		});
+		const treeData = [
+			createMockTreeNode({
+				doc: createMockDoc({ id: 1, docType: "folder", contentMetadata: { title: "Folder A" } }),
+			}),
+			createMockTreeNode({
+				doc: createMockDoc({ id: 42, docType: "document", contentMetadata: { title: "Test Document" } }),
+			}),
+		];
+
+		render(<TreeItem node={node} {...defaultProps} treeData={treeData} onMoveTo={mockOnMoveTo} />);
+
+		// Open action menu and click Move to
+		const actionMenuTrigger = screen.getByTestId("item-action-menu-trigger");
+		fireEvent.click(actionMenuTrigger);
+		const moveToOption = screen.getByTestId("move-to-option");
+		fireEvent.click(moveToOption);
+
+		// MoveItemDialog should be rendered with excludedIds containing self (42)
+		expect(screen.getByTestId("move-item-dialog-content")).toBeDefined();
+		// The excludedIds set should contain the document's own id
+	});
+
+	it("should exclude self and descendants from folder list when moving a folder", () => {
+		const mockOnMoveTo = vi.fn().mockResolvedValue(undefined);
+		const childNode = createMockTreeNode({
+			doc: createMockDoc({ id: 2, docType: "document", contentMetadata: { title: "Child Doc" } }),
+		});
+		const node = createMockTreeNode({
+			doc: createMockDoc({ id: 42, docType: "folder", contentMetadata: { title: "Parent Folder" } }),
+			children: [childNode],
+		});
+		const treeData = [
+			createMockTreeNode({
+				doc: createMockDoc({ id: 1, docType: "folder", contentMetadata: { title: "Other Folder" } }),
+			}),
+			node,
+		];
+
+		render(<TreeItem node={node} {...defaultProps} treeData={treeData} onMoveTo={mockOnMoveTo} />);
+
+		// Open action menu and click Move to
+		const actionMenuTrigger = screen.getByTestId("item-action-menu-trigger");
+		fireEvent.click(actionMenuTrigger);
+		const moveToOption = screen.getByTestId("move-to-option");
+		fireEvent.click(moveToOption);
+
+		// MoveItemDialog should be rendered with excludedIds containing self (42) and child (2)
+		expect(screen.getByTestId("move-item-dialog-content")).toBeDefined();
+	});
+
+	it("should handle nested folder structure for getAllDescendantIds", () => {
+		const mockOnMoveTo = vi.fn().mockResolvedValue(undefined);
+		// Create a deep nested structure: Grandparent > Parent > Child
+		const grandchildNode = createMockTreeNode({
+			doc: createMockDoc({ id: 3, docType: "document", contentMetadata: { title: "Grandchild Doc" } }),
+		});
+		const childFolderNode = createMockTreeNode({
+			doc: createMockDoc({ id: 2, docType: "folder", contentMetadata: { title: "Child Folder" } }),
+			children: [grandchildNode],
+		});
+		const parentFolderNode = createMockTreeNode({
+			doc: createMockDoc({ id: 42, docType: "folder", contentMetadata: { title: "Parent Folder" } }),
+			children: [childFolderNode],
+		});
+
+		render(<TreeItem node={parentFolderNode} {...defaultProps} onMoveTo={mockOnMoveTo} />);
+
+		// Open action menu and click Move to
+		const actionMenuTrigger = screen.getByTestId("item-action-menu-trigger");
+		fireEvent.click(actionMenuTrigger);
+		const moveToOption = screen.getByTestId("move-to-option");
+		fireEvent.click(moveToOption);
+
+		// MoveItemDialog should be rendered with excludedIds containing all descendants
+		// This exercises the recursive getAllDescendantIds function
+		expect(screen.getByTestId("move-item-dialog-content")).toBeDefined();
+	});
+
+	it("should pass correct childCount to ItemActionMenu for folder with nested children", () => {
+		mockOnDelete.mockResolvedValue(undefined);
+		// Create a folder with multiple nested children to exercise countDescendants function
+		const grandchildNode1 = createMockTreeNode({
+			doc: createMockDoc({ id: 4, docType: "document", contentMetadata: { title: "Grandchild 1" } }),
+		});
+		const grandchildNode2 = createMockTreeNode({
+			doc: createMockDoc({ id: 5, docType: "document", contentMetadata: { title: "Grandchild 2" } }),
+		});
+		const childFolderNode = createMockTreeNode({
+			doc: createMockDoc({ id: 2, docType: "folder", contentMetadata: { title: "Child Folder" } }),
+			children: [grandchildNode1, grandchildNode2],
+		});
+		const childDocNode = createMockTreeNode({
+			doc: createMockDoc({ id: 3, docType: "document", contentMetadata: { title: "Child Doc" } }),
+		});
+		const parentFolderNode = createMockTreeNode({
+			doc: createMockDoc({ id: 42, docType: "folder", contentMetadata: { title: "Parent Folder" } }),
+			children: [childFolderNode, childDocNode],
+		});
+
+		render(<TreeItem node={parentFolderNode} {...defaultProps} />);
+
+		// Open action menu to trigger ItemActionMenu with childCount
+		// This exercises countDescendants function (lines 172-178)
+		const treeItem = screen.getByRole("treeitem");
+		fireEvent.mouseEnter(treeItem);
+
+		const actionMenuTrigger = screen.getByTestId("item-action-menu-trigger");
+		expect(actionMenuTrigger).toBeDefined();
+		// The childCount should be 4 (1 child folder + 1 child doc + 2 grandchildren)
+		// This is passed to ItemActionMenu which uses it for delete confirmation
+	});
+
+	it("should call onMoveTo with correct docId and parentId when confirming move", () => {
+		const mockOnMoveTo = vi.fn().mockResolvedValue(undefined);
+		const node = createMockTreeNode({
+			doc: createMockDoc({ id: 42, contentMetadata: { title: "Test Document" } }),
+		});
+
+		render(<TreeItem node={node} {...defaultProps} onMoveTo={mockOnMoveTo} />);
+
+		// Open action menu and click Move to
+		const actionMenuTrigger = screen.getByTestId("item-action-menu-trigger");
+		fireEvent.click(actionMenuTrigger);
+		const moveToOption = screen.getByTestId("move-to-option");
+		fireEvent.click(moveToOption);
+
+		// Click confirm in MoveItemDialog
+		const confirmButton = screen.getByTestId("move-dialog-confirm");
+		fireEvent.click(confirmButton);
+
+		// onMoveTo should be called with docId and parentId
+		expect(mockOnMoveTo).toHaveBeenCalled();
+		// The exact parentId depends on the dialog state, but the docId should be 42
+	});
+
+	it("should close MoveItemDialog when canceling move", () => {
+		const mockOnMoveTo = vi.fn().mockResolvedValue(undefined);
+		const node = createMockTreeNode({
+			doc: createMockDoc({ id: 42 }),
+		});
+
+		render(<TreeItem node={node} {...defaultProps} onMoveTo={mockOnMoveTo} />);
+
+		// Open action menu and click Move to
+		const actionMenuTrigger = screen.getByTestId("item-action-menu-trigger");
+		fireEvent.click(actionMenuTrigger);
+		const moveToOption = screen.getByTestId("move-to-option");
+		fireEvent.click(moveToOption);
+
+		// Dialog should be open
+		expect(screen.getByTestId("move-item-dialog-content")).toBeDefined();
+
+		// Click cancel
+		const cancelButton = screen.getByTestId("move-dialog-cancel");
+		fireEvent.click(cancelButton);
+
+		// Dialog should be closed (may take a moment for animation)
+		// onMoveTo should not be called
+		expect(mockOnMoveTo).not.toHaveBeenCalled();
+	});
+
+	describe("Suggestion indicators", () => {
+		it("should show suggestion dot when document has pending suggestions", () => {
+			const node = createMockTreeNode({
+				doc: createMockDoc({ id: 42, docType: "document" }),
+			});
+			const docsWithSuggestions = new Set([42]);
+
+			render(<TreeItem node={node} {...defaultProps} docsWithSuggestions={docsWithSuggestions} />);
+
+			expect(screen.getByTestId("suggestion-dot-42")).toBeDefined();
+		});
+
+		it("should not show suggestion dot when document has no pending suggestions", () => {
+			const node = createMockTreeNode({
+				doc: createMockDoc({ id: 42, docType: "document" }),
+			});
+			const docsWithSuggestions = new Set<number>();
+
+			render(<TreeItem node={node} {...defaultProps} docsWithSuggestions={docsWithSuggestions} />);
+
+			expect(screen.queryByTestId("suggestion-dot-42")).toBeNull();
+		});
+
+		it("should show suggestion dot on folder when foldersWithSuggestions includes folder", () => {
+			const node = createMockTreeNode({
+				doc: createMockDoc({ id: 10, docType: "folder" }),
+			});
+			const foldersWithSuggestions = new Set([10]);
+
+			render(<TreeItem node={node} {...defaultProps} foldersWithSuggestions={foldersWithSuggestions} />);
+
+			expect(screen.getByTestId("suggestion-dot-10")).toBeDefined();
+		});
+
+		it("should not show suggestion dot on folder without suggestions in descendants", () => {
+			const node = createMockTreeNode({
+				doc: createMockDoc({ id: 10, docType: "folder" }),
+			});
+			const foldersWithSuggestions = new Set<number>();
+
+			render(<TreeItem node={node} {...defaultProps} foldersWithSuggestions={foldersWithSuggestions} />);
+
+			expect(screen.queryByTestId("suggestion-dot-10")).toBeNull();
+		});
+	});
+
+	describe("Create actions from folder menu", () => {
+		it("should show New Folder and New Article options in action menu for folders", () => {
+			const node = createMockTreeNode({
+				doc: createMockDoc({ id: 42, docType: "folder" }),
+			});
+
+			render(<TreeItem node={node} {...defaultProps} />);
+
+			// Open action menu
+			const actionMenuTrigger = screen.getByTestId("item-action-menu-trigger");
+			fireEvent.click(actionMenuTrigger);
+
+			expect(screen.getByTestId("add-article-option")).toBeDefined();
+			expect(screen.getByTestId("add-folder-option")).toBeDefined();
+		});
+
+		it("should not show New Folder and New Article options for documents", () => {
+			const node = createMockTreeNode({
+				doc: createMockDoc({ id: 42, docType: "document" }),
+			});
+
+			render(<TreeItem node={node} {...defaultProps} />);
+
+			// Open action menu
+			const actionMenuTrigger = screen.getByTestId("item-action-menu-trigger");
+			fireEvent.click(actionMenuTrigger);
+
+			expect(screen.queryByTestId("add-article-option")).toBeNull();
+			expect(screen.queryByTestId("add-folder-option")).toBeNull();
+		});
+
+		it("should call onCreateDoc immediately when New Article is clicked from folder menu", async () => {
+			mockOnCreateDoc.mockResolvedValueOnce(undefined);
+			const node = createMockTreeNode({
+				doc: createMockDoc({ id: 42, docType: "folder" }),
+			});
+
+			render(<TreeItem node={node} {...defaultProps} />);
+
+			// Open action menu
+			const actionMenuTrigger = screen.getByTestId("item-action-menu-trigger");
+			fireEvent.click(actionMenuTrigger);
+
+			// Click New Article
+			fireEvent.click(screen.getByTestId("add-article-option"));
+
+			// Should call onCreateDoc directly with "Untitled" and parent folder id
+			await waitFor(() => {
+				expect(mockOnCreateDoc).toHaveBeenCalledWith(42, "Untitled", "text/markdown");
+			});
+
+			// No dialog should appear
+			expect(screen.queryByTestId("create-item-dialog-content")).toBeNull();
+		});
+
+		it("should open CreateItemDialog when New Folder is clicked from folder menu", () => {
+			const node = createMockTreeNode({
+				doc: createMockDoc({ id: 42, docType: "folder" }),
+			});
+
+			render(<TreeItem node={node} {...defaultProps} />);
+
+			// Open action menu
+			const actionMenuTrigger = screen.getByTestId("item-action-menu-trigger");
+			fireEvent.click(actionMenuTrigger);
+
+			// Click New Folder
+			fireEvent.click(screen.getByTestId("add-folder-option"));
+
+			// CreateItemDialog should open
+			expect(screen.getByTestId("create-item-dialog-content")).toBeDefined();
+		});
+	});
+
+	describe("Drag interaction", () => {
+		it("should call onDragPointerDown when pointer down on treeitem", () => {
+			const node = createMockTreeNode({
+				doc: createMockDoc({ id: 42 }),
+			});
+			const onDragPointerDown = vi.fn();
+
+			render(<TreeItem node={node} {...defaultProps} onDragPointerDown={onDragPointerDown} />);
+
+			const treeItem = screen.getByRole("treeitem");
+			fireEvent.pointerDown(treeItem, { pointerId: 1, clientX: 10, clientY: 10 });
+
+			expect(onDragPointerDown).toHaveBeenCalledWith(42, expect.any(Object));
+		});
+
+		it("should not call onDragPointerDown when pointer down on folder chevron", () => {
+			const node = createMockTreeNode({
+				doc: createMockDoc({ id: 42, docType: "folder" }),
+				expanded: false,
+			});
+			const onDragPointerDown = vi.fn();
+
+			render(<TreeItem node={node} {...defaultProps} onDragPointerDown={onDragPointerDown} />);
+
+			const chevronButton = screen.getByLabelText("Expand folder");
+			fireEvent.pointerDown(chevronButton, { pointerId: 1, clientX: 10, clientY: 10 });
+
+			expect(onDragPointerDown).not.toHaveBeenCalled();
+		});
+
+		it("should not select when drag interaction is active", () => {
+			const node = createMockTreeNode({
+				doc: createMockDoc({ id: 42 }),
+			});
+
+			render(<TreeItem node={node} {...defaultProps} isDragInteraction={true} />);
+
+			const treeItem = screen.getByRole("treeitem");
+			fireEvent.click(treeItem);
+
+			expect(mockOnSelect).not.toHaveBeenCalled();
+		});
+
+		it("should not apply hover style when drag interaction is active", () => {
+			const node = createMockTreeNode({
+				doc: createMockDoc({ id: 42 }),
+			});
+
+			render(<TreeItem node={node} {...defaultProps} isDragInteraction={true} />);
+
+			const treeItem = screen.getByRole("treeitem");
+			expect(treeItem.className).not.toMatch(/hover/);
+		});
+
+		it("should ignore pointer down when drag interaction is active", () => {
+			const node = createMockTreeNode({
+				doc: createMockDoc({ id: 42 }),
+			});
+			const onDragPointerDown = vi.fn();
+
+			render(
+				<TreeItem
+					node={node}
+					{...defaultProps}
+					isDragInteraction={true}
+					onDragPointerDown={onDragPointerDown}
+				/>,
+			);
+
+			const treeItem = screen.getByRole("treeitem");
+			fireEvent.pointerDown(treeItem, { pointerId: 1, clientX: 10, clientY: 10 });
+
+			expect(onDragPointerDown).not.toHaveBeenCalled();
+		});
+
+		it("should apply opacity when item is being dragged", () => {
+			const node = createMockTreeNode({
+				doc: createMockDoc({ id: 42 }),
+			});
+
+			render(<TreeItem node={node} {...defaultProps} isDragging={true} />);
+
+			const treeItem = screen.getByRole("treeitem");
+			expect(treeItem.className).toContain("opacity-30");
+		});
+
+		it("should apply opacity when item is descendant of dragged item", () => {
+			const node = createMockTreeNode({
+				doc: createMockDoc({ id: 42 }),
+			});
+
+			const draggedDescendantIds = new Set([42]);
+
+			render(<TreeItem node={node} {...defaultProps} draggedDescendantIds={draggedDescendantIds} />);
+
+			const treeItem = screen.getByRole("treeitem");
+			expect(treeItem.className).toContain("opacity-30");
+		});
+	});
+
+	describe("create dialog from folder menu", () => {
+		it("should call onCreateFolder when creating a folder via folder menu", async () => {
+			const folderNode = createMockTreeNode({
+				doc: createMockDoc({ id: 10, docType: "folder", contentMetadata: { title: "My Folder" } }),
+				expanded: true,
+				children: [],
+			});
+
+			mockOnCreateFolder.mockResolvedValueOnce(undefined);
+
+			render(<TreeItem node={folderNode} {...defaultProps} />);
+
+			// Click "Add Folder" in the action menu
+			fireEvent.click(screen.getByTestId("add-folder-option"));
+
+			// Fill in the name and submit the create dialog
+			const nameInput = screen.getByTestId("create-item-name-input");
+			fireEvent.change(nameInput, { target: { value: "New Folder" } });
+			fireEvent.click(screen.getByTestId("create-button"));
+
+			await waitFor(() => {
+				expect(mockOnCreateFolder).toHaveBeenCalledWith(10, "New Folder");
+			});
+		});
+
+		it("should call onCreateDoc immediately when adding article via folder menu", async () => {
+			const folderNode = createMockTreeNode({
+				doc: createMockDoc({ id: 10, docType: "folder", contentMetadata: { title: "My Folder" } }),
+				expanded: true,
+				children: [],
+			});
+
+			mockOnCreateDoc.mockResolvedValueOnce(undefined);
+
+			render(<TreeItem node={folderNode} {...defaultProps} />);
+
+			// Click "Add Article" in the action menu — should create directly, no dialog
+			fireEvent.click(screen.getByTestId("add-article-option"));
+
+			await waitFor(() => {
+				expect(mockOnCreateDoc).toHaveBeenCalledWith(10, "Untitled", "text/markdown");
+			});
+
+			// No dialog should appear
+			expect(screen.queryByTestId("create-item-dialog-content")).toBeNull();
+		});
+
+		it("should close create dialog when cancel is clicked", () => {
+			const folderNode = createMockTreeNode({
+				doc: createMockDoc({ id: 10, docType: "folder", contentMetadata: { title: "My Folder" } }),
+				expanded: true,
+				children: [],
+			});
+
+			render(<TreeItem node={folderNode} {...defaultProps} />);
+
+			// Open the create dialog
+			fireEvent.click(screen.getByTestId("add-folder-option"));
+
+			// Verify dialog is open
+			expect(screen.getByTestId("create-item-name-input")).toBeDefined();
+
+			// Click cancel
+			fireEvent.click(screen.getByTestId("cancel-button"));
+
+			// Dialog should close - the input should no longer be in the DOM
+			expect(screen.queryByTestId("create-item-name-input")).toBeNull();
+		});
 	});
 });

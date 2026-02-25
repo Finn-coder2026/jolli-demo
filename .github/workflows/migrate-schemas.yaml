@@ -93,7 +93,7 @@ jobs:
                   PSTORE_ENV: ${{ steps.env.outputs.environment }}
               run: npm --prefix backend run migrate:all-tenants
 
-            - name: Trigger deploy workflows
+            - name: Trigger app deploy workflow
               if: success()
               env:
                   GH_TOKEN: ${{ github.token }}
@@ -102,7 +102,38 @@ jobs:
                   SHA="${{ inputs.sha || github.sha }}"
                   ENV="${{ inputs.environment }}"
 
-                  echo "Triggering deploy workflows for branch=$BRANCH, sha=$SHA, environment=$ENV"
+                  echo "Triggering app deploy for branch=$BRANCH, sha=$SHA, environment=$ENV"
 
+                  # Deploy app first - this creates security groups needed by MemoryDB stack
+                  gh workflow run deploy-app-ecs.yaml --ref "$BRANCH" -f environment="$ENV" -f branch="$BRANCH" -f sha="$SHA"
+
+            - name: Wait for app deployment to start
+              if: success()
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  # Wait a moment for the workflow to be created
+                  sleep 10
+
+                  # Get the run ID of the app deployment we just triggered
+                  RUN_ID=$(gh run list --workflow=deploy-app-ecs.yaml --limit=1 --json databaseId --jq '.[0].databaseId')
+                  echo "App deployment run ID: $RUN_ID"
+                  echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
+
+                  # Wait for app deployment to complete (includes CDK deploy of security groups)
+                  echo "Waiting for app deployment to complete..."
+                  gh run watch "$RUN_ID" --exit-status
+
+            - name: Trigger worker deploy workflow
+              if: success()
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  BRANCH="${{ inputs.branch || github.ref_name }}"
+                  SHA="${{ inputs.sha || github.sha }}"
+                  ENV="${{ inputs.environment }}"
+
+                  echo "Triggering worker deploy for branch=$BRANCH, sha=$SHA, environment=$ENV"
+
+                  # Deploy workers after app (MemoryDB stack can now find app security groups)
                   gh workflow run deploy-worker.yaml --ref "$BRANCH" -f environment="$ENV" -f branch="$BRANCH" -f sha="$SHA"
-                  gh workflow run deploy-vercel.yaml --ref "$BRANCH" -f environment="$ENV" -f branch="$BRANCH" -f sha="$SHA"

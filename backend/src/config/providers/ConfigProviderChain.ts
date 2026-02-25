@@ -12,6 +12,18 @@ export interface ConfigProviderChainOptions {
 	 * Default: true
 	 */
 	applyToProcessEnv?: boolean;
+
+	/**
+	 * Provider names that are considered critical.
+	 * When a critical provider is available (isAvailable() returns true)
+	 * but fails to load, the chain will throw instead of silently continuing.
+	 *
+	 * This prevents the application from starting with missing secrets
+	 * in production when the provider should have succeeded.
+	 *
+	 * Example: ["aws-parameter-store"]
+	 */
+	criticalProviders?: Array<string>;
 }
 
 /**
@@ -38,9 +50,8 @@ export interface ChainLoadResult {
  * overwriting values from lower priority ones.
  *
  * Example chain:
- * 1. LocalEnvProvider (priority 3) - loads .env.local values
- * 2. VercelEnvProvider (priority 2) - overrides with Vercel values
- * 3. AWSParameterStoreProvider (priority 1) - overrides with AWS values
+ * 1. LocalEnvProvider (priority 2) - loads .env.local values
+ * 2. AWSParameterStoreProvider (priority 1) - overrides with AWS values
  */
 export class ConfigProviderChain {
 	private readonly providers: Array<ConfigProvider>;
@@ -52,6 +63,9 @@ export class ConfigProviderChain {
 		this.options = {
 			applyToProcessEnv: options.applyToProcessEnv ?? true,
 		};
+		if (options.criticalProviders) {
+			this.options.criticalProviders = options.criticalProviders;
+		}
 	}
 
 	/**
@@ -100,6 +114,15 @@ export class ConfigProviderChain {
 					log.debug({ provider: provider.name }, "No variables loaded from provider");
 				}
 			} catch (error) {
+				const isCritical = this.options.criticalProviders?.includes(provider.name) ?? false;
+				if (isCritical) {
+					log.error(
+						{ provider: provider.name, error },
+						"Critical provider %s failed to load — aborting",
+						provider.name,
+					);
+					throw error;
+				}
 				// Log error but continue with other providers
 				log.error({ provider: provider.name, error }, "Failed to load from provider, continuing with others");
 			}

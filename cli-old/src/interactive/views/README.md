@@ -1,3 +1,6 @@
+---
+jrn: MKKIR4UZVDQ4CRWV
+---
 # Interactive CLI Views
 
 This directory contains the view system for the Jolli Interactive CLI. Views are pluggable UI components that can be easily added to extend the functionality of the interactive mode.

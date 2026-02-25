@@ -33,28 +33,13 @@ export function createAuthHandler(tokenUtil: TokenUtil<UserInfo>): RequestHandle
 }
 
 /**
- * Check if an email is authorized for the current tenant/context.
- * - Super admins (SUPER_ADMIN_EMAILS) can access any tenant
- * - Then checks tenant's AUTH_EMAILS config
- * - AUTH_EMAILS = "*" allows all emails
+ * Check if an email matches the given authorization patterns.
+ * This is the core pattern matching logic used by all email authorization checks.
+ * @param email The email to check
+ * @param authEmails The authorization patterns (comma-separated regex, or "*" for all)
+ * @returns true if email matches patterns, false otherwise
  */
-export function isEmailAuthorized(email: string): boolean {
-	const config = getConfig();
-
-	// In multi-tenant mode with tenant context, use config from tenant
-	// Otherwise, use global config
-	const multiTenantMode = isMultiTenantAuthEnabled();
-	const tenantContext = getTenantContext();
-
-	// Check super admin emails first (can access any tenant)
-	const superAdminPatterns = config.SUPER_ADMIN_EMAILS ? parseRegexList(config.SUPER_ADMIN_EMAILS) : [];
-	if (superAdminPatterns.some(p => p.test(email))) {
-		return true;
-	}
-
-	// Get AUTH_EMAILS from config (may be tenant-specific if tenant context exists)
-	const authEmails = config.AUTH_EMAILS;
-
+export function isEmailMatchingPatterns(email: string, authEmails: string): boolean {
 	// "*" means allow all emails
 	if (authEmails === "*") {
 		return true;
@@ -62,9 +47,21 @@ export function isEmailAuthorized(email: string): boolean {
 
 	// Check email against patterns
 	const emailPatterns = parseRegexList(authEmails);
-	const isAuthorized = emailPatterns.some(pattern => pattern.test(email));
+	return emailPatterns.some(pattern => pattern.test(email));
+}
+
+/**
+ * Check if an email is authorized for the current tenant/context.
+ * - Checks tenant's AUTH_EMAILS config
+ * - AUTH_EMAILS = "*" allows all emails
+ */
+export function isEmailAuthorized(email: string): boolean {
+	const config = getConfig();
+	const isAuthorized = isEmailMatchingPatterns(email, config.AUTH_EMAILS);
 
 	if (!isAuthorized) {
+		const multiTenantMode = isMultiTenantAuthEnabled();
+		const tenantContext = getTenantContext();
 		log.debug({ email, multiTenantMode, hasTenantContext: !!tenantContext }, "Email not authorized");
 	}
 

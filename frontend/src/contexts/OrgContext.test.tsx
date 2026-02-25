@@ -1,9 +1,12 @@
+import * as FavoritesHashStore from "../services/FavoritesHashStore";
 import { ClientProvider } from "./ClientContext";
 import { OrgProvider, useAvailableOrgs, useOrg } from "./OrgContext";
 import { render, waitFor } from "@testing-library/preact";
 import type { CurrentOrgResponse, OrgSummary } from "jolli-common";
 import type { ReactElement } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../services/FavoritesHashStore");
 
 const mockTenant = {
 	id: "tenant-123",
@@ -45,6 +48,7 @@ const mockCurrentOrgResponse: CurrentOrgResponse = {
 	tenant: mockTenant,
 	org: mockOrg,
 	availableOrgs: mockAvailableOrgs,
+	favoritesHash: "abc123",
 };
 
 const mockOrgClient = {
@@ -69,6 +73,7 @@ describe("OrgContext", () => {
 		vi.clearAllMocks();
 		mockOrgClient.getCurrent.mockResolvedValue(mockCurrentOrgResponse);
 		sessionStorage.clear();
+		vi.mocked(FavoritesHashStore.setServerFavoritesHash).mockClear();
 	});
 
 	describe("useOrg", () => {
@@ -96,6 +101,9 @@ describe("OrgContext", () => {
 				expect(context?.isMultiTenant).toBe(true);
 				expect(context?.error).toBeUndefined();
 			});
+
+			// Verify favorites hash is stored for preferences sync
+			expect(FavoritesHashStore.setServerFavoritesHash).toHaveBeenCalledWith("abc123");
 		});
 
 		it("should handle single-tenant mode with null values", async () => {
@@ -103,6 +111,7 @@ describe("OrgContext", () => {
 				tenant: null,
 				org: null,
 				availableOrgs: [],
+				favoritesHash: "EMPTY",
 			});
 
 			let context: ReturnType<typeof useOrg> | undefined;
@@ -335,6 +344,7 @@ describe("OrgContext", () => {
 				tenant: null,
 				org: null,
 				availableOrgs: [],
+				favoritesHash: "EMPTY",
 			});
 
 			let orgs: Array<OrgSummary> | undefined;

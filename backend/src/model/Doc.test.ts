@@ -19,7 +19,11 @@ describe("Doc", () => {
 	it("should define doc model with correct schema", () => {
 		defineDocs(mockSequelize);
 
-		expect(mockSequelize.define).toHaveBeenCalledWith("doc", expect.any(Object), { timestamps: true });
+		expect(mockSequelize.define).toHaveBeenCalledWith(
+			"doc",
+			expect.any(Object),
+			expect.objectContaining({ timestamps: true, indexes: expect.any(Array) }),
+		);
 
 		const schema = vi.mocked(mockSequelize.define).mock.calls[0][1] as Record<string, unknown>;
 

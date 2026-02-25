@@ -1,5 +1,5 @@
 import type { ModelDef } from "../util/ModelDef";
-import type { SpaceSortOption } from "jolli-common";
+import { DEFAULT_SPACE_FILTERS, type SpaceSortOption } from "jolli-common";
 import { DataTypes, type Sequelize } from "sequelize";
 
 export interface Space {
@@ -7,15 +7,19 @@ export interface Space {
 	readonly name: string;
 	readonly slug: string;
 	readonly jrn: string;
-	readonly description: string | undefined;
+	/** Space description. null/undefined means no description. */
+	readonly description: string | null | undefined;
 	readonly ownerId: number;
+	/** Whether this is a personal space (private to the owner). */
+	readonly isPersonal: boolean;
 	readonly defaultSort: SpaceSortOption;
 	readonly defaultFilters: Record<string, unknown>;
+	readonly deletedAt: Date | undefined;
 	readonly createdAt: Date;
 	readonly updatedAt: Date;
 }
 
-export type NewSpace = Omit<Space, "id" | "createdAt" | "updatedAt" | "jrn">;
+export type NewSpace = Omit<Space, "id" | "createdAt" | "updatedAt" | "jrn" | "deletedAt">;
 
 export function defineSpaces(sequelize: Sequelize): ModelDef<Space> {
 	// Return existing model if already defined to preserve definition order during sync
@@ -37,10 +41,9 @@ const schema = {
 		allowNull: false,
 	},
 	slug: {
-		// allowNull: true initially to allow migration of existing data
-		// SpaceDao.postSync will populate NULL slugs and add NOT NULL constraint
+		// Migration complete: all spaces have slugs, all creation paths generate slugs
 		type: DataTypes.STRING(100),
-		allowNull: true,
+		allowNull: false,
 		unique: "spaces_slug_key",
 	},
 	jrn: {
@@ -55,11 +58,11 @@ const schema = {
 	ownerId: {
 		type: DataTypes.INTEGER,
 		allowNull: false,
-		references: {
-			model: "users",
-			key: "id",
-		},
-		onDelete: "CASCADE",
+	},
+	isPersonal: {
+		type: DataTypes.BOOLEAN,
+		allowNull: false,
+		defaultValue: false,
 	},
 	defaultSort: {
 		type: DataTypes.STRING(50),
@@ -69,6 +72,10 @@ const schema = {
 	defaultFilters: {
 		type: DataTypes.JSONB,
 		allowNull: false,
-		defaultValue: {},
+		defaultValue: { ...DEFAULT_SPACE_FILTERS },
+	},
+	deletedAt: {
+		type: DataTypes.DATE,
+		allowNull: true,
 	},
 };

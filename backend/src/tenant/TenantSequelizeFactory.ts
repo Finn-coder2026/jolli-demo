@@ -2,6 +2,41 @@
  * Factory functions for creating Sequelize instances for tenant databases.
  * This module is excluded from unit test coverage as it requires real database connections.
  * Coverage is provided through integration tests.
+ *
+ * ## Multi-Tenant Schema Isolation
+ *
+ * This factory implements PostgreSQL schema-based multi-tenancy with two isolation mechanisms:
+ *
+ * 1. **`options.schema`** - Tells Sequelize to schema-qualify table names in generated SQL.
+ *    This is the PRIMARY isolation mechanism and works correctly with all connection types.
+ *
+ * 2. **`SET search_path` in afterConnect** - Sets session-level search path as a fallback.
+ *    This fires once when connecting and provides backup isolation for direct connections.
+ *
+ * ## Neon Pooled Connection Compatibility
+ *
+ * When using Neon's connection pooler (transaction pooling mode):
+ * - The `afterConnect` hook fires once when connecting to the pooler
+ * - `SET search_path` (session-level) may not persist across transactions
+ * - Each transaction may get a different backend connection with reset `search_path`
+ *
+ * **ORM queries are safe**: The `options.schema` setting ensures Sequelize generates
+ * schema-qualified queries regardless of `search_path`:
+ * ```sql
+ * SELECT * FROM "org_engineering"."users" WHERE ...
+ * ```
+ *
+ * **Raw queries need explicit schema qualification for pooled connection safety**:
+ * ```typescript
+ * // UNSAFE with pooled connections - relies on search_path
+ * await sequelize.query('SELECT * FROM users');
+ *
+ * // SAFE - explicit schema qualification
+ * const schema = sequelize.options.schema;
+ * await sequelize.query(`SELECT * FROM "${schema}"."users"`);
+ * ```
+ *
+ * For detailed guidance on writing multi-tenant raw queries, see DEVELOPERS.md.
  */
 
 import { type CreateDatabaseOptions, createDatabase, type Database } from "../core/Database";
@@ -61,12 +96,15 @@ export function createTenantSequelize(
 		},
 		define: { underscored: true },
 		hooks: {
-			// Use afterConnect hook to set search_path on EVERY new connection
-			// This is more reliable than using -c options which some providers (like Neon) don't respect
+			// Set search_path when a new connection is established.
+			// This provides backup schema isolation for direct connections.
+			// NOTE: With pooled connections (e.g., Neon's connection pooler), this hook
+			// fires once when connecting to the pooler, not per-transaction. For pooled
+			// connections, rely on options.schema (above) which schema-qualifies ORM queries.
+			// See module JSDoc for details on writing safe raw queries with pooled connections.
 			afterConnect: async (connection: unknown) => {
 				// Cast connection to access query method (pg Client interface)
 				const pgConnection = connection as { query: (sql: string) => Promise<unknown> };
-				log.info("Connection established, setting search_path to: %s", searchPath);
 				await pgConnection.query(`SET search_path TO ${searchPath}`);
 			},
 		},

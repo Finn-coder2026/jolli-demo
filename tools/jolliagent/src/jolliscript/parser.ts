@@ -1,5 +1,6 @@
 import type { Fence, FrontMatter, Section } from "./types";
 import type { Code, Heading, Html as HtmlNode, Root, RootContent } from "mdast";
+import { toMarkdown } from "mdast-util-to-markdown";
 import { toString as mdastToString } from "mdast-util-to-string";
 import remarkFrontmatter from "remark-frontmatter";
 import remarkParse from "remark-parse";
@@ -57,30 +58,30 @@ function collectFences(node: RootContent | Root, out: Array<Fence>): void {
 	}
 }
 
-// Convert nodes to content string, including ALL code blocks (including joi)
+// Wraps a single node in a root because toMarkdown requires a root node
+function nodeToMarkdown(node: RootContent): string {
+	const root: Root = { type: "root", children: [node] };
+	return toMarkdown(root, { bullet: "-", listItemIndent: "one" }).trim();
+}
+
 function nodesToContent(nodes: Array<RootContent>): string {
 	const parts: Array<string> = [];
 
 	for (const node of nodes) {
 		if (node.type === "code") {
 			const code = node as Code;
-			// Include ALL code blocks with proper formatting (including joi)
 			const fence = "```";
 			const lang = code.lang || "";
 			parts.push(`${fence}${lang}\n${code.value}\n${fence}`);
 		} else if (node.type === "paragraph" || node.type === "heading") {
-			// For paragraphs and headings, use toString
-			parts.push(mdastToString(node));
-		} else if (node.type === "list" || node.type === "blockquote") {
-			// For lists and blockquotes, use toString
-			parts.push(mdastToString(node));
+			parts.push(nodeToMarkdown(node));
 		} else if (node.type === "thematicBreak") {
 			parts.push("---");
 		} else if (node.type === "html") {
 			parts.push((node as HtmlNode).value || "");
 		} else {
-			// For other types, try toString
-			parts.push(mdastToString(node));
+			// Lists, blockquotes, tables, etc. need full markdown serialization to preserve formatting
+			parts.push(nodeToMarkdown(node));
 		}
 	}
 
@@ -183,7 +184,7 @@ export function parseSections(
 		}
 		// else: Empty preamble section - startLine and endLine remain 0
 
-		sections.push({
+		const section: Section = {
 			title: currentTitle,
 			content: nodesToContent(currentRawContent),
 			rawContent: currentRawContent,
@@ -191,7 +192,11 @@ export function parseSections(
 			startLine,
 			endLine,
 			headingDepth,
-		});
+		};
+		if (currentHeading) {
+			section.headingNode = currentHeading;
+		}
+		sections.push(section);
 		currentRawContent = [];
 		currentFences = [];
 		currentHeading = null;
@@ -240,16 +245,22 @@ export function sectionToMarkdown(section: Section, originalContent?: string): s
 
 	// Section with heading
 	if (section.title) {
-		// Use headingDepth if available, otherwise try to detect from original content
-		let headingLevel = section.headingDepth ?? 2;
-		if (!section.headingDepth && originalContent) {
-			const escapedTitle = section.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-			const headingMatch = originalContent.match(new RegExp(`^(#+)\\s+${escapedTitle}`, "m"));
-			if (headingMatch) {
-				headingLevel = headingMatch[1].length;
+		let heading: string;
+		if (section.headingNode) {
+			// Use the original heading MDAST node for lossless reconstruction (preserves links, etc.)
+			heading = nodeToMarkdown(section.headingNode);
+		} else {
+			// Fallback: reconstruct heading from plain text title
+			let headingLevel = section.headingDepth ?? 2;
+			if (!section.headingDepth && originalContent) {
+				const escapedTitle = section.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+				const headingMatch = originalContent.match(new RegExp(`^(#+)\\s+${escapedTitle}`, "m"));
+				if (headingMatch) {
+					headingLevel = headingMatch[1].length;
+				}
 			}
+			heading = `${"#".repeat(headingLevel)} ${section.title}`;
 		}
-		const heading = `${"#".repeat(headingLevel)} ${section.title}`;
 		return section.content ? `${heading}\n\n${section.content}` : heading;
 	}
 

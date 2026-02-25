@@ -1,100 +1,160 @@
 import type { RunState, ToolDef } from "../../Types";
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
-import type { Sandbox } from "e2b";
-
-const execAsync = promisify(exec);
+import {
+	gitError,
+	gitOk,
+	normalizeOptionalString,
+	parseBoundedInt,
+	parseGitCommandError,
+	runGitCommand,
+} from "./git_shared";
 
 export type ToolExecutor = (runState: RunState, args: unknown) => Promise<string> | string;
 
 export const git_diff_tool_def: ToolDef = {
 	name: "git_diff",
 	description:
-		"Show full textual diff between commits or between a commit and working directory. Shows all changes with context.",
+		"Show git diff for working tree, staged changes, or a ref range. Returns structured JSON output with diff text.",
 	parameters: {
 		type: "object",
 		properties: {
-			from_ref: { type: "string", description: "Starting ref (HEAD, main, SHA). Default HEAD." },
-			to_ref: { type: "string", description: "Ending ref. If omitted, diffs against working directory." },
+			repo_path: { type: "string", description: "Optional repository directory." },
+			from_ref: { type: "string", description: "Start ref for diff mode (default: HEAD when to_ref is set)." },
+			to_ref: { type: "string", description: "End ref for range diff mode." },
+			staged: { type: "boolean", description: "Use staged diff mode (cannot be combined with refs)." },
+			path: { type: "string", description: "Optional path filter inside repository." },
+			name_only: { type: "boolean", description: "Return only file names changed." },
+			stat: { type: "boolean", description: "Return diff stat summary." },
+			context_lines: { type: "number", description: "Unified diff context lines (0-20, default 3)." },
+			max_bytes: { type: "number", description: "Soft truncation cap for returned diff text (1024-2000000)." },
 		},
 		required: [],
 	},
 };
 
-// Local implementation
-export async function executeGitDiffToolLocal(fromRef = "HEAD", toRef?: string): Promise<string> {
-	try {
-		let command: string;
-		if (!toRef) {
-			command = `git diff ${fromRef}`;
-		} else {
-			command = `git diff ${fromRef}..${toRef}`;
-		}
-		const { stdout } = await execAsync(command, { maxBuffer: 10 * 1024 * 1024 });
-		if (!stdout.trim()) {
-			return toRef
-				? `No differences found between ${fromRef} and ${toRef}.`
-				: `No differences found between ${fromRef} and working directory.`;
-		}
-		let header = toRef ? `Git Diff: ${fromRef}..${toRef}\n` : `Git Diff: ${fromRef}..working directory\n`;
-		header += `${"=".repeat(50)}\n\n`;
-		return header + stdout;
-	} catch (error) {
-		const err = error as { message?: string };
-		const message = err.message ?? String(error);
-		if (message.includes("not a git repository")) {
-			return "Error: Not in a git repository";
-		}
-		if (message.includes("unknown revision")) {
-			return `Error: Invalid commit reference. Make sure the commit SHA or ref exists.`;
-		}
-		if (message.includes("bad revision")) {
-			return `Error: Bad revision. Check that your commit references are valid.`;
-		}
-		return `Error executing git diff: ${message}`;
+type GitDiffArgs = {
+	repo_path?: string;
+	from_ref?: string;
+	to_ref?: string;
+	staged?: boolean;
+	path?: string;
+	name_only?: boolean;
+	stat?: boolean;
+	context_lines?: number;
+	max_bytes?: number;
+};
+
+/**
+ * Build metadata object for diff responses, filtering out undefined optional fields.
+ */
+function buildDiffMeta(params: {
+	repoPath: string | undefined;
+	mode: string;
+	fromRef: string | undefined;
+	toRef: string | undefined;
+	pathSpec?: string | undefined;
+}): Record<string, string> {
+	const meta: Record<string, string> = {};
+	if (params.repoPath) {
+		meta.repo_path = params.repoPath;
 	}
+	meta.mode = params.mode;
+	if (params.fromRef) {
+		meta.from_ref = params.fromRef;
+	}
+	if (params.toRef) {
+		meta.to_ref = params.toRef;
+	}
+	if (params.pathSpec) {
+		meta.path = params.pathSpec;
+	}
+	return meta;
 }
 
-// E2B implementation
-export async function executeGitDiffToolE2B(runState: RunState, fromRef = "HEAD", toRef?: string): Promise<string> {
-	const sandbox = runState.e2bsandbox as Sandbox;
-	if (!sandbox) {
-		return "Error: E2B sandbox not initialized. Make sure to run with --e2b flag.";
+/**
+ * Determine diff mode and append the appropriate ref arguments to gitArgs.
+ */
+function resolveDiffMode(
+	gitArgs: Array<string>,
+	staged: boolean,
+	fromRef?: string,
+	toRef?: string,
+): "working_tree" | "staged" | "range" {
+	if (staged) {
+		gitArgs.push("--staged");
+		return "staged";
 	}
-
-	const cmd = toRef ? `git diff ${fromRef}..${toRef}` : `git diff ${fromRef}`;
-	try {
-		const proc = await sandbox.commands.run(cmd, { timeoutMs: 60_000 });
-		const output = (proc.stdout || "").trim();
-		const stderr = (proc.stderr || "").trim();
-		if (proc.error) {
-			return `Error executing git diff: ${proc.error}`;
-		}
-		if (stderr.includes("not a git repository")) {
-			return "Error: Not in a git repository";
-		}
-		if (!output) {
-			return toRef
-				? `No differences found between ${fromRef} and ${toRef}.`
-				: `No differences found between ${fromRef} and working directory.`;
-		}
-		const header = toRef
-			? `Git Diff: ${fromRef}..${toRef}\n${"=".repeat(50)}\n\n`
-			: `Git Diff: ${fromRef}..working directory\n${"=".repeat(50)}\n\n`;
-		return header + output;
-	} catch (e) {
-		const err = e as { message?: string };
-		return `Error executing git diff: ${err.message ?? String(e)}`;
+	if (fromRef || toRef) {
+		const normalizedFrom = fromRef ?? "HEAD";
+		gitArgs.push(toRef ? `${normalizedFrom}..${toRef}` : normalizedFrom);
+		return "range";
 	}
+	return "working_tree";
 }
 
-// Unified executor that chooses implementation based on context
 export const gitDiffExecutor: ToolExecutor = async (runState, args) => {
-	const fromRef = (args as { from_ref?: string; to_ref?: string })?.from_ref || "HEAD";
-	const toRef = (args as { from_ref?: string; to_ref?: string })?.to_ref;
+	const typed = (args || {}) as GitDiffArgs;
+	const repoPath = normalizeOptionalString(typed.repo_path);
+	const fromRef = normalizeOptionalString(typed.from_ref);
+	const toRef = normalizeOptionalString(typed.to_ref);
+	const pathSpec = normalizeOptionalString(typed.path);
+	const staged = typed.staged === true;
+	const nameOnly = typed.name_only === true;
+	const stat = typed.stat === true;
 
-	if (runState.e2bsandbox) {
-		return await executeGitDiffToolE2B(runState, fromRef, toRef);
+	if (staged && (fromRef || toRef)) {
+		return gitError("git_diff", "INVALID_ARGUMENT", "Use either 'staged' or ref range arguments, not both.");
 	}
-	return await executeGitDiffToolLocal(fromRef, toRef);
+
+	const contextLinesParsed = parseBoundedInt(typed.context_lines, 3, "context_lines", { min: 0, max: 20 });
+	if (!contextLinesParsed.ok) {
+		return gitError("git_diff", "INVALID_ARGUMENT", contextLinesParsed.error);
+	}
+
+	const maxBytesParsed = parseBoundedInt(typed.max_bytes, 250_000, "max_bytes", { min: 1_024, max: 2_000_000 });
+	if (!maxBytesParsed.ok) {
+		return gitError("git_diff", "INVALID_ARGUMENT", maxBytesParsed.error);
+	}
+
+	const gitArgs: Array<string> = ["diff"];
+	if (nameOnly) {
+		gitArgs.push("--name-only");
+	}
+	if (stat) {
+		gitArgs.push("--stat");
+	}
+	gitArgs.push(`-U${contextLinesParsed.value}`);
+
+	const mode = resolveDiffMode(gitArgs, staged, fromRef, toRef);
+
+	if (pathSpec) {
+		gitArgs.push("--", pathSpec);
+	}
+
+	const result = await runGitCommand(runState, gitArgs, repoPath);
+	const parsedError = parseGitCommandError(result.stderr, result.exitCode);
+	if (parsedError) {
+		return gitError(
+			"git_diff",
+			parsedError.code,
+			parsedError.message,
+			parsedError.hint,
+			buildDiffMeta({ repoPath, mode, fromRef, toRef }),
+		);
+	}
+
+	let content = result.stdout;
+	let truncated = false;
+	if (content.length > maxBytesParsed.value) {
+		content = content.slice(0, maxBytesParsed.value);
+		truncated = true;
+	}
+
+	const meta = buildDiffMeta({ repoPath, mode, fromRef, toRef, pathSpec });
+	const resultMeta = { ...meta, name_only: nameOnly, stat, context_lines: contextLinesParsed.value, truncated };
+
+	if (content.trim().length === 0) {
+		return gitOk("git_diff", "No differences found", { ...resultMeta, content: "" });
+	}
+
+	return gitOk("git_diff", "Diff retrieved", { ...resultMeta, content });
 };

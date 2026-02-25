@@ -1,4 +1,9 @@
-import { extractFrontmatter, stripJolliScriptFrontmatter } from "./ContentUtil";
+import {
+	extractFrontmatter,
+	extractHeadingTitle,
+	stripJolliScriptFrontmatter,
+	stripLeadingHeading,
+} from "./ContentUtil";
 import { describe, expect, it } from "vitest";
 
 // JRN Format History:
@@ -48,6 +53,7 @@ This is the content.`;
 
 		it("should handle empty frontmatter", () => {
 			const content = `---
+
 ---
 
 # Hello World`;
@@ -55,7 +61,7 @@ This is the content.`;
 			const result = extractFrontmatter(content);
 			// Empty YAML parses as null
 			expect(result.frontmatter).toBeNull();
-			// But frontmatter block is still removed
+			// But frontmatter block is still removed, leaving the content after
 			expect(result.contentWithoutFrontmatter).toBe(`
 # Hello World`);
 		});
@@ -292,6 +298,70 @@ on:
 
 			const result = stripJolliScriptFrontmatter(content);
 			expect(result).toBe("# Article");
+		});
+	});
+
+	describe("extractHeadingTitle", () => {
+		it("extracts title from h2 heading", () => {
+			expect(extractHeadingTitle("## New Section\n\nBody text")).toBe("New Section");
+		});
+
+		it("extracts title from h1 heading", () => {
+			expect(extractHeadingTitle("# Top Level\n\nContent")).toBe("Top Level");
+		});
+
+		it("extracts title from h3 heading", () => {
+			expect(extractHeadingTitle("### Sub Section\n\nContent")).toBe("Sub Section");
+		});
+
+		it("returns null for content without headings", () => {
+			expect(extractHeadingTitle("Just plain text\nNo headings here")).toBeNull();
+		});
+
+		it("returns null for empty content", () => {
+			expect(extractHeadingTitle("")).toBeNull();
+		});
+
+		it("extracts first heading when multiple exist", () => {
+			expect(extractHeadingTitle("## First\n\n## Second")).toBe("First");
+		});
+
+		it("trims whitespace from heading title", () => {
+			expect(extractHeadingTitle("##   Padded Title  \n\nContent")).toBe("Padded Title");
+		});
+
+		it("returns null when heading is not on the first line", () => {
+			expect(extractHeadingTitle("Some preamble\n## Heading\n\nBody")).toBeNull();
+		});
+	});
+
+	describe("stripLeadingHeading", () => {
+		it("strips h2 heading and returns remaining content", () => {
+			expect(stripLeadingHeading("## New Section\n\nBody text")).toBe("Body text");
+		});
+
+		it("strips h1 heading", () => {
+			expect(stripLeadingHeading("# Top Level\n\nContent")).toBe("Content");
+		});
+
+		it("strips h3 heading", () => {
+			expect(stripLeadingHeading("### Sub Section\n\nContent")).toBe("Content");
+		});
+
+		it("returns original content when no heading is present", () => {
+			expect(stripLeadingHeading("Just plain text\nNo headings here")).toBe("Just plain text\nNo headings here");
+		});
+
+		it("returns empty string for content that is only a heading", () => {
+			expect(stripLeadingHeading("## Only Heading")).toBe("");
+		});
+
+		it("returns empty string for empty input", () => {
+			expect(stripLeadingHeading("")).toBe("");
+		});
+
+		it("preserves content after the heading line", () => {
+			expect(stripLeadingHeading("## Title\nParagraph 1\n\nParagraph 2")).toBe("Paragraph 1\n\nParagraph 2");
 		});
 	});
 });

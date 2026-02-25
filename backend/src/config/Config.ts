@@ -1,9 +1,8 @@
-import type { LLMProvider } from "../core/agent";
 import { getTenantOrigin } from "../tenant/DomainUtils";
 import { getTenantContext } from "../tenant/TenantContext";
 import { getLog } from "../util/Logger";
 import type { ParameterStoreLoader } from "./ParameterStoreLoader";
-import { AWSParameterStoreProvider, ConfigProviderChain, LocalEnvProvider, VercelEnvProvider } from "./providers";
+import { AWSParameterStoreProvider, ConfigProviderChain, LocalEnvProvider } from "./providers";
 import { createHash } from "node:crypto";
 import { createEnv } from "@t3-oss/env-core";
 import { config as dotenvConfig } from "dotenv";
@@ -20,6 +19,10 @@ export interface WorkflowConfig {
 	e2bEnabled: boolean;
 	anthropicApiKey: string;
 	githubToken?: string;
+	/** Sync server URL for CLI sync operations inside sandbox (derived from JOLLI_PUBLIC_URL + "/api") */
+	syncServerUrl: string;
+	jolliAuthToken?: string;
+	jolliSpace?: string;
 	debug: boolean;
 	vercelToken?: string;
 	tavilyApiKey?: string;
@@ -65,8 +68,6 @@ const GithubAppInfoJsonSchema = z.string().pipe(
 	}, GithubAppInfoSchema),
 );
 
-const LLMProviderSchema = z.string().transform(s => s as LLMProvider);
-
 /**
  * Configuration schema definition
  */
@@ -110,15 +111,28 @@ const configSchema = {
 		// Encryption key for tenant database passwords (32-byte key, base64 encoded)
 		// Must match ENCRYPTION_KEY in the manager app for password encryption/decryption
 		DB_PASSWORD_ENCRYPTION_KEY: z.string().optional(),
+		// Database connection retry configuration
+		// Maximum number of retries for initial database connection (default: 5)
+		DB_CONNECT_MAX_RETRIES: z.coerce.number().default(5),
+		// Base delay in milliseconds for connection retry backoff (default: 2000)
+		DB_CONNECT_RETRY_BASE_DELAY_MS: z.coerce.number().default(2000),
+		// Maximum delay in milliseconds for connection retry backoff (default: 30000)
+		DB_CONNECT_RETRY_MAX_DELAY_MS: z.coerce.number().default(30000),
 		// Email regex patterns for allowed emails (comma-separated, or "*" for all)
 		// In single-tenant mode, this is used directly. In multi-tenant mode, can be overridden per tenant.
 		AUTH_EMAILS: z.string().default(".*"),
-		// AWS OIDC Role ARN for Vercel deployments
-		// Used to assume an IAM role via Web Identity federation
+		// Auth gateway origin for OAuth callbacks (e.g., "https://auth.jolli-local.me")
+		// Used by better-auth for OAuth redirect URIs
+		// Defaults to ORIGIN when not set
+		AUTH_GATEWAY_ORIGIN: z.string().url().optional(),
+		// AWS OIDC Role ARN for Web Identity federation
 		AWS_OIDC_ROLE_ARN: z.string().optional(),
 		AWS_REGION: z.string().default("us-west-2"),
 		// Base domain for tenant subdomains (e.g., "jolli.ai"). When not set, localhost is used.
 		BASE_DOMAIN: z.string().optional(),
+		// Cookie domain for setting cookies (e.g., ".jolli.ai" for sharing across subdomains).
+		// If not set, defaults to ".{BASE_DOMAIN}" when BASE_DOMAIN is configured, otherwise no domain is set.
+		COOKIE_DOMAIN: z.string().optional(),
 		// Connect gateway domain for external integration callbacks (e.g., "connect.jolli.ai")
 		// Defaults to connect.{BASE_DOMAIN} when BASE_DOMAIN is set
 		CONNECT_GATEWAY_DOMAIN: z.string().optional(),
@@ -150,9 +164,20 @@ const configSchema = {
 		GITHUB_TOKEN: z.string().optional(),
 		GOOGLE_CLIENT_ID: z.string().optional(),
 		GOOGLE_CLIENT_SECRET: z.string().optional(),
+		// SendGrid configuration for email sending (password reset, notifications)
+		SENDGRID_API_KEY: z.string().optional(),
+		SENDGRID_FROM_EMAIL: z.string().email().optional(),
+		SENDGRID_FROM_NAME: z.string().default("Jolli Support"),
 		JOBS_STORE_FOR_DAYS: z.coerce.number().default(30),
-		LLM_MODEL: z.string().optional(),
-		LLM_PROVIDER: LLMProviderSchema.default("openai"),
+		// Public backend URL reachable from external sandboxes (E2B).
+		// Falls back to ORIGIN when not set.
+		JOLLI_PUBLIC_URL: z.string().url().optional(),
+		// Default log level for all loggers (can be changed at runtime via admin API)
+		LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error", "fatal"]).default("info"),
+		// Persist log level overrides to Redis (survives restarts when Redis is configured)
+		LOG_LEVEL_PERSIST_TO_REDIS: BooleanSchema.default("true"),
+		// TTL for persisted log level state in Redis in seconds (0 = no expiry, default: 24 hours)
+		LOG_LEVEL_PERSIST_TTL_SECONDS: z.coerce.number().int().min(0).default(86400),
 		MAX_VISIBLE_DRAFTS: z.coerce.number().default(5),
 		// Maximum seats (users) allowed per tenant. Use "unlimited" for paid customers.
 		// Default: 5 for sandbox tenants
@@ -185,7 +210,6 @@ const configSchema = {
 		// Timestamp tolerance window for bootstrap request signatures in milliseconds (default: 5 minutes)
 		BOOTSTRAP_TIMESTAMP_TOLERANCE_MS: z.coerce.number().default(300000),
 		NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
-		OPENAI_API_KEY: z.string().optional(),
 		ORIGIN: z.string().url().default("http://localhost:8034"),
 		POSTGRES_DATABASE: z.string().default(""),
 		POSTGRES_HOST: z.string().default(""),
@@ -199,10 +223,19 @@ const configSchema = {
 		POSTGRES_SSL: BooleanSchema,
 		POSTGRES_USERNAME: z.string().default(""),
 		// Parameter Store environment (e.g., "prod", "dev", "staging")
-		// Used to load parameters from /jolli/backend/${PSTORE_ENV}/*
+		// Used to load parameters from /jolli/{pathBase}/${PSTORE_ENV}/*
 		PSTORE_ENV: z.string().optional(),
+		// Parameter Store path base override
+		// Controls which path prefix is used: /jolli/{PSTORE_PATH_BASE}/{PSTORE_ENV}/*
+		// "app" is the default for ECS deployments, "backend" is for local/legacy use
+		PSTORE_PATH_BASE: z.enum(["app", "backend"]).optional(),
+		// Skip AWS Parameter Store loading for faster cold starts
+		// This eliminates 500-1500ms of cold start latency from AWS API calls
+		SKIP_PSTORE: BooleanSchema,
 		ROOT_PATH: z.string().default("/"),
 		SEED_DATABASE: BooleanSchema,
+		// Enable demo jobs (test document generation). Set to "false" in production for faster cold starts.
+		ENABLE_DEMO_JOBS: BooleanSchema.default("true"),
 		SEQUELIZE: z.enum(["memory", "postgres"]).default("memory"),
 		SMEE_API_URL: z.string().url().optional(),
 		// Super admin email patterns that can access any tenant (e.g., "@jolli\\.ai$")
@@ -210,18 +243,29 @@ const configSchema = {
 		SUPER_ADMIN_EMAILS: z.string().optional(),
 		TAVILY_API_KEY: z.string().optional(),
 		// Session timeout configuration
-		// Idle timeout duration - frontend shows session expired dialog after this much inactivity
+		// @deprecated Frontend idle timeout removed. Kept for backwards compatibility.
+		// Previously used for client-side inactivity tracking, now handled via TOKEN_EXPIRES_IN.
 		SESSION_IDLE_TIMEOUT: MSStringValueSchema.default("1h"),
 		// Master secret for deriving per-tenant TOKEN_SECRET values
 		TENANT_TOKEN_MASTER_SECRET: z.string().optional(),
 		TOKEN_ALGORITHM: JWTAlgorithmSchema.default("HS256"),
 		// Cookie lifetime - should match TOKEN_EXPIRES_IN
 		TOKEN_COOKIE_MAX_AGE: MSStringValueSchema.default("2h"),
-		// Token lifetime - should be longer than SESSION_IDLE_TIMEOUT
+		// Token lifetime - controls session expiration (backend 401 response on expiry)
 		TOKEN_EXPIRES_IN: MSStringValueSchema.default("2h"),
 		// Refresh token when this much time remains before expiration
 		TOKEN_REFRESH_WINDOW: MSStringValueSchema.default("45m"),
 		TOKEN_SECRET: z.string(),
+		// Remember-me token configuration
+		// Duration for remember-me tokens (default: 30 days)
+		REMEMBER_ME_DURATION: MSStringValueSchema.default("30d"),
+		// Enable remember-me feature (default: true)
+		REMEMBER_ME_ENABLED: BooleanSchema.default("true"),
+		// Rotate token on each use for security (default: true)
+		REMEMBER_ME_ROTATION: BooleanSchema.default("true"),
+		// Maximum number of remember-me tokens per user (default: 10)
+		// Oldest tokens are removed when limit is exceeded
+		REMEMBER_ME_MAX_TOKENS_PER_USER: z.coerce.number().int().min(1).default(10),
 		TOOLS_PATH: z.string().default("../tools"),
 		USE_DEVELOPER_TOOLS: BooleanSchema,
 		USE_DEV_TOOLS_GITHUB_APP_CREATED: BooleanSchema.default("true"),
@@ -233,7 +277,6 @@ const configSchema = {
 		USE_MULTI_TENANT_AUTH: BooleanSchema,
 		// Enable the tenant switcher component in the frontend header
 		USE_TENANT_SWITCHER: BooleanSchema,
-		VERCEL_DEPLOYMENT: BooleanSchema,
 		VERCEL_TOKEN: z.string().optional(),
 		// Vercel team ID for domain API calls (optional, for team accounts)
 		VERCEL_TEAM_ID: z.string().optional(),
@@ -241,6 +284,15 @@ const configSchema = {
 		WORKER_MAX_SCHEDULERS: z.coerce.number().default(100),
 		// Polling interval for discovering new tenant/org pairs in milliseconds
 		WORKER_POLL_INTERVAL_MS: z.coerce.number().default(30000),
+		// Worker retry configuration for scheduler initialization
+		// Maximum consecutive failures before giving up on a tenant-org for the polling cycle
+		WORKER_RETRY_MAX_RETRIES: z.coerce.number().default(5),
+		// Base delay in milliseconds for exponential backoff
+		WORKER_RETRY_BASE_DELAY_MS: z.coerce.number().default(1000),
+		// Maximum delay in milliseconds for backoff
+		WORKER_RETRY_MAX_DELAY_MS: z.coerce.number().default(30000),
+		// Time in milliseconds after which to reset the failure count
+		WORKER_RETRY_RESET_AFTER_MS: z.coerce.number().default(60000),
 		// Image upload configuration
 		// Environment suffix for S3 bucket naming (e.g., "prod", "dev", "local")
 		// Bucket name format: jolli-images-{IMAGE_S3_ENV}
@@ -269,6 +321,40 @@ const configSchema = {
 		AUDIT_PII_ENCRYPTION_KEY: z.string().optional(),
 		// Number of days to retain audit logs (default: 365 days)
 		AUDIT_RETENTION_DAYS: z.coerce.number().default(365),
+		// Redis configuration (optional - falls back to in-memory storage if not set)
+		REDIS_URL: z.string().url().optional(),
+		// Login security configuration
+		LOGIN_MAX_ATTEMPTS: z.coerce.number().default(5),
+		LOGIN_LOCK_DURATION_MINUTES: z.coerce.number().default(15),
+		LOGIN_RATE_LIMIT_PER_MINUTE: z.coerce.number().default(10),
+		// Better-auth secret for signing session tokens
+		// This should be a strong random secret (at least 32 characters)
+		// If not set, falls back to TOKEN_SECRET for backwards compatibility
+		BETTER_AUTH_SECRET: z.string().optional(),
+		// Asset cleanup configuration
+		// Days to wait before orphaning newly uploaded images (default: 7 days)
+		ASSET_CLEANUP_RECENT_UPLOAD_BUFFER_DAYS: z.coerce.number().default(7),
+		// Days to wait after marking orphaned before deleting (default: 30 days)
+		ASSET_CLEANUP_GRACE_PERIOD_DAYS: z.coerce.number().default(30),
+		// Health check configuration
+		// Timeout in milliseconds for each individual health check (default: 2000ms)
+		HEALTH_CHECK_TIMEOUT_MS: z.coerce.number().default(2000),
+		// OAuth timeout configuration
+		// Timeout for OAuth token exchange requests to provider APIs (Google, GitHub)
+		// Passed to better-auth socialProviders.request.timeout
+		OAUTH_TOKEN_TIMEOUT_MS: z.coerce.number().default(30000),
+		// Better Stack heartbeat URL for health monitoring
+		// When set, the /api/cron/heartbeat endpoint will ping this URL if healthy
+		BETTER_STACK_HEARTBEAT_URL: z.string().url().optional(),
+		// Secret for authenticating cron job requests
+		CRON_SECRET: z.string().optional(),
+		// Heartbeat interval in milliseconds for worker process (default: 5 minutes)
+		// The worker sends heartbeats to Better Stack on this interval
+		HEARTBEAT_INTERVAL_MS: z.coerce.number().default(5 * 60 * 1000),
+		// Sync configuration
+		// JRN prefix for sync-enabled documents (CLI bi-directional sync)
+		// Documents with this prefix are tracked in sync_articles and can be pushed/pulled via CLI
+		SYNC_JRN_PREFIX: z.string().default("jrn:/global:docs:article/sync-"),
 	},
 	/**
 	 * What object holds the environment variables at runtime. This is usually
@@ -313,6 +399,18 @@ interface TenantConfigCacheEntry {
 	configsUpdatedAt: Date | null;
 }
 const tenantConfigCache = new Map<string, TenantConfigCacheEntry>();
+
+/**
+ * Gets the global configuration object, ignoring any active tenant context.
+ * Use this when you need the base config regardless of tenant (e.g., signing
+ * sandbox service tokens that will be verified outside tenant context).
+ */
+export function getGlobalConfig() {
+	if (!currentConfig) {
+		currentConfig = createConfig();
+	}
+	return currentConfig;
+}
 
 /**
  * Gets the current configuration object.
@@ -388,7 +486,7 @@ export function getConfig() {
 function computeTenantOverrides(tenant: Tenant, globalConfig: ReturnType<typeof createConfig>): Record<string, string> {
 	const result: Record<string, string> = {};
 
-	// Use HTTPS when gateway is enabled OR in production (Vercel)
+	// Use HTTPS when gateway is enabled OR in production
 	const useHttps = globalConfig.USE_GATEWAY || globalConfig.NODE_ENV === "production";
 	// Extract port from global origin (empty string if no port)
 	const originPort = new URL(globalConfig.ORIGIN).port;
@@ -451,11 +549,24 @@ let configProviderChain: ConfigProviderChain | null = null;
  * Creates the default config provider chain with all available providers.
  * Provider priority (lower = higher priority):
  * 1. AWS Parameter Store (PSTORE_ENV set)
- * 2. Vercel Environment (VERCEL=1)
- * 3. Local .env files (always available)
+ * 2. Local .env files (always available)
+ *
+ * In production with PSTORE_ENV set, the AWS Parameter Store provider is marked
+ * as critical — if it's available but fails to load, the chain throws instead
+ * of silently continuing with incomplete configuration.
  */
 function createDefaultProviderChain(): ConfigProviderChain {
-	return new ConfigProviderChain([new AWSParameterStoreProvider(), new VercelEnvProvider(), new LocalEnvProvider()]);
+	const isProduction = process.env.NODE_ENV === "production";
+	const hasPstoreEnv = Boolean(process.env.PSTORE_ENV);
+	const providers = [new AWSParameterStoreProvider(), new LocalEnvProvider()];
+
+	if (isProduction && hasPstoreEnv) {
+		return new ConfigProviderChain(providers, {
+			criticalProviders: ["aws-parameter-store"],
+		});
+	}
+
+	return new ConfigProviderChain(providers);
 }
 
 /**
@@ -463,8 +574,7 @@ function createDefaultProviderChain(): ConfigProviderChain {
  *
  * The provider chain loads configuration in priority order:
  * 1. AWS Parameter Store (if PSTORE_ENV is set) - highest priority
- * 2. Vercel Environment (if running on Vercel) - medium priority
- * 3. Local .env files (always available) - lowest priority
+ * 2. Local .env files (always available) - lowest priority
  *
  * Higher priority providers override values from lower priority ones.
  *
@@ -602,6 +712,37 @@ export function getParameterStoreLoaderInstance(): ParameterStoreLoader | null {
 /* c8 ignore stop */
 
 /**
+ * Resolve the origin URL that E2B sandboxes should use to reach the backend.
+ *
+ * Priority:
+ * 1. JOLLI_PUBLIC_URL (explicit override, e.g. for local dev with ngrok)
+ * 2. Tenant-specific subdomain derived from the current tenant context
+ * 3. ORIGIN (fallback, e.g. http://localhost:8034)
+ */
+function resolveSyncServerOrigin(config: ReturnType<typeof getConfig>): string {
+	if (config.JOLLI_PUBLIC_URL) {
+		return config.JOLLI_PUBLIC_URL;
+	}
+
+	const tenantContext = getTenantContext();
+	if (tenantContext?.tenant) {
+		const useHttps = config.USE_GATEWAY || config.NODE_ENV === "production";
+		const originPort = new URL(config.ORIGIN).port;
+		const tenantOrigin = getTenantOrigin({
+			primaryDomain: tenantContext.tenant.primaryDomain,
+			tenantSlug: tenantContext.tenant.slug,
+			baseDomain: config.BASE_DOMAIN,
+			useHttps,
+			port: originPort || undefined,
+			fallbackOrigin: config.ORIGIN,
+		});
+		return tenantOrigin;
+	}
+
+	return config.ORIGIN;
+}
+
+/**
  * Gets a workflow config, needed to run workflows in an E2B sandbox.
  * @param accessToken github access token,
  * to be provided if the workflow(s) need github access that requies an access token.
@@ -624,6 +765,7 @@ export function getWorkflowConfig(accessToken?: string): WorkflowConfig {
 		e2bTemplateId,
 		e2bEnabled: Boolean(e2bApiKey && e2bTemplateId),
 		anthropicApiKey: config.ANTHROPIC_API_KEY,
+		syncServerUrl: `${resolveSyncServerOrigin(config)}/api`,
 		debug: true,
 	};
 	if (accessToken) {

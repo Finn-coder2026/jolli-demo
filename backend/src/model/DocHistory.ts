@@ -10,7 +10,7 @@ export interface DocHistory {
 	readonly id: number;
 	/** Foreign key referencing the docs table */
 	readonly docId: number;
-	/** Foreign key referencing the users table - the user who committed this version */
+	/** User ID who committed this version */
 	readonly userId: number;
 	/** Gzip-compressed JSON snapshot of the document */
 	readonly docSnapshot: Buffer;
@@ -48,10 +48,6 @@ const schema = {
 	userId: {
 		type: DataTypes.INTEGER,
 		allowNull: false,
-		references: {
-			model: "users",
-			key: "id",
-		},
 	},
 	docSnapshot: {
 		type: DataTypes.BLOB,
@@ -73,6 +69,7 @@ const indexes = [
 		fields: ["doc_id"],
 	},
 	{
+		name: "doc_histories_doc_id_version_key",
 		fields: ["doc_id", "version"],
 		unique: true,
 	},

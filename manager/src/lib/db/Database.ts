@@ -2,14 +2,48 @@ import { env } from "../Config";
 import { DEFAULT_REGION } from "../constants/Regions";
 import { createProviderAdapter } from "../providers/ProviderFactory";
 import { getLog } from "../util/Logger";
-import type { DomainDao, OrgDao, ProviderDao, TenantDao } from "./dao";
-import { createDomainDao, createOrgDao, createProviderDao, createTenantDao } from "./dao";
+import type {
+	AuthDao,
+	DomainDao,
+	GlobalUserDao,
+	OrgDao,
+	OwnerInvitationDao,
+	ProviderDao,
+	RememberMeTokenDao,
+	TenantDao,
+	UserDao,
+	UserOrgDao,
+	VerificationDao,
+} from "./dao";
 import {
+	createAuthDao,
+	createDomainDao,
+	createGlobalUserDao,
+	createOrgDao,
+	createOwnerInvitationDao,
+	createProviderDao,
+	createRememberMeTokenDao,
+	createTenantDao,
+	createUserDao,
+	createUserOrgDao,
+	createVerificationDao,
+} from "./dao";
+import {
+	defineAuths,
 	defineDatabaseProviders,
 	defineGitHubInstallationMappings,
+	defineGlobalAuths,
+	defineGlobalUsers,
 	defineOrgs,
+	defineOwnerInvitations,
+	definePasswordHistory,
+	defineRememberMeTokens,
+	defineSessions,
 	defineTenantDomains,
 	defineTenants,
+	defineUserOrgs,
+	defineUsers,
+	defineVerifications,
 } from "./models";
 import { encryptPassword } from "jolli-common/server";
 import type { Sequelize } from "sequelize";
@@ -24,20 +58,51 @@ export interface Database {
 	providerDao: ProviderDao;
 	domainDao: DomainDao;
 	orgDao: OrgDao;
+	userDao: UserDao;
+	authDao: AuthDao;
+	globalUserDao: GlobalUserDao;
+	userOrgDao: UserOrgDao;
+	verificationDao: VerificationDao;
+	ownerInvitationDao: OwnerInvitationDao;
+	rememberMeTokenDao: RememberMeTokenDao;
 }
 
 /**
  * Create all DAOs and sync database schema.
+ *
+ * Manager owns the schema lifecycle for:
+ * - Multi-tenant registry tables (tenants, orgs, domains, providers)
+ * - Global authentication tables (global_users, global_auths, sessions, etc.)
+ *
+ * Backend connects to these tables via DAOs but does not sync them.
  */
 export async function createDatabase(sequelize: Sequelize): Promise<Database> {
-	// Define all models first (must be done before sync)
+	// Define models that the manager owns and should sync
+	// Note: Order matters due to foreign key dependencies
+
+	// 1. Tables with no FK dependencies
+	defineUsers(sequelize);
+	defineGitHubInstallationMappings(sequelize);
 	defineDatabaseProviders(sequelize);
 	defineTenants(sequelize);
 	defineTenantDomains(sequelize);
 	defineOrgs(sequelize);
-	defineGitHubInstallationMappings(sequelize);
 
-	// Sync models to database (creates tables if they don't exist)
+	// 2. Global auth tables (manager now owns these)
+	defineGlobalUsers(sequelize); // No FK deps - must be first
+	defineVerifications(sequelize); // No FK deps
+	defineOwnerInvitations(sequelize); // No FK deps (references verifications but no FK constraint)
+	defineUserOrgs(sequelize); // Depends on global_users
+	defineSessions(sequelize); // Depends on global_users (loosely)
+	defineGlobalAuths(sequelize); // Depends on global_users
+	definePasswordHistory(sequelize); // Depends on global_users
+	defineRememberMeTokens(sequelize); // Depends on global_users (for remember-me feature)
+
+	// 3. Manager's local auth depends on Users
+	defineAuths(sequelize);
+
+	// Sync database models with alter mode enabled.
+	// This will create missing tables and update existing ones to match model definitions.
 	await sequelize.sync({ alter: true });
 
 	const database: Database = {
@@ -45,10 +110,20 @@ export async function createDatabase(sequelize: Sequelize): Promise<Database> {
 		providerDao: createProviderDao(sequelize),
 		domainDao: createDomainDao(sequelize),
 		orgDao: createOrgDao(sequelize),
+		userDao: createUserDao(sequelize),
+		authDao: createAuthDao(sequelize),
+		globalUserDao: createGlobalUserDao(sequelize),
+		userOrgDao: createUserOrgDao(sequelize),
+		verificationDao: createVerificationDao(sequelize),
+		ownerInvitationDao: createOwnerInvitationDao(sequelize),
+		rememberMeTokenDao: createRememberMeTokenDao(sequelize),
 	};
 
 	// Ensure a default provider exists
 	await ensureDefaultProvider(database.providerDao);
+
+	// Ensure initial SuperAdmin exists (if configured)
+	await ensureInitialSuperAdmin(database.userDao);
 
 	return database;
 }
@@ -141,4 +216,33 @@ async function ensureDefaultProvider(providerDao: ProviderDao): Promise<void> {
 			}
 		}
 	}
+}
+
+/**
+ * Ensure initial SuperAdmin user exists.
+ * Creates one if INITIAL_SUPER_ADMIN_EMAIL is configured and no user with that email exists.
+ * This is idempotent and safe to run multiple times.
+ */
+async function ensureInitialSuperAdmin(userDao: UserDao): Promise<void> {
+	const initialEmail = env.INITIAL_SUPER_ADMIN_EMAIL;
+
+	if (!initialEmail) {
+		return;
+	}
+
+	// Check if user already exists
+	const existing = await userDao.findByEmail(initialEmail);
+	if (existing) {
+		return;
+	}
+
+	// Create initial SuperAdmin
+	await userDao.create({
+		email: initialEmail,
+		name: "Initial SuperAdmin",
+		role: "super_admin",
+		isActive: true,
+	});
+
+	log.info("Created initial SuperAdmin: %s", initialEmail);
 }

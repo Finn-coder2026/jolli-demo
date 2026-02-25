@@ -8,6 +8,7 @@ import type { GitHubInstallationDao } from "../dao/GitHubInstallationDao";
 import type { IntegrationDao } from "../dao/IntegrationDao";
 import type { JobDao } from "../dao/JobDao";
 import type { SiteDao } from "../dao/SiteDao";
+import type { SpaceDao } from "../dao/SpaceDao";
 import type { SyncArticleDao } from "../dao/SyncArticleDao";
 import type { JobScheduler } from "../jobs/JobScheduler.js";
 import type { MultiTenantJobSchedulerManager } from "../jobs/MultiTenantJobSchedulerManager.js";
@@ -36,6 +37,7 @@ export interface DevToolsRouterOptions {
 	integrationDaoProvider: DaoProvider<IntegrationDao>;
 	gitHubInstallationDaoProvider: DaoProvider<GitHubInstallationDao>;
 	syncArticleDaoProvider: DaoProvider<SyncArticleDao>;
+	spaceDaoProvider: DaoProvider<SpaceDao>;
 	tokenUtil: TokenUtil<UserInfo>;
 }
 
@@ -56,6 +58,7 @@ export function createDevToolsRouter(options: DevToolsRouterOptions): Router {
 		integrationDaoProvider,
 		gitHubInstallationDaoProvider,
 		syncArticleDaoProvider,
+		spaceDaoProvider,
 		tokenUtil,
 	} = options;
 
@@ -96,6 +99,9 @@ export function createDevToolsRouter(options: DevToolsRouterOptions): Router {
 	}
 	function getSyncArticleDao(): SyncArticleDao {
 		return syncArticleDaoProvider.getDao(getTenantContext());
+	}
+	function getSpaceDao(): SpaceDao {
+		return spaceDaoProvider.getDao(getTenantContext());
 	}
 
 	/**
@@ -138,7 +144,8 @@ export function createDevToolsRouter(options: DevToolsRouterOptions): Router {
 			return res.json({
 				enabled: true,
 				githubAppCreatorEnabled: config.USE_DEV_TOOLS_GITHUB_APP_CREATED,
-				jobTesterEnabled: config.USE_DEV_TOOLS_JOB_TESTER,
+				// Demo jobs tester requires both USE_DEV_TOOLS_JOB_TESTER and ENABLE_DEMO_JOBS
+				jobTesterEnabled: config.USE_DEV_TOOLS_JOB_TESTER && config.ENABLE_DEMO_JOBS,
 				dataClearerEnabled: config.USE_DEV_TOOLS_DATA_CLEARER,
 				draftGeneratorEnabled: true,
 				githubApp: {
@@ -372,7 +379,7 @@ export function createDevToolsRouter(options: DevToolsRouterOptions): Router {
 				return res.status(400).json({ error: "missing_data_type" });
 			}
 
-			const validDataTypes = ["articles", "sites", "jobs", "github", "sync"];
+			const validDataTypes = ["articles", "sites", "jobs", "github", "sync", "spaces"];
 			if (!validDataTypes.includes(dataType)) {
 				log.warn({ dataType }, "Invalid dataType in clear data request");
 				return res.status(400).json({ error: "invalid_data_type" });
@@ -415,6 +422,13 @@ export function createDevToolsRouter(options: DevToolsRouterOptions): Router {
 				case "sync":
 					await getSyncArticleDao().deleteAllSyncArticles();
 					message = "All sync data cleared successfully";
+					break;
+				case "spaces":
+					await getCollabConvoDao().deleteAllCollabConvos();
+					await getDocDraftDao().deleteAllDocDrafts();
+					await getDocDao().deleteAllDocs();
+					await getSpaceDao().deleteAllSpaces();
+					message = "All spaces and their content cleared successfully";
 					break;
 			}
 

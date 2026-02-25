@@ -543,6 +543,107 @@ describe("SubdomainInput", () => {
 		});
 	});
 
+	describe("stale response after ref update", () => {
+		it("should discard stale successful response when a newer check has started", async () => {
+			let firstResolve: (value: { available: boolean }) => void;
+			let callCount = 0;
+			mockSiteClient.checkSubdomainAvailability.mockImplementation(
+				() =>
+					new Promise(resolve => {
+						callCount++;
+						if (callCount === 1) {
+							firstResolve = resolve;
+						} else {
+							resolve({ available: true });
+						}
+					}),
+			);
+
+			const { rerender } = renderWithProviders(
+				<SubdomainInput value="mydocs" onChange={mockOnChange} siteName="" disabled={false} />,
+				{
+					client: (() => {
+						const mc = createMockClient();
+						mc.sites = vi.fn(() => mockSiteClient as unknown as SiteClient);
+						return mc;
+					})(),
+				},
+			);
+
+			act(() => {
+				vi.advanceTimersByTime(DEBOUNCE_MS);
+			});
+
+			rerender(<SubdomainInput value="newdocs" onChange={mockOnChange} siteName="" disabled={false} />);
+
+			act(() => {
+				vi.advanceTimersByTime(DEBOUNCE_MS);
+			});
+
+			await waitFor(() => {
+				expect(mockSiteClient.checkSubdomainAvailability).toHaveBeenCalledTimes(2);
+			});
+
+			act(() => {
+				firstResolve?.({ available: false });
+			});
+
+			await waitFor(() => {
+				expect(screen.getByTestId("status-available")).toBeDefined();
+			});
+		});
+
+		it("should discard stale error when a newer check has started", async () => {
+			let firstReject: (error: Error) => void;
+			let callCount = 0;
+			mockSiteClient.checkSubdomainAvailability.mockImplementation(
+				() =>
+					new Promise((resolve, reject) => {
+						callCount++;
+						if (callCount === 1) {
+							firstReject = reject;
+						} else {
+							resolve({ available: true });
+						}
+					}),
+			);
+
+			const { rerender } = renderWithProviders(
+				<SubdomainInput value="mydocs" onChange={mockOnChange} siteName="" disabled={false} />,
+				{
+					client: (() => {
+						const mc = createMockClient();
+						mc.sites = vi.fn(() => mockSiteClient as unknown as SiteClient);
+						return mc;
+					})(),
+				},
+			);
+
+			act(() => {
+				vi.advanceTimersByTime(DEBOUNCE_MS);
+			});
+
+			rerender(<SubdomainInput value="newdocs" onChange={mockOnChange} siteName="" disabled={false} />);
+
+			act(() => {
+				vi.advanceTimersByTime(DEBOUNCE_MS);
+			});
+
+			await waitFor(() => {
+				expect(mockSiteClient.checkSubdomainAvailability).toHaveBeenCalledTimes(2);
+			});
+
+			act(() => {
+				firstReject?.(new Error("Network error"));
+			});
+
+			await waitFor(() => {
+				expect(screen.getByTestId("status-available")).toBeDefined();
+			});
+			expect(screen.queryByTestId("status-unavailable")).toBeNull();
+		});
+	});
+
 	describe("debouncing", () => {
 		it("should debounce API calls", async () => {
 			// Since SubdomainInput is a controlled component, we need to test

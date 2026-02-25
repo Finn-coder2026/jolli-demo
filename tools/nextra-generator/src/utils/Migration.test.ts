@@ -1,6 +1,7 @@
 import {
 	convertToNextra4Config,
 	// type ExistingNavMeta, // Commented out - only used by deprecated mergeNavMeta tests
+	getPagesMdxFiles,
 	isApiPageEntry,
 	isExternalLink,
 	isNextra3xFile,
@@ -1115,3 +1116,81 @@ describe("type guards", () => {
 // 		expect(result.removedEntries).toEqual([]);
 // 	});
 // });
+
+describe("getPagesMdxFiles", () => {
+	test("returns MDX files from pages/ directory", () => {
+		const existingFiles = [
+			{ path: "pages/introduction.mdx", content: "# Introduction" },
+			{ path: "pages/guide.mdx", content: "# Guide" },
+		];
+
+		const result = getPagesMdxFiles(existingFiles);
+
+		expect(result).toHaveLength(2);
+		expect(result[0]).toEqual({
+			oldPath: "pages/introduction.mdx",
+			newPath: "content/introduction.mdx",
+			content: "# Introduction",
+		});
+		expect(result[1]).toEqual({
+			oldPath: "pages/guide.mdx",
+			newPath: "content/guide.mdx",
+			content: "# Guide",
+		});
+	});
+
+	test("excludes meta files (starting with _)", () => {
+		const existingFiles = [
+			{ path: "pages/_meta.mdx", content: "export default {}" },
+			{ path: "pages/_app.mdx", content: "function App() {}" },
+			{ path: "pages/introduction.mdx", content: "# Introduction" },
+		];
+
+		const result = getPagesMdxFiles(existingFiles);
+
+		expect(result).toHaveLength(1);
+		expect(result[0].oldPath).toBe("pages/introduction.mdx");
+	});
+
+	test("excludes files not in pages/ directory", () => {
+		const existingFiles = [
+			{ path: "content/introduction.mdx", content: "# Intro" },
+			{ path: "app/page.tsx", content: "export default function() {}" },
+			{ path: "pages/guide.mdx", content: "# Guide" },
+		];
+
+		const result = getPagesMdxFiles(existingFiles);
+
+		expect(result).toHaveLength(1);
+		expect(result[0].oldPath).toBe("pages/guide.mdx");
+	});
+
+	test("excludes non-MDX files", () => {
+		const existingFiles = [
+			{ path: "pages/introduction.mdx", content: "# Introduction" },
+			{ path: "pages/script.js", content: "console.log('hello')" },
+			{ path: "pages/style.css", content: ".foo {}" },
+		];
+
+		const result = getPagesMdxFiles(existingFiles);
+
+		expect(result).toHaveLength(1);
+		expect(result[0].oldPath).toBe("pages/introduction.mdx");
+	});
+
+	test("returns empty array when no MDX files exist", () => {
+		const existingFiles = [
+			{ path: "app/page.tsx", content: "export default function() {}" },
+			{ path: "content/_meta.ts", content: "export default {}" },
+		];
+
+		const result = getPagesMdxFiles(existingFiles);
+
+		expect(result).toEqual([]);
+	});
+
+	test("returns empty array for empty input", () => {
+		const result = getPagesMdxFiles([]);
+		expect(result).toEqual([]);
+	});
+});

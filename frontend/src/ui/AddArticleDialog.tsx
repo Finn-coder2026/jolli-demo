@@ -93,7 +93,7 @@ export function AddArticleDialog({ isOpen, onClose, onSave }: AddArticleDialogPr
 				</div>
 
 				{/* Content */}
-				<div className="p-6 overflow-y-auto flex-1">
+				<div className="p-6 overflow-y-auto flex-1 scrollbar-thin">
 					<div className="space-y-4">
 						{/* JRN Input */}
 						<div>

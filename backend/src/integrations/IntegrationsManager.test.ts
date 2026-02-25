@@ -1,4 +1,6 @@
 import type { Database } from "../core/Database";
+import type { DaoProvider } from "../dao/DaoProvider";
+import type { IntegrationDao } from "../dao/IntegrationDao";
 import { mockIntegrationDao } from "../dao/IntegrationDao.mock";
 import type { JobEventEmitter } from "../jobs/JobEventEmitter";
 import { mockIntegration } from "../model/Integration.mock";
@@ -157,6 +159,18 @@ describe("IntegrationsManager", () => {
 
 			expect(result).toEqual(integrations);
 			expect(mockDb.integrationDao.listIntegrations).toHaveBeenCalled();
+		});
+	});
+
+	describe("countIntegrations", () => {
+		it("should return integration count from DAO", async () => {
+			const manager = createIntegrationManager(mockDb, mockEventEmitter);
+			mockDb.integrationDao.countIntegrations = vi.fn().mockResolvedValue(5);
+
+			const result = await manager.countIntegrations();
+
+			expect(result).toBe(5);
+			expect(mockDb.integrationDao.countIntegrations).toHaveBeenCalled();
 		});
 	});
 
@@ -392,6 +406,20 @@ describe("IntegrationsManager", () => {
 		});
 	});
 
+	describe("integrationDaoProvider", () => {
+		it("should use dao provider when provided", async () => {
+			const providerDao = mockIntegrationDao();
+			providerDao.createIntegration = vi.fn().mockResolvedValue(mockIntegration({ id: 99, type: "unknown" }));
+			const daoProvider: DaoProvider<IntegrationDao> = { getDao: vi.fn().mockReturnValue(providerDao) };
+
+			const manager = createIntegrationManager(mockDb, mockEventEmitter, undefined, daoProvider);
+			await manager.createIntegration({ type: "unknown", name: "test", status: "active" } as never);
+
+			expect(providerDao.createIntegration).toHaveBeenCalled();
+			expect(daoProvider.getDao).toHaveBeenCalled();
+		});
+	});
+
 	describe("integration event job handlers", () => {
 		it("should return job definitions for integration events", () => {
 			const manager = createIntegrationManager(mockDb, mockEventEmitter);
@@ -446,6 +474,30 @@ describe("IntegrationsManager", () => {
 				}),
 				"info",
 			);
+		});
+	});
+
+	describe("integrationDaoProvider", () => {
+		it("should use integrationDaoProvider when provided instead of db.integrationDao", async () => {
+			const providerDao = mockIntegrationDao();
+			const integrations = [mockIntegration({ id: 10 })];
+			providerDao.listIntegrations = vi.fn().mockResolvedValue(integrations);
+
+			// Spy on db.integrationDao to ensure it's NOT used
+			const dbDaoSpy = vi.spyOn(mockDb.integrationDao, "listIntegrations");
+
+			const daoProvider: DaoProvider<IntegrationDao> = {
+				getDao: vi.fn().mockReturnValue(providerDao),
+			};
+
+			const manager = createIntegrationManager(mockDb, mockEventEmitter, undefined, daoProvider);
+			const result = await manager.listIntegrations();
+
+			expect(result).toEqual(integrations);
+			expect(daoProvider.getDao).toHaveBeenCalled();
+			expect(providerDao.listIntegrations).toHaveBeenCalled();
+			// Ensure db.integrationDao was NOT used
+			expect(dbDaoSpy).not.toHaveBeenCalled();
 		});
 	});
 });

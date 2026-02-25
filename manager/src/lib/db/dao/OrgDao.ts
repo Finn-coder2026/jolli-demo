@@ -1,4 +1,5 @@
 import type { NewOrg, Org, OrgStatus, OrgSummary } from "../../types";
+import { slugToPostgresIdentifier } from "../../util/SlugUtils";
 import type { OrgRow } from "../models";
 import { defineOrgs, toOrg, toOrgSummary } from "../models";
 import type { Sequelize } from "sequelize";
@@ -26,6 +27,11 @@ export interface OrgDao {
  * - Default org: org_{tenantSlug}
  * - Additional orgs: org_{tenantSlug}_{orgSlug}
  *
+ * Slugs are sanitized to replace hyphens with underscores since PostgreSQL
+ * identifiers and tools like pg-boss only allow alphanumeric characters and
+ * underscores. Since tenant/org slugs don't allow underscores, this conversion
+ * is collision-safe.
+ *
  * This ensures schema names are unique across tenants sharing the same database.
  *
  * @param tenantSlug - The tenant's slug
@@ -33,10 +39,13 @@ export interface OrgDao {
  * @param isDefault - Whether this is the default org
  */
 function generateSchemaName(tenantSlug: string, orgSlug: string, isDefault: boolean): string {
+	const safeTenantSlug = slugToPostgresIdentifier(tenantSlug);
+	const safeOrgSlug = slugToPostgresIdentifier(orgSlug);
+
 	if (isDefault) {
-		return `org_${tenantSlug}`;
+		return `org_${safeTenantSlug}`;
 	}
-	return `org_${tenantSlug}_${orgSlug}`;
+	return `org_${safeTenantSlug}_${safeOrgSlug}`;
 }
 
 export function createOrgDao(sequelize: Sequelize): OrgDao {

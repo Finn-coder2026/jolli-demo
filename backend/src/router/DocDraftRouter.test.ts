@@ -1,3 +1,4 @@
+import { mockActiveUserDao } from "../dao/ActiveUserDao.mock";
 import type { DaoProvider } from "../dao/DaoProvider";
 import type { DocDao } from "../dao/DocDao";
 import { mockDocDao } from "../dao/DocDao.mock";
@@ -5,20 +6,18 @@ import type { DocDraftDao } from "../dao/DocDraftDao";
 import { mockDocDraftDao } from "../dao/DocDraftDao.mock";
 import type { DocDraftSectionChangesDao } from "../dao/DocDraftSectionChangesDao";
 import { mockDocDraftSectionChangesDao } from "../dao/DocDraftSectionChangesDao.mock";
-import { mockUserDao } from "../dao/UserDao.mock";
 import type { TokenUtil } from "../util/TokenUtil";
 import { createDocDraftRouter, revisionManager } from "./DocDraftRouter";
-
-/** Helper to wrap a DAO in a mock provider */
-function mockDaoProvider<T>(dao: T): DaoProvider<T> {
-	return { getDao: () => dao };
-}
-
 import cookieParser from "cookie-parser";
 import express from "express";
 import type { UserInfo } from "jolli-common";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+/** Helper to wrap a DAO in a mock provider */
+function mockDaoProvider<T>(dao: T): DaoProvider<T> {
+	return { getDao: () => dao };
+}
 
 describe("DocDraftRouter", () => {
 	let mockDraftDao: DocDraftDao;
@@ -268,36 +267,36 @@ describe("DocDraftRouter", () => {
 			expect(response.body.existingDraftId).toBeDefined();
 		});
 
-		it("should check user agent status when userDaoProvider is provided", async () => {
+		it("should check user agent status when activeUserDaoProvider is provided", async () => {
 			vi.mocked(mockTokenUtil.decodePayload).mockReturnValue(mockUserInfo);
 
-			// Create a mock UserDao
-			const mockUserDaoObj = mockUserDao({
-				findUserById: vi.fn().mockResolvedValue({ id: 1, isAgent: false }),
+			// Create a mock ActiveUserDao
+			const mockActiveUserDaoObj = mockActiveUserDao({
+				findById: vi.fn().mockResolvedValue({ id: 1, isAgent: false }),
 			});
 
-			// Create router with userDaoProvider
-			const routerWithUserDao = createDocDraftRouter(
+			// Create router with activeUserDaoProvider
+			const routerWithActiveUserDao = createDocDraftRouter(
 				mockDaoProvider(mockDraftDao),
 				mockDaoProvider(mockDocDaoObj),
 				mockDaoProvider(mockSectionChangesDao),
 				mockTokenUtil,
 				undefined, // collabConvoDaoProvider
-				mockDaoProvider(mockUserDaoObj), // userDaoProvider
+				mockDaoProvider(mockActiveUserDaoObj), // activeUserDaoProvider
 			);
 
-			const appWithUserDao = express();
-			appWithUserDao.use(express.json());
-			appWithUserDao.use(cookieParser());
-			appWithUserDao.use("/api/doc-drafts", routerWithUserDao);
+			const appWithActiveUserDao = express();
+			appWithActiveUserDao.use(express.json());
+			appWithActiveUserDao.use(cookieParser());
+			appWithActiveUserDao.use("/api/doc-drafts", routerWithActiveUserDao);
 
-			const response = await request(appWithUserDao).post("/api/doc-drafts").send({
+			const response = await request(appWithActiveUserDao).post("/api/doc-drafts").send({
 				title: "Draft with User Check",
 				content: "Content",
 			});
 
 			expect(response.status).toBe(201);
-			expect(mockUserDaoObj.findUserById).toHaveBeenCalledWith(1);
+			expect(mockActiveUserDaoObj.findById).toHaveBeenCalledWith(1);
 		});
 	});
 
@@ -1630,6 +1629,7 @@ paths: {}`;
 			vi.mocked(mockTokenUtil.decodePayload).mockReturnValue(mockUserInfo);
 
 			// Use invalid JSX syntax that MDX parser will reject
+			// Must use text/mdx for strict validation - text/markdown uses lenient 'md' format
 			const invalidMdxContent = `# Test Article
 
 This has invalid JSX: <Button onClick={} />
@@ -1640,13 +1640,13 @@ This has invalid JSX: <Button onClick={} />
 				content: invalidMdxContent,
 				createdBy: 1,
 				docId: undefined,
-				contentType: "text/markdown",
+				contentType: "text/mdx",
 			});
 
 			const response = await request(app).post(`/api/doc-drafts/${draft.id}/save`);
 
 			expect(response.status).toBe(400);
-			expect(response.body.error).toBe("Invalid MDX content");
+			expect(response.body.error).toBe("Invalid content");
 			expect(response.body.validationErrors).toBeDefined();
 			expect(response.body.validationErrors.length).toBeGreaterThan(0);
 		});
@@ -2504,9 +2504,10 @@ paths: {}`;
 		it("should return validation errors for invalid MDX content", async () => {
 			vi.mocked(mockTokenUtil.decodePayload).mockReturnValue(mockUserInfo);
 
+			// Must use text/mdx for strict validation - text/markdown uses lenient 'md' format
 			const response = await request(app).post("/api/doc-drafts/validate").send({
 				content: "# Hello\n\n<Component without closing",
-				contentType: "text/markdown",
+				contentType: "text/mdx",
 			});
 
 			expect(response.status).toBe(200);
@@ -3012,6 +3013,7 @@ paths: {}`;
 				artifactType: "doc_draft",
 				artifactId: 1,
 				messages: [],
+				metadata: null,
 			});
 
 			mockDraftDao.getDocDraft = vi.fn().mockResolvedValue({
@@ -3091,6 +3093,7 @@ paths: {}`;
 				artifactType: "doc_draft",
 				artifactId: 1,
 				messages: [],
+				metadata: null,
 			});
 
 			mockDraftDao.getDocDraft = vi.fn().mockResolvedValue({
@@ -3467,6 +3470,7 @@ paths: {}`;
 				artifactType: "doc_draft",
 				artifactId: 1,
 				messages: [],
+				metadata: null,
 			});
 
 			mockDraftDao.getDocDraft = vi.fn().mockResolvedValue({
@@ -3541,6 +3545,7 @@ paths: {}`;
 				artifactType: "doc_draft",
 				artifactId: 1,
 				messages: [],
+				metadata: null,
 			});
 
 			mockDraftDao.getDocDraft = vi.fn().mockResolvedValue({

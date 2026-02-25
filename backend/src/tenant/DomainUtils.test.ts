@@ -98,10 +98,10 @@ describe("DomainUtils", () => {
 			expect(resolveSubdomain(req as never, "jolli.app")).toBeUndefined();
 		});
 
-		it("returns 'jolli' tenant for bare baseDomain", () => {
+		it("returns undefined for bare baseDomain (no subdomain)", () => {
 			const req = createMockRequest({}, "jolli.app");
 			const result = resolveSubdomain(req as never, "jolli.app");
-			expect(result).toEqual({ tenantSlug: "jolli", orgSlug: undefined });
+			expect(result).toBeUndefined();
 		});
 
 		it("extracts tenant from single-level subdomain", () => {
@@ -143,6 +143,13 @@ describe("DomainUtils", () => {
 			const req = createMockRequest({}, "acme.JOLLI.APP");
 			const result = resolveSubdomain(req as never, "jolli.app");
 			expect(result).toEqual({ tenantSlug: "acme", orgSlug: undefined });
+		});
+
+		it("returns undefined for reserved subdomains", () => {
+			for (const reserved of ["auth", "api", "www"]) {
+				const req = createMockRequest({}, `${reserved}.jolli.app`);
+				expect(resolveSubdomain(req as never, "jolli.app")).toBeUndefined();
+			}
 		});
 	});
 

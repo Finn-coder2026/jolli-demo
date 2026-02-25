@@ -13,5 +13,11 @@
 		"*.ts": "${capture}.js, ${capture}.mock.ts, ${capture}.test.json, ${capture}.test.ts, ${capture}.test.ts.snap,",
 		"*.tsx": "${capture}.ts, ${capture}.module.css, ${capture}.mock.ts, ${capture}.mock.tsx, ${capture}.test.tsx, ${capture}.test.tsx.snap"
 	},
-	"typescript.experimental.useTsgo": true
+	"typescript.experimental.useTsgo": true,
+	"workbench.editor.autoLockGroups": {
+		"workbench.editor.processExplorer": false,
+		"terminalEditor": false,
+		"mainThreadWebview-simpleBrowser.view": false,
+		"mainThreadWebview-browserPreview": false
+	}
 }

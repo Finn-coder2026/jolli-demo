@@ -248,6 +248,10 @@ const repositoryViewerContent = {
 			en: "Failed to move file",
 			es: "Error al mover archivo",
 		}),
+		operationFailed: t({
+			en: "Operation failed",
+			es: "La operación falló",
+		}),
 		// Root level file creation
 		creatingAtRootConfig: t({
 			en: "Only Nextra config files can be created at root level",
@@ -269,6 +273,43 @@ const repositoryViewerContent = {
 		allMetaFilesExist: t({
 			en: "A _meta file already exists in this folder",
 			es: "Ya existe un archivo _meta en esta carpeta",
+		}),
+		// Save and discard changes
+		saveChanges: t({
+			en: "Save",
+			es: "Guardar",
+		}),
+		discardChanges: t({
+			en: "Discard",
+			es: "Descartar",
+		}),
+		savingChanges: t({
+			en: "Saving...",
+			es: "Guardando...",
+		}),
+		changesSaved: t({
+			en: "Changes saved successfully",
+			es: "Cambios guardados exitosamente",
+		}),
+		changesSaveError: t({
+			en: "Failed to save changes",
+			es: "Error al guardar cambios",
+		}),
+		changeStaged: t({
+			en: "Change staged - click Save to commit",
+			es: "Cambio preparado - haga clic en Guardar para confirmar",
+		}),
+		discardFileChanges: t({
+			en: "Discard",
+			es: "Descartar",
+		}),
+		cannotSaveWithErrors: t({
+			en: "Cannot save: fix syntax errors first",
+			es: "No se puede guardar: corrija los errores de sintaxis primero",
+		}),
+		cannotNavigateWithErrors: t({
+			en: "Please fix syntax errors before making changes or switching files",
+			es: "Por favor corrija los errores de sintaxis antes de hacer cambios o cambiar de archivo",
 		}),
 	},
 } satisfies Dictionary;

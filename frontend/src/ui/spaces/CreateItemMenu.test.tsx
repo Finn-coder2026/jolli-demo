@@ -91,7 +91,7 @@ describe("CreateItemMenu", () => {
 		});
 	});
 
-	it("should show doc dialog when clicking create doc option", async () => {
+	it("should call onCreateDoc immediately when clicking create doc option", async () => {
 		render(
 			<CreateItemMenu
 				treeData={mockTreeData}
@@ -107,8 +107,31 @@ describe("CreateItemMenu", () => {
 		});
 
 		await waitFor(() => {
-			expect(screen.getByTestId("create-item-dialog-content")).toBeDefined();
-			expect(screen.getByTestId("create-item-name-input")).toBeDefined();
+			expect(mockOnCreateDoc).toHaveBeenCalledWith(undefined, "Untitled", "text/markdown");
+		});
+
+		// No dialog should appear
+		expect(screen.queryByTestId("create-item-dialog-content")).toBeNull();
+	});
+
+	it("should call onCreateDoc with defaultParentId when creating article inside folder", async () => {
+		render(
+			<CreateItemMenu
+				treeData={mockTreeData}
+				defaultParentId={1}
+				onCreateFolder={mockOnCreateFolder}
+				onCreateDoc={mockOnCreateDoc}
+			/>,
+		);
+
+		fireEvent.click(screen.getByTestId("create-item-menu-trigger"));
+
+		await waitFor(() => {
+			fireEvent.click(screen.getByTestId("create-doc-option"));
+		});
+
+		await waitFor(() => {
+			expect(mockOnCreateDoc).toHaveBeenCalledWith(1, "Untitled", "text/markdown");
 		});
 	});
 
@@ -136,33 +159,6 @@ describe("CreateItemMenu", () => {
 
 		await waitFor(() => {
 			expect(mockOnCreateFolder).toHaveBeenCalledWith(undefined, "My Folder");
-		});
-	});
-
-	it("should call onCreateDoc with parentId, name, and contentType when confirmed", async () => {
-		render(
-			<CreateItemMenu
-				treeData={mockTreeData}
-				onCreateFolder={mockOnCreateFolder}
-				onCreateDoc={mockOnCreateDoc}
-			/>,
-		);
-
-		fireEvent.click(screen.getByTestId("create-item-menu-trigger"));
-
-		await waitFor(() => {
-			fireEvent.click(screen.getByTestId("create-doc-option"));
-		});
-
-		await waitFor(() => {
-			const input = screen.getByTestId("create-item-name-input");
-			fireEvent.input(input, { target: { value: "My Article" } });
-		});
-
-		fireEvent.click(screen.getByTestId("create-button"));
-
-		await waitFor(() => {
-			expect(mockOnCreateDoc).toHaveBeenCalledWith(undefined, "My Article", "text/markdown");
 		});
 	});
 
@@ -342,7 +338,7 @@ describe("CreateItemMenu", () => {
 		expect(mockOnCreateFolder).not.toHaveBeenCalled();
 	});
 
-	it("should reset name when opening new dialog", async () => {
+	it("should reset name when reopening folder dialog", async () => {
 		render(
 			<CreateItemMenu
 				treeData={mockTreeData}
@@ -366,10 +362,10 @@ describe("CreateItemMenu", () => {
 		// Cancel
 		fireEvent.click(screen.getByTestId("cancel-button"));
 
-		// Open doc dialog
+		// Reopen folder dialog
 		fireEvent.click(screen.getByTestId("create-item-menu-trigger"));
 		await waitFor(() => {
-			fireEvent.click(screen.getByTestId("create-doc-option"));
+			fireEvent.click(screen.getByTestId("create-folder-option"));
 		});
 
 		// Name should be reset
@@ -400,27 +396,6 @@ describe("CreateItemMenu", () => {
 		});
 	});
 
-	it("should show correct placeholder for article", async () => {
-		render(
-			<CreateItemMenu
-				treeData={mockTreeData}
-				onCreateFolder={mockOnCreateFolder}
-				onCreateDoc={mockOnCreateDoc}
-			/>,
-		);
-
-		fireEvent.click(screen.getByTestId("create-item-menu-trigger"));
-
-		await waitFor(() => {
-			fireEvent.click(screen.getByTestId("create-doc-option"));
-		});
-
-		await waitFor(() => {
-			const input = screen.getByTestId("create-item-name-input") as HTMLInputElement;
-			expect(input.placeholder).toBe("Article title...");
-		});
-	});
-
 	it("should show parent folder selector", async () => {
 		render(
 			<CreateItemMenu
@@ -441,27 +416,7 @@ describe("CreateItemMenu", () => {
 		});
 	});
 
-	it("should show content type selector for article mode", async () => {
-		render(
-			<CreateItemMenu
-				treeData={mockTreeData}
-				onCreateFolder={mockOnCreateFolder}
-				onCreateDoc={mockOnCreateDoc}
-			/>,
-		);
-
-		fireEvent.click(screen.getByTestId("create-item-menu-trigger"));
-
-		await waitFor(() => {
-			fireEvent.click(screen.getByTestId("create-doc-option"));
-		});
-
-		await waitFor(() => {
-			expect(screen.getByTestId("content-type-select")).toBeDefined();
-		});
-	});
-
-	it("should NOT show content type selector for folder mode", async () => {
+	it("should NOT show content type selector for folder dialog", async () => {
 		render(
 			<CreateItemMenu
 				treeData={mockTreeData}
@@ -478,6 +433,56 @@ describe("CreateItemMenu", () => {
 
 		await waitFor(() => {
 			expect(screen.queryByTestId("content-type-select")).toBeNull();
+		});
+	});
+
+	it("should use jrn as fallback when folder has no title", async () => {
+		const treeDataNoTitle: Array<TreeNode> = [
+			{
+				doc: {
+					id: 2,
+					jrn: "folder:no-title",
+					slug: "no-title",
+					path: "",
+					docType: "folder",
+					contentMetadata: {}, // No title
+					parentId: undefined,
+					sortOrder: 0,
+					spaceId: 1,
+					createdAt: new Date().toISOString(),
+					updatedAt: new Date().toISOString(),
+					updatedBy: "user",
+					source: undefined,
+					sourceMetadata: undefined,
+					content: "",
+					contentType: "folder",
+					createdBy: undefined,
+					deletedAt: undefined,
+					explicitlyDeleted: false,
+					version: 1,
+				},
+				children: [],
+				expanded: false,
+			},
+		];
+
+		render(
+			<CreateItemMenu
+				treeData={treeDataNoTitle}
+				onCreateFolder={mockOnCreateFolder}
+				onCreateDoc={mockOnCreateDoc}
+			/>,
+		);
+
+		fireEvent.click(screen.getByTestId("create-item-menu-trigger"));
+
+		await waitFor(() => {
+			fireEvent.click(screen.getByTestId("create-folder-option"));
+		});
+
+		// Should show parent folder selector with folder using jrn as name
+		await waitFor(() => {
+			expect(screen.getByTestId("parent-folder-select")).toBeDefined();
 		});
 	});
 });

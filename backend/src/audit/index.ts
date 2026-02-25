@@ -1,7 +1,13 @@
 // Audit trail module exports
 
 export type { AuditRequestContext } from "./AuditContext";
-export { getAuditContext, requireAuditContext, runWithAuditContext, updateAuditContextActor } from "./AuditContext";
+export {
+	createInitialAuditContext,
+	getAuditContext,
+	requireAuditContext,
+	runWithAuditContext,
+	updateAuditContextActor,
+} from "./AuditContext";
 export {
 	createAuditMiddleware,
 	createAuditUserMiddleware,

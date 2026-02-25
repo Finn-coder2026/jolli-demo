@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("e2b", () => ({
 	Sandbox: {
 		create: vi.fn().mockResolvedValue({
-			id: "mock-sandbox-id",
+			sandboxId: "mock-sandbox-id",
 			close: vi.fn().mockResolvedValue(undefined),
 		}),
 	},
@@ -62,9 +62,14 @@ describe("agentenv", () => {
 
 				expect(toolNames).toContain("ls");
 				expect(toolNames).toContain("cat");
+				expect(toolNames).toContain("grep");
 				expect(toolNames).toContain("web_search");
+				expect(toolNames).toContain("git_status");
 				expect(toolNames).toContain("git_diff");
 				expect(toolNames).toContain("git_history");
+				expect(toolNames).toContain("git_log");
+				expect(toolNames).toContain("git_show");
+				expect(toolNames).toContain("git_changed_files");
 				expect(toolNames).toContain("github_checkout");
 
 				// Should not have write tools or docs tools

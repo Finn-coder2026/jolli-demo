@@ -1,4 +1,8 @@
 import type { Database } from "../core/Database";
+import type { DocDraftDao } from "../dao/DocDraftDao";
+import type { DocDraftSectionChangesDao } from "../dao/DocDraftSectionChangesDao";
+import type { DocDraftSectionChanges } from "../model/DocDraftSectionChanges";
+import { getTenantContext } from "../tenant/TenantContext";
 import { getLog } from "../util/Logger";
 import { createSectionMergeService } from "./SectionMergeService";
 import { createSectionPathService, type SectionIdMapping } from "./SectionPathService";
@@ -26,23 +30,112 @@ export interface SectionMarkupService {
 	 * @returns the modified content
 	 */
 	applySectionChangeToDraft(content: string, change: unknown): string;
+
+	/**
+	 * Re-extracts section content from the draft markdown for each change.
+	 * @param draftContent the current draft markdown
+	 * @param draftId the draft ID (for loading section ID metadata)
+	 * @param changes the section changes to enrich
+	 * @returns a new array of changes with refreshed content fields
+	 */
+	enrichSectionChangeContent(
+		draftContent: string,
+		draftId: number,
+		changes: Array<DocDraftSectionChanges>,
+	): Promise<Array<DocDraftSectionChanges>>;
 }
 
 /**
  * Creates a SectionMarkupService instance.
+ * @param defaultDb - The default database to use when no tenant context is available.
+ *                    In multi-tenant mode, methods will use getTenantContext() to get
+ *                    the tenant-specific database.
  */
-export function createSectionMarkupService(db: Database): SectionMarkupService {
+export function createSectionMarkupService(defaultDb: Database): SectionMarkupService {
 	const sectionPathService = createSectionPathService();
 	const sectionMergeService = createSectionMergeService();
+
+	/**
+	 * Get the DocDraftSectionChangesDao to use - prefers tenant context, falls back to default.
+	 */
+	function getDocDraftSectionChangesDao(): DocDraftSectionChangesDao {
+		const tenantContext = getTenantContext();
+		if (tenantContext?.database?.docDraftSectionChangesDao) {
+			return tenantContext.database.docDraftSectionChangesDao;
+		}
+		return defaultDb.docDraftSectionChangesDao;
+	}
+
+	/**
+	 * Get the DocDraftDao to use - prefers tenant context, falls back to default.
+	 */
+	function getDocDraftDao(): DocDraftDao {
+		const tenantContext = getTenantContext();
+		if (tenantContext?.database?.docDraftDao) {
+			return tenantContext.database.docDraftDao;
+		}
+		return defaultDb.docDraftDao;
+	}
 
 	return {
 		annotateDocDraft,
 		applySectionChangeToDraft,
+		enrichSectionChangeContent,
 	};
+
+	async function enrichSectionChangeContent(
+		draftContent: string,
+		draftId: number,
+		changes: Array<DocDraftSectionChanges>,
+	): Promise<Array<DocDraftSectionChanges>> {
+		if (changes.length === 0) {
+			return changes;
+		}
+
+		const draft = await getDocDraftDao().getDocDraft(draftId);
+		/* v8 ignore next 3 - draft should always exist when called from router after validation */
+		if (!draft) {
+			return changes;
+		}
+
+		/* v8 ignore next - sectionIds may not exist in older drafts */
+		const sectionIdMapping = (draft.contentMetadata as { sectionIds?: SectionIdMapping })?.sectionIds || {};
+		const { sections } = sectionPathService.parseSectionsWithIds(draftContent, sectionIdMapping);
+
+		return changes.map((change, _index) => {
+			// Only enrich pending update/delete changes (they have original content)
+			if (change.applied || change.dismissed) {
+				return change;
+			}
+			if (change.changeType !== "update" && change.changeType !== "delete") {
+				return change;
+			}
+
+			// Match section by sectionId (preferred) or path (legacy fallback)
+			let matchedSection: Section | undefined;
+			for (let i = 0; i < sections.length; i++) {
+				const section = sections[i];
+				const sectionPath = `/sections/${i}`;
+				/* v8 ignore next - branch coverage for section matching */
+				const matchesById = change.sectionId ? change.sectionId === section.id : false;
+				const matchesByPath = change.path === sectionPath;
+				if (matchesById || matchesByPath) {
+					matchedSection = section;
+					break;
+				}
+			}
+
+			if (!matchedSection) {
+				return change;
+			}
+
+			return { ...change, content: matchedSection.content };
+		});
+	}
 
 	async function annotateDocDraft(draftId: number, content: string): Promise<Array<SectionAnnotation>> {
 		// Get all pending section changes for this draft
-		const allChanges = await db.docDraftSectionChangesDao.findByDraftId(draftId);
+		const allChanges = await getDocDraftSectionChangesDao().findByDraftId(draftId);
 		const pendingChanges = allChanges.filter(change => !change.applied && !change.dismissed);
 
 		log.debug("=== ANNOTATE DOC DRAFT DEBUG ===");
@@ -64,7 +157,7 @@ export function createSectionMarkupService(db: Database): SectionMarkupService {
 		}
 
 		// Get draft to access section ID mapping from metadata
-		const draft = await db.docDraftDao.getDocDraft(draftId);
+		const draft = await getDocDraftDao().getDocDraft(draftId);
 		/* v8 ignore start - draft should always exist when called from router after validation */
 		if (!draft) {
 			log.warn("Draft %d not found", draftId);
@@ -85,25 +178,10 @@ export function createSectionMarkupService(db: Database): SectionMarkupService {
 			const sectionPath = `/sections/${sectionIndex}`;
 			const sectionId = section.id;
 
-			// For heading-only highlighting:
-			// - If section has a title (heading), highlight only the heading line(s)
-			// - If section is preamble (no heading), we'll need special handling in frontend
-			let highlightStartLine: number;
-			let highlightEndLine: number;
-
-			if (section.title) {
-				// Section with heading: highlight only the heading line
-				// The heading is at startLine, and typically ends on the same line
-				highlightStartLine = section.startLine;
-				// For multi-line headings (rare), calculate the heading end
-				// For now, assume heading is single line - startLine is the heading line
-				highlightEndLine = section.startLine;
-			} else {
-				// Preamble (no heading): use the full section range for now
-				// Frontend will need to handle this specially (e.g., with a banner)
-				highlightStartLine = section.startLine;
-				highlightEndLine = section.endLine;
-			}
+			// Use full section range (heading + content) for annotations
+			// Frontend uses this for hiding original content when showing suggestions
+			const highlightStartLine = section.startLine;
+			const highlightEndLine = section.endLine;
 
 			// Find which update/delete changes apply to this section
 			// Prefer matching by stable sectionId; if not matching, fall back to legacy path

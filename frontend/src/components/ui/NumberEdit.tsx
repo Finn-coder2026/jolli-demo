@@ -48,6 +48,8 @@ export interface NumberEditProps {
 	tabSize?: number;
 	/** Autocomplete context provider for suggestions */
 	autocompleteContext?: AutocompleteContext | undefined;
+	/** Callback when undo/redo availability changes */
+	onHistoryChange?: (canUndo: boolean, canRedo: boolean) => void;
 	/** data-testid for testing */
 	"data-testid"?: string;
 }
@@ -67,6 +69,60 @@ export interface NumberEditRef {
 	insertTextAtCursor: (text: string) => void;
 	/** Get the current/last known cursor position (useful for saving before focus loss) */
 	getCursorPosition: () => number;
+	/** Undo last edit */
+	undo: () => void;
+	/** Redo last undone edit */
+	redo: () => void;
+}
+
+/**
+ * Extracts inline images from markdown heading lines and places them as standalone blocks below.
+ *
+ * Headings like `# Title [![badge](img)](link)` cause ProseMirror schema errors because
+ * the heading node only allows inline content but image is a block node.
+ * This moves images out of headings while preserving all content.
+ */
+function extractImagesFromHeadings(markdown: string): string {
+	const imagePattern = /\[!\[[^\]]*\]\([^)]*\)\]\([^)]*\)|!\[[^\]]*\]\([^)]*\)/g;
+	const headingRegex = /^(#{1,3})\s+(.*)/;
+
+	const lines = markdown.split("\n");
+	const result: Array<string> = [];
+
+	for (const line of lines) {
+		const headingMatch = line.match(headingRegex);
+		if (!headingMatch) {
+			result.push(line);
+			continue;
+		}
+
+		const prefix = headingMatch[1];
+		const content = headingMatch[2];
+		const images: Array<string> = [];
+		let cleanedContent = content.replace(imagePattern, match => {
+			images.push(match);
+			return "";
+		});
+
+		if (images.length === 0) {
+			result.push(line);
+			continue;
+		}
+
+		cleanedContent = cleanedContent
+			.replace(/&middot;/g, "·")
+			.replace(/[\s·]+$/, "")
+			.replace(/\s{2,}/g, " ")
+			.trim();
+
+		result.push(`${prefix} ${cleanedContent}`);
+		for (const img of images) {
+			result.push("");
+			result.push(img);
+		}
+	}
+
+	return result.join("\n");
 }
 
 /**
@@ -86,6 +142,7 @@ export const NumberEdit = forwardRef<NumberEditRef, NumberEditProps>(function Nu
 		fontSize = 14,
 		tabSize = 4,
 		autocompleteContext,
+		onHistoryChange,
 		"data-testid": testId,
 	},
 	ref,
@@ -97,13 +154,15 @@ export const NumberEdit = forwardRef<NumberEditRef, NumberEditProps>(function Nu
 	const [isDarkMode, setIsDarkMode] = useState(false);
 	const [currentSuggestion, setCurrentSuggestion] = useState<AutocompleteSuggestion | null>(null);
 	const [ghostTextPosition, setGhostTextPosition] = useState<{ top: number; left: number } | null>(null);
-	// Flag to skip suggestion update after accepting a suggestion (prevents ghost text residue)
 	const justAcceptedRef = useRef(false);
-	// Flag to track when user dismissed suggestion with Escape (prevents ghost text from reappearing)
-	// Track last cursor position for insertTextAtCursor when focus is lost
-	// Initialize to -1 to detect if cursor was never set (vs explicitly at position 0)
 	const lastCursorPositionRef = useRef<number>(-1);
 	const dismissedRef = useRef(false);
+
+	// Undo/redo history stack
+	const historyRef = useRef<Array<string>>([]);
+	const historyPointerRef = useRef(-1);
+	const snapshotTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+	const lastExternalValueRef = useRef(value);
 
 	// Parse lines from value - compute directly for synchronous rendering
 	const lines = value ? value.split("\n") : [""];
@@ -459,6 +518,75 @@ export const NumberEdit = forwardRef<NumberEditRef, NumberEditProps>(function Nu
 		setGhostTextPosition(null);
 	}, []);
 
+	// --- Undo/Redo history management ---
+
+	/** Notify parent about undo/redo availability */
+	const notifyHistoryChange = useCallback(() => {
+		const canUndo = historyPointerRef.current > 0;
+		const canRedo = historyPointerRef.current < historyRef.current.length - 1;
+		onHistoryChange?.(canUndo, canRedo);
+	}, [onHistoryChange]);
+
+	/** Record a content snapshot into the history (debounced, called from handleInput) */
+	const pushHistory = useCallback(
+		(content: string) => {
+			clearTimeout(snapshotTimerRef.current);
+			snapshotTimerRef.current = setTimeout(() => {
+				const history = historyRef.current;
+				const pointer = historyPointerRef.current;
+				// Don't push if content is same as current pointer
+				if (pointer >= 0 && history[pointer] === content) {
+					return;
+				}
+				// Truncate any redo entries after current pointer
+				historyRef.current = history.slice(0, pointer + 1);
+				historyRef.current.push(content);
+				historyPointerRef.current = historyRef.current.length - 1;
+				notifyHistoryChange();
+			}, 300);
+		},
+		[notifyHistoryChange],
+	);
+
+	/** Undo: move pointer back and restore content */
+	const performUndo = useCallback(() => {
+		// Flush any pending debounced snapshot so current edits are captured before undoing
+		if (snapshotTimerRef.current) {
+			clearTimeout(snapshotTimerRef.current);
+			snapshotTimerRef.current = undefined;
+			const history = historyRef.current;
+			const pointer = historyPointerRef.current;
+			if (editorRef.current) {
+				const currentContent = editorRef.current.innerText;
+				if (pointer < 0 || history[pointer] !== currentContent) {
+					historyRef.current = history.slice(0, pointer + 1);
+					historyRef.current.push(currentContent);
+					historyPointerRef.current = historyRef.current.length - 1;
+				}
+			}
+		}
+		if (historyPointerRef.current <= 0) {
+			return;
+		}
+		historyPointerRef.current--;
+		const content = historyRef.current[historyPointerRef.current];
+		lastExternalValueRef.current = content;
+		onChange?.(content);
+		notifyHistoryChange();
+	}, [onChange, notifyHistoryChange]);
+
+	/** Redo: move pointer forward and restore content */
+	const performRedo = useCallback(() => {
+		if (historyPointerRef.current >= historyRef.current.length - 1) {
+			return;
+		}
+		historyPointerRef.current++;
+		const content = historyRef.current[historyPointerRef.current];
+		lastExternalValueRef.current = content;
+		onChange?.(content);
+		notifyHistoryChange();
+	}, [onChange, notifyHistoryChange]);
+
 	// Handle content input
 	const handleInput = useCallback(() => {
 		// Clear dismissed flag when user types (allow ghost text to appear again)
@@ -478,7 +606,9 @@ export const NumberEdit = forwardRef<NumberEditRef, NumberEditProps>(function Nu
 				.replace(/\u2028/g, "\n")
 				.replace(/\u2029/g, "\n")
 				.replace(/\u200B/g, "");
+			lastExternalValueRef.current = content;
 			onChange(content);
+			pushHistory(content);
 		}
 		// Save cursor position for insertTextAtCursor
 		lastCursorPositionRef.current = getCursorPositionForInnerText();
@@ -486,7 +616,7 @@ export const NumberEdit = forwardRef<NumberEditRef, NumberEditProps>(function Nu
 		requestAnimationFrame(() => {
 			requestAnimationFrame(updateSuggestion);
 		});
-	}, [onChange, updateSuggestion, getCursorPositionForInnerText]);
+	}, [onChange, updateSuggestion, getCursorPositionForInnerText, pushHistory]);
 
 	// Handle paste to strip formatting and normalize line endings
 	const handlePaste = useCallback(
@@ -499,6 +629,9 @@ export const NumberEdit = forwardRef<NumberEditRef, NumberEditProps>(function Nu
 				.replace(/\r/g, "\n")
 				.replace(/\u2028/g, "\n")
 				.replace(/\u2029/g, "\n");
+
+			// Extract images from headings to prevent ProseMirror schema errors
+			text = extractImagesFromHeadings(text);
 
 			// Use Selection API for more reliable text insertion
 			const selection = window.getSelection();
@@ -524,11 +657,13 @@ export const NumberEdit = forwardRef<NumberEditRef, NumberEditProps>(function Nu
 						.replace(/\r/g, "\n")
 						.replace(/\u2028/g, "\n")
 						.replace(/\u2029/g, "\n");
+					lastExternalValueRef.current = content;
 					onChange(content);
+					pushHistory(content);
 				}
 			}
 		},
-		[onChange],
+		[onChange, pushHistory],
 	);
 
 	// Handle keyboard shortcuts (Tab, Escape, Ctrl+A)
@@ -551,6 +686,17 @@ export const NumberEdit = forwardRef<NumberEditRef, NumberEditProps>(function Nu
 					e.preventDefault();
 					dismissSuggestion();
 				}
+			} else if (e.key === "z" && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+				// Ctrl+Z / Cmd+Z: Undo
+				e.preventDefault();
+				performUndo();
+			} else if (
+				(e.key === "z" && (e.ctrlKey || e.metaKey) && e.shiftKey) ||
+				(e.key === "y" && (e.ctrlKey || e.metaKey))
+			) {
+				// Ctrl+Shift+Z / Cmd+Shift+Z / Ctrl+Y: Redo
+				e.preventDefault();
+				performRedo();
 			} else if (e.key === "a" && (e.ctrlKey || e.metaKey)) {
 				// Ctrl+A / Cmd+A: Select all content
 				e.preventDefault();
@@ -563,7 +709,7 @@ export const NumberEdit = forwardRef<NumberEditRef, NumberEditProps>(function Nu
 				}
 			}
 		},
-		[tabSize, currentSuggestion, acceptSuggestion, dismissSuggestion],
+		[tabSize, currentSuggestion, acceptSuggestion, dismissSuggestion, performUndo, performRedo],
 	);
 
 	/**
@@ -745,7 +891,9 @@ export const NumberEdit = forwardRef<NumberEditRef, NumberEditProps>(function Nu
 
 				// Trigger onChange with new content
 				if (onChange) {
+					lastExternalValueRef.current = newContent;
 					onChange(newContent);
+					pushHistory(newContent);
 				}
 
 				// Re-focus the editor and restore cursor position after React updates the DOM
@@ -826,8 +974,19 @@ export const NumberEdit = forwardRef<NumberEditRef, NumberEditProps>(function Nu
 					}
 				});
 			},
+			undo: performUndo,
+			redo: performRedo,
 		}),
-		[lines.length, lineHeight, selectLine, getCursorPositionForInnerText, onChange],
+		[
+			lines.length,
+			lineHeight,
+			selectLine,
+			getCursorPositionForInnerText,
+			onChange,
+			performUndo,
+			performRedo,
+			pushHistory,
+		],
 	);
 
 	// Set initial content when value changes
@@ -839,7 +998,17 @@ export const NumberEdit = forwardRef<NumberEditRef, NumberEditProps>(function Nu
 				editorRef.current.innerText = value;
 			}
 		}
-	}, [value]);
+		// Reset history when value changes externally (e.g. mode switch, API response)
+		// Internal changes (user input, undo/redo) update lastExternalValueRef before calling onChange,
+		// so only truly external value changes will trigger a history reset.
+		if (value !== lastExternalValueRef.current) {
+			lastExternalValueRef.current = value;
+			historyRef.current = [value];
+			historyPointerRef.current = 0;
+			clearTimeout(snapshotTimerRef.current);
+			notifyHistoryChange();
+		}
+	}, [value, notifyHistoryChange]);
 
 	// Update suggestions when value changes (ensures ghost text appears after Enter)
 	useEffect(() => {
@@ -876,7 +1045,6 @@ export const NumberEdit = forwardRef<NumberEditRef, NumberEditProps>(function Nu
 		};
 	}, [getCursorPositionForInnerText]);
 
-	// Calculate gutter width based on line count
 	const gutterWidth = Math.max(40, `${lines.length}`.length * 10 + 20);
 
 	// Create set of highlighted lines for O(1) lookup
@@ -968,7 +1136,6 @@ export const NumberEdit = forwardRef<NumberEditRef, NumberEditProps>(function Nu
 					data-testid={testId ? `${testId}-editor` : undefined}
 				/>
 
-				{/* Ghost text overlay for autocomplete suggestion */}
 				{currentSuggestion && ghostTextPosition && (
 					<span
 						ref={ghostTextRef}

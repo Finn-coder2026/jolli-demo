@@ -13,6 +13,7 @@ export function mockIntegrationClient(partial?: Partial<IntegrationClient>): Int
 			hasAccess: true,
 			status: "active",
 		}),
+		hasAnyIntegrations: async () => true,
 		uploadFile: async (): Promise<UploadFileResponse> => ({
 			doc: {
 				id: 1,

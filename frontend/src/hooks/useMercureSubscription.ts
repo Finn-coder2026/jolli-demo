@@ -8,9 +8,9 @@ const log = getLog(import.meta);
  * Options for the useMercureSubscription hook.
  */
 export interface UseMercureSubscriptionOptions<T> {
-	/** Type of subscription: jobs, draft, or convo */
-	type: "jobs" | "draft" | "convo";
-	/** Resource ID (required for draft and convo types) */
+	/** Type of subscription: jobs, draft, convo, or onboarding */
+	type: "jobs" | "draft" | "convo" | "onboarding";
+	/** Resource ID (required for draft, convo, and onboarding types) */
 	id?: number;
 	/** Direct SSE URL to use as fallback when Mercure is unavailable */
 	directSseUrl: string;
@@ -98,6 +98,7 @@ export function useMercureSubscription<T>(options: UseMercureSubscriptionOptions
 					try {
 						onMessageRef.current(JSON.parse(rawData) as T);
 					} catch (err) {
+						/* v8 ignore next - error handler requires malformed JSON to test */
 						onErrorRef.current?.(err instanceof Error ? err : new Error("Failed to parse message"));
 					}
 				}
@@ -123,6 +124,7 @@ export function useMercureSubscription<T>(options: UseMercureSubscriptionOptions
 					setReconnecting(false);
 					setConnected(true);
 					const detail = (event as CustomEvent<{ afterAttempts: number }>).detail;
+					/* v8 ignore next - detail fallback is defensive */
 					onReconnectedRef.current?.(detail?.afterAttempts ?? 0);
 				}
 			});

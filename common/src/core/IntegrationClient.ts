@@ -58,6 +58,11 @@ export interface IntegrationClient {
 	 * @throws Error if the API call fails or integration is not a static_file type
 	 */
 	uploadFile(id: number, data: UploadFileRequest): Promise<UploadFileResponse>;
+	/**
+	 * Checks whether any integrations exist (not permission checked).
+	 * Used by NavigationContext to decide whether to show onboarding.
+	 */
+	hasAnyIntegrations(): Promise<boolean>;
 }
 
 export function createIntegrationClient(baseUrl: string, auth: ClientAuth): IntegrationClient {
@@ -71,6 +76,7 @@ export function createIntegrationClient(baseUrl: string, auth: ClientAuth): Inte
 		deleteIntegration,
 		checkAccess,
 		uploadFile,
+		hasAnyIntegrations,
 	};
 
 	async function createIntegration(data: NewIntegration): Promise<Integration> {
@@ -150,5 +156,17 @@ export function createIntegrationClient(baseUrl: string, auth: ClientAuth): Inte
 		}
 
 		return (await response.json()) as UploadFileResponse;
+	}
+
+	async function hasAnyIntegrations(): Promise<boolean> {
+		const response = await fetch(`${basePath}/exists`, createRequest("GET"));
+		auth.checkUnauthorized?.(response);
+
+		if (!response.ok) {
+			throw new Error(`Failed to check integrations: ${response.statusText}`);
+		}
+
+		const result = (await response.json()) as { exists: boolean };
+		return result.exists;
 	}
 }

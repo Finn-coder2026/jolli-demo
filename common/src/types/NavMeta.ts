@@ -14,13 +14,28 @@ export interface VirtualGroupMeta {
 }
 
 /**
- * API page entry - external link to API docs
- * Example: { title: 'API', type: 'page', href: '/api-docs.html' }
+ * Page entry - can be a navbar tab (no href) or link to specific page (with href)
+ * Without href: Appears as navbar tab pointing to corresponding content file by slug
+ * With href: Appears as navbar tab pointing to specified internal/external page
+ * Example (tab): { title: 'Guide', type: 'page' }
+ * Example (link): { title: 'API', type: 'page', href: '/api-docs.html' }
  */
 export interface ApiPageMetaEntry {
 	title: string;
 	type: "page";
+	href?: string;
+	newWindow?: boolean;
+}
+
+/**
+ * External link entry - pure external URL (no type needed)
+ * Per Nextra docs, external links just need href without type: 'page'
+ * Example: { title: 'GitHub', href: 'https://github.com', newWindow: true }
+ */
+export interface ExternalLinkMetaEntry {
+	title: string;
 	href: string;
+	newWindow?: boolean;
 }
 
 /**
@@ -55,7 +70,13 @@ export interface MenuNavMeta {
 /**
  * Possible entry types in _meta.ts
  */
-export type ExistingNavMetaEntry = string | VirtualGroupMeta | ApiPageMetaEntry | SeparatorMeta | MenuNavMeta;
+export type ExistingNavMetaEntry =
+	| string
+	| VirtualGroupMeta
+	| ApiPageMetaEntry
+	| ExternalLinkMetaEntry
+	| SeparatorMeta
+	| MenuNavMeta;
 
 /**
  * Existing navigation meta from Nextra _meta.ts (supports nested virtual groups)

@@ -4,6 +4,7 @@ import {
 	parseSections,
 } from "../../../tools/jolliagent/src/jolliscript/parser";
 import type { DocDao } from "../dao/DocDao";
+import type { SourceDao } from "../dao/SourceDao";
 import {
 	GITHUB_INSTALLATION_REPOSITORIES_ADDED,
 	GITHUB_INSTALLATION_REPOSITORIES_REMOVED,
@@ -11,6 +12,7 @@ import {
 } from "../events/GithubEvents";
 import type { IntegrationsManager } from "../integrations/IntegrationsManager";
 import type { Doc } from "../model/Doc";
+import { getTenantContext } from "../tenant/TenantContext";
 import type { JobContext } from "../types/JobTypes";
 import { getLog } from "../util/Logger";
 import { jobDefinitionBuilder } from "./JobDefinitions";
@@ -101,9 +103,12 @@ const InstallationRepositoriesSchema = z.object({
 
 type InstallationRepositoriesPayload = z.infer<typeof InstallationRepositoriesSchema>;
 
-// Schema for the GitHub push event payload (simplified for JRN adapter needs)
+// Schema for the GitHub push event payload
 const GitPushSchema = z.object({
 	ref: z.string(),
+	before: z.string().optional(),
+	after: z.string().optional(),
+	forced: z.boolean().optional(),
 	repository: z.object({
 		full_name: z.string(),
 		owner: z.object({
@@ -111,28 +116,166 @@ const GitPushSchema = z.object({
 		}),
 		name: z.string(),
 	}),
-});
+	commits: z
+		.array(
+			z.object({
+				added: z.array(z.string()),
+				modified: z.array(z.string()),
+				removed: z.array(z.string()),
+			}),
+		)
+		.default([]),
+}) as z.ZodType<{
+	ref: string;
+	before?: string;
+	after?: string;
+	forced?: boolean;
+	repository: { full_name: string; owner: { login: string }; name: string };
+	commits: Array<{ added: Array<string>; modified: Array<string>; removed: Array<string> }>;
+}>;
 
 type GitPushPayload = z.infer<typeof GitPushSchema>;
 
 /**
- * Creates the Jobs to JRN adapter
+ * Information about a git push event, passed through to source doc analysis.
  */
-export function createJobsToJrnAdapter(integrationsManager: IntegrationsManager, docDao: DocDao): JobsToJrnAdapter {
-	// Store reference to jobScheduler for use in handlers
-	let schedulerRef: JobScheduler | undefined;
+export interface PushInfo {
+	before?: string;
+	after?: string;
+	owner: string;
+	repo: string;
+	branch: string;
+}
+
+/**
+ * Creates the Jobs to JRN adapter
+ * @param integrationsManager - The integrations manager (already multi-tenant aware)
+ * @param defaultDocDao - Default DocDao to use when no tenant context is available.
+ *                        In multi-tenant mode, handlers will use getTenantContext() to get
+ *                        the tenant-specific database.
+ * @param defaultSourceDao - Default SourceDao to use when no tenant context is available.
+ *                           In multi-tenant mode, handlers will use getTenantContext() to get
+ *                           the tenant-specific database.
+ */
+export function createJobsToJrnAdapter(
+	integrationsManager: IntegrationsManager,
+	defaultDocDao: DocDao,
+	defaultSourceDao: SourceDao,
+): JobsToJrnAdapter {
+	/**
+	 * Get the DocDao to use - prefers tenant context, falls back to default.
+	 * This enables multi-tenant support while maintaining backward compatibility.
+	 */
+	function getDocDao(): DocDao {
+		const tenantContext = getTenantContext();
+		if (tenantContext?.database?.docDao) {
+			return tenantContext.database.docDao;
+		}
+		return defaultDocDao;
+	}
+
+	/**
+	 * Queue a source doc analysis job for a non-jolliscript article with source metadata.
+	 * This analyzes whether the article needs updating based on the git push diff.
+	 */
+	async function queueSourceDocAnalysisJob(
+		doc: Doc,
+		pushInfo: PushInfo,
+		context: JobContext,
+		jobScheduler: JobScheduler,
+	): Promise<void> {
+		try {
+			const jobResult = await jobScheduler.queueJob({
+				name: "knowledge-graph:analyze-source-doc",
+				params: {
+					docJrn: doc.jrn,
+					before: pushInfo.before,
+					after: pushInfo.after,
+					owner: pushInfo.owner,
+					repo: pushInfo.repo,
+					branch: pushInfo.branch,
+				},
+			});
+			log.info("Queued analyze-source-doc job for article %s: jobId=%s", doc.jrn, jobResult.jobId);
+			context.log("source-doc-analysis-job-queued", {
+				articleJrn: doc.jrn,
+				articleId: doc.id,
+				jobId: jobResult.jobId,
+			});
+		} catch (error) {
+			const errorMessage = error instanceof Error ? error.message : String(error);
+			log.error("Failed to queue analyze-source-doc job for article %s: %s", doc.jrn, errorMessage);
+			context.log("source-doc-analysis-job-queue-failed", {
+				articleJrn: doc.jrn,
+				articleId: doc.id,
+				error: errorMessage,
+			});
+		}
+	}
+
+	/**
+	 * Get the SourceDao to use - prefers tenant context, falls back to default.
+	 */
+	function getSourceDao(): SourceDao {
+		const tenantContext = getTenantContext();
+		if (tenantContext?.database?.sourceDao) {
+			return tenantContext.database.sourceDao;
+		}
+		return defaultSourceDao;
+	}
+
+	/**
+	 * Queue a cli-impact job for a matching space source.
+	 * Passes cursor and SHA info for incremental diffing.
+	 */
+	async function queueCliImpactJob(
+		spaceId: number,
+		sourceId: number,
+		integrationId: number,
+		eventJrn: string,
+		context: JobContext,
+		jobScheduler: JobScheduler,
+		afterSha?: string,
+		cursorSha?: string,
+	): Promise<void> {
+		try {
+			const jobResult = await jobScheduler.queueJob({
+				name: "knowledge-graph:cli-impact",
+				params: {
+					spaceId,
+					sourceId,
+					integrationId,
+					eventJrn,
+					killSandbox: false,
+					afterSha,
+					cursorSha,
+				},
+			});
+			context.log("cli-impact-job-queued", {
+				spaceId,
+				sourceId,
+				integrationId,
+				eventJrn,
+				jobId: jobResult.jobId,
+			});
+		} catch (error) {
+			const errorMessage = error instanceof Error ? error.message : String(error);
+			context.log("cli-impact-job-queue-failed", {
+				spaceId,
+				sourceId,
+				integrationId,
+				eventJrn,
+				error: errorMessage,
+			});
+		}
+	}
 
 	/**
 	 * Queue a run-jolliscript job for a jolliscript article
 	 */
-	async function queueJolliscriptJob(doc: Doc, context: JobContext): Promise<void> {
-		/* v8 ignore start - schedulerRef is always set by registerJobs before this is called */
-		if (!schedulerRef) {
-			return;
-		}
-		/* v8 ignore stop */
+	async function queueJolliscriptJob(doc: Doc, context: JobContext, jobScheduler: JobScheduler): Promise<void> {
 		try {
-			const jobResult = await schedulerRef.queueJob({
+			const jobResult = await jobScheduler.queueJob({
 				name: "knowledge-graph:run-jolliscript",
 				params: { docJrn: doc.jrn, killSandbox: false },
 			});
@@ -179,13 +322,16 @@ export function createJobsToJrnAdapter(integrationsManager: IntegrationsManager,
 	}
 
 	/**
-	 * Process a single document to check if it matches the JRN trigger
+	 * Process a single document to check if it matches the JRN trigger.
+	 * @param pushInfo - Optional push info for GIT_PUSH events, used to queue source doc analysis jobs
 	 */
 	async function processDocForTrigger(
 		doc: Doc,
 		eventJrn: string,
 		verb: "CREATED" | "REMOVED" | "GIT_PUSH",
 		context: JobContext,
+		jobScheduler: JobScheduler,
+		pushInfo?: PushInfo,
 	): Promise<boolean> {
 		const sections = parseSections(doc.content as string);
 		const frontMatterSection = sections.find(s => s.isFrontMatter);
@@ -222,9 +368,12 @@ export function createJobsToJrnAdapter(integrationsManager: IntegrationsManager,
 			articleType,
 		});
 
-		// Queue run-jolliscript job for jolliscript articles
+		// Queue appropriate job based on article type
 		if (articleType === "jolliscript") {
-			await queueJolliscriptJob(doc, context);
+			await queueJolliscriptJob(doc, context, jobScheduler);
+		} else if (pushInfo && doc.sourceMetadata) {
+			// Non-jolliscript article with source metadata — queue analysis job
+			await queueSourceDocAnalysisJob(doc, pushInfo, context, jobScheduler);
 		}
 
 		return true;
@@ -232,15 +381,20 @@ export function createJobsToJrnAdapter(integrationsManager: IntegrationsManager,
 
 	/**
 	 * Find articles with front matter matching the given event JRN and verb,
-	 * and queue run-jolliscript jobs for jolliscript articles
+	 * and queue appropriate jobs (jolliscript or source doc analysis).
+	 * @param pushInfo - Optional push info for GIT_PUSH events, used to queue source doc analysis jobs
 	 */
 	async function findMatchingArticlesAndTriggerJobs(
 		eventJrn: string,
 		verb: "CREATED" | "REMOVED" | "GIT_PUSH",
 		context: JobContext,
+		jobScheduler: JobScheduler,
+		pushInfo?: PushInfo,
 	): Promise<Array<Doc>> {
 		// Include /root docs since JRN triggers may be defined there
+		const docDao = getDocDao();
 		const allDocs = await docDao.listDocs({ includeRoot: true });
+		log.info("Scanning %d docs for %s %s triggers", allDocs.length, verb, eventJrn);
 		const matchingDocs: Array<Doc> = [];
 
 		for (const doc of allDocs) {
@@ -250,7 +404,7 @@ export function createJobsToJrnAdapter(integrationsManager: IntegrationsManager,
 			}
 
 			try {
-				const matched = await processDocForTrigger(doc, eventJrn, verb, context);
+				const matched = await processDocForTrigger(doc, eventJrn, verb, context, jobScheduler, pushInfo);
 				if (matched) {
 					matchingDocs.push(doc);
 				}
@@ -264,11 +418,67 @@ export function createJobsToJrnAdapter(integrationsManager: IntegrationsManager,
 	}
 
 	/**
+	 * Find sources matching the event JRN via SourceDao and queue cli-impact jobs.
+	 * When webhook SHAs are provided, passes cursor info for incremental diffing.
+	 * On force push, the cursor is cleared so the sandbox falls back to auto-detect.
+	 */
+	async function findMatchingSpacesAndTriggerJobs(
+		eventJrn: string,
+		verb: "CREATED" | "REMOVED" | "GIT_PUSH",
+		context: JobContext,
+		jobScheduler: JobScheduler,
+		webhookShas?: { afterSha?: string; forced?: boolean },
+	): Promise<void> {
+		const sourceDao = getSourceDao();
+		const matches = await sourceDao.findSourcesMatchingJrn(eventJrn);
+		if (matches.length === 0) {
+			return;
+		}
+
+		const afterSha = webhookShas?.afterSha;
+		const isForced = webhookShas?.forced ?? false;
+
+		for (const { source, binding } of matches) {
+			const integrationId = source.integrationId;
+			if (!integrationId) {
+				continue;
+			}
+
+			// Use the source cursor as diff base, unless this is a force push
+			// (force push may have rewritten history, making the old cursor unreachable)
+			const cursorSha = isForced ? undefined : source.cursor?.value;
+
+			context.log("space-source-matched", {
+				spaceId: binding.spaceId,
+				sourceId: source.id,
+				integrationId,
+				eventJrn,
+				verb,
+				afterSha,
+				cursorSha,
+				forced: isForced,
+			});
+
+			await queueCliImpactJob(
+				binding.spaceId,
+				source.id,
+				integrationId,
+				eventJrn,
+				context,
+				jobScheduler,
+				afterSha,
+				cursorSha,
+			);
+		}
+	}
+
+	/**
 	 * Handler for repositories added event
 	 */
 	async function handleRepositoriesAdded(
 		params: InstallationRepositoriesPayload,
 		context: JobContext,
+		jobScheduler: JobScheduler,
 	): Promise<void> {
 		const { installation, repositories_added: repositoriesAdded } = params;
 
@@ -302,7 +512,12 @@ export function createJobsToJrnAdapter(integrationsManager: IntegrationsManager,
 			context.log("jrn-created", { eventJrn, org, repo: repoName, branch });
 
 			// Find matching articles and trigger jolliscript jobs
-			const matchingArticles = await findMatchingArticlesAndTriggerJobs(eventJrn, "CREATED", context);
+			const matchingArticles = await findMatchingArticlesAndTriggerJobs(
+				eventJrn,
+				"CREATED",
+				context,
+				jobScheduler,
+			);
 			for (const article of matchingArticles) {
 				log.info("Article %d triggered by %s CREATED", article.id, eventJrn);
 				context.log("article-triggered", {
@@ -321,6 +536,7 @@ export function createJobsToJrnAdapter(integrationsManager: IntegrationsManager,
 	async function handleRepositoriesRemoved(
 		params: InstallationRepositoriesPayload,
 		context: JobContext,
+		jobScheduler: JobScheduler,
 	): Promise<void> {
 		const { installation, repositories_removed: repositoriesRemoved } = params;
 
@@ -354,7 +570,12 @@ export function createJobsToJrnAdapter(integrationsManager: IntegrationsManager,
 			context.log("jrn-removed", { eventJrn, org, repo: repoName, branch });
 
 			// Find matching articles and trigger jolliscript jobs
-			const matchingArticles = await findMatchingArticlesAndTriggerJobs(eventJrn, "REMOVED", context);
+			const matchingArticles = await findMatchingArticlesAndTriggerJobs(
+				eventJrn,
+				"REMOVED",
+				context,
+				jobScheduler,
+			);
 			for (const article of matchingArticles) {
 				log.info("Article %d triggered by %s REMOVED", article.id, eventJrn);
 				context.log("article-triggered", {
@@ -370,8 +591,12 @@ export function createJobsToJrnAdapter(integrationsManager: IntegrationsManager,
 	/**
 	 * Handler for git push event
 	 */
-	async function handleGitPush(params: GitPushPayload, context: JobContext): Promise<void> {
-		const { ref, repository } = params;
+	async function handleGitPush(
+		params: GitPushPayload,
+		context: JobContext,
+		jobScheduler: JobScheduler,
+	): Promise<void> {
+		const { ref, before, after, repository, forced } = params;
 
 		// Only handle branch pushes (not tags)
 		if (!ref.startsWith("refs/heads/")) {
@@ -386,10 +611,25 @@ export function createJobsToJrnAdapter(integrationsManager: IntegrationsManager,
 		// Build event JRN using the v3 format
 		const eventJrn = jrnParserV3.githubSource({ orgId: "global", org, repo: repoName, branch });
 		log.info("%s GIT_PUSH", eventJrn);
-		context.log("jrn-git-push", { eventJrn, org, repo: repoName, branch });
+		context.log("jrn-git-push", { eventJrn, org, repo: repoName, branch, after, forced });
 
-		// Find matching articles and trigger jolliscript jobs
-		const matchingArticles = await findMatchingArticlesAndTriggerJobs(eventJrn, "GIT_PUSH", context);
+		// Build push info for source doc analysis
+		const pushInfo: PushInfo = {
+			owner: org,
+			repo: repoName,
+			branch,
+			...(before != null ? { before } : {}),
+			...(after != null ? { after } : {}),
+		};
+
+		// Find matching articles and trigger appropriate jobs
+		const matchingArticles = await findMatchingArticlesAndTriggerJobs(
+			eventJrn,
+			"GIT_PUSH",
+			context,
+			jobScheduler,
+			pushInfo,
+		);
 		for (const article of matchingArticles) {
 			log.info("Article %d triggered by %s GIT_PUSH", article.id, eventJrn);
 			context.log("article-triggered", {
@@ -399,12 +639,15 @@ export function createJobsToJrnAdapter(integrationsManager: IntegrationsManager,
 				verb: "GIT_PUSH",
 			});
 		}
+
+		// Match spaces by sources and queue CLI impact jobs with SHA info for incremental diffs.
+		await findMatchingSpacesAndTriggerJobs(eventJrn, "GIT_PUSH", context, jobScheduler, {
+			...(after ? { afterSha: after } : {}),
+			forced: forced ?? false,
+		});
 	}
 
 	function registerJobs(jobScheduler: JobScheduler): void {
-		// Store scheduler reference for use in handlers to queue jolliscript jobs
-		schedulerRef = jobScheduler;
-
 		// Register job for repositories added
 		const reposAddedJob = jobDefinitionBuilder<InstallationRepositoriesPayload>()
 			.category("jrn-adapter")
@@ -412,7 +655,7 @@ export function createJobsToJrnAdapter(integrationsManager: IntegrationsManager,
 			.title("JRN Adapter: Repos Added")
 			.description("Logs JRN paths when repositories are added to GitHub App installation")
 			.schema(InstallationRepositoriesSchema)
-			.handler(handleRepositoriesAdded)
+			.handler((params, context) => handleRepositoriesAdded(params, context, jobScheduler))
 			.triggerEvents([GITHUB_INSTALLATION_REPOSITORIES_ADDED])
 			.build();
 
@@ -425,7 +668,7 @@ export function createJobsToJrnAdapter(integrationsManager: IntegrationsManager,
 			.title("JRN Adapter: Repos Removed")
 			.description("Logs JRN paths when repositories are removed from GitHub App installation")
 			.schema(InstallationRepositoriesSchema)
-			.handler(handleRepositoriesRemoved)
+			.handler((params, context) => handleRepositoriesRemoved(params, context, jobScheduler))
 			.triggerEvents([GITHUB_INSTALLATION_REPOSITORIES_REMOVED])
 			.build();
 
@@ -438,13 +681,13 @@ export function createJobsToJrnAdapter(integrationsManager: IntegrationsManager,
 			.title("JRN Adapter: Git Push")
 			.description("Triggers articles when a git push event occurs on a matching repository/branch")
 			.schema(GitPushSchema)
-			.handler(handleGitPush)
+			.handler((params, context) => handleGitPush(params, context, jobScheduler))
 			.triggerEvents([GITHUB_PUSH])
 			.build();
 
 		jobScheduler.registerJob(gitPushJob);
 
-		log.debug("Jobs to JRN adapter registered");
+		log.info("Jobs to JRN adapter registered (3 jobs: repos-added, repos-removed, git-push)");
 	}
 
 	return {

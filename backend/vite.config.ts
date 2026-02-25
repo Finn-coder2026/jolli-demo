@@ -43,6 +43,7 @@ export default defineConfig({
 		mainFields: ["main", "module"],
 	},
 	server: {
+		...(useGateway && { host: "0.0.0.0" }),
 		open: false,
 		port: 7034,
 		// When USE_GATEWAY is set, allow all hosts for HTTPS gateway support
@@ -78,6 +79,15 @@ export default defineConfig({
 				"src/util/S3.ts",
 				"src/util/Sequelize.ts",
 				"src/util/SeedDocs.ts",
+				"src/onboarding-agent/types.ts", // Interface-only file - no executable code
+				"src/onboarding-agent/index.ts", // Re-exports only - no executable code
+				"src/onboarding-agent/tools/ToolTestUtils.ts", // Test utility - not production code
+				"src/connect/ConnectProvider.ts", // Interface-only file - no executable code
+				"src/health/HealthTypes.ts", // Interface-only file - no executable code
+				"src/EcsHandler.ts", // Entry point file - similar to Main.ts
+				"src/worker/WorkerMain.ts", // Entry point file - worker startup for AWS ECS
+				"src/onboarding-agent/OnboardingAgentFsm.ts", // FSM - complex state machine, tested via integration
+				"src/onboarding-agent/OnboardingFsm.ts", // FSM - complex state machine, tested via integration
 			],
 			include: ["src/**"],
 			reporter: ["html", "json", "lcov", "text"],

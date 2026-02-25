@@ -22,9 +22,9 @@ export interface MercureTokenResponse {
  * Options for subscribing to Mercure events
  */
 export interface MercureSubscribeOptions {
-	/** Type of subscription: jobs, draft, or convo */
-	type: "jobs" | "draft" | "convo";
-	/** Resource ID (required for draft and convo types) */
+	/** Type of subscription: jobs, draft, convo, or onboarding */
+	type: "jobs" | "draft" | "convo" | "onboarding";
+	/** Resource ID (required for draft, convo, and onboarding types) */
 	id?: number;
 	/** Callback for incoming messages */
 	onMessage: (data: unknown) => void;
@@ -114,7 +114,10 @@ export function createMercureClient(baseUrl: string): MercureClient {
 	/**
 	 * Requests a subscriber token from the backend.
 	 */
-	async function getSubscriberToken(type: "jobs" | "draft" | "convo", id?: number): Promise<MercureTokenResponse> {
+	async function getSubscriberToken(
+		type: "jobs" | "draft" | "convo" | "onboarding",
+		id?: number,
+	): Promise<MercureTokenResponse> {
 		const response = await fetch(`${baseUrl}/api/mercure/token`, {
 			method: "POST",
 			credentials: "include",

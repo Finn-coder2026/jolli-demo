@@ -212,9 +212,48 @@ describe("DocDraftClient", () => {
 			mockFetch.mockResolvedValueOnce({
 				ok: false,
 				statusText: "Internal Server Error",
+				json: async () => ({ error: "Something went wrong" }),
 			} as Response);
 
 			await expect(client.saveDocDraft(1)).rejects.toThrow("Failed to save draft: Internal Server Error");
+		});
+
+		it("throws DraftValidationError when save fails with validation errors", async () => {
+			const { DraftValidationError } = await import("./DocDraftClient");
+			const validationErrors = [{ message: "Invalid image", line: 5, column: 1, severity: "error" as const }];
+			mockFetch.mockResolvedValueOnce({
+				ok: false,
+				statusText: "Bad Request",
+				json: async () => ({ error: "Invalid image references", validationErrors }),
+			} as Response);
+
+			try {
+				await client.saveDocDraft(1);
+				expect.fail("Should have thrown");
+			} catch (err) {
+				expect(err).toBeInstanceOf(DraftValidationError);
+				expect((err as InstanceType<typeof DraftValidationError>).message).toBe("Invalid image references");
+				expect((err as InstanceType<typeof DraftValidationError>).validationErrors).toEqual(validationErrors);
+			}
+		});
+
+		it("uses fallback message when validation errors present but error field missing", async () => {
+			const { DraftValidationError } = await import("./DocDraftClient");
+			const validationErrors = [{ message: "Invalid image", line: 5, column: 1, severity: "error" as const }];
+			mockFetch.mockResolvedValueOnce({
+				ok: false,
+				statusText: "Bad Request",
+				json: async () => ({ validationErrors }), // No error field
+			} as Response);
+
+			try {
+				await client.saveDocDraft(1);
+				expect.fail("Should have thrown");
+			} catch (err) {
+				expect(err).toBeInstanceOf(DraftValidationError);
+				expect((err as InstanceType<typeof DraftValidationError>).message).toBe("Validation failed");
+				expect((err as InstanceType<typeof DraftValidationError>).validationErrors).toEqual(validationErrors);
+			}
 		});
 	});
 

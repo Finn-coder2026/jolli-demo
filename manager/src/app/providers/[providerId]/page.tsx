@@ -97,13 +97,7 @@ export default function ProviderDetailPage() {
 
 	return (
 		<main style={{ padding: "2rem", fontFamily: "system-ui, sans-serif", maxWidth: "800px" }}>
-			<Breadcrumb
-				items={[
-					{ label: "Dashboard", href: "/" },
-					{ label: "Database Providers", href: "/providers" },
-					{ label: provider.name },
-				]}
-			/>
+			<Breadcrumb items={[{ label: "Database Providers", href: "/providers" }, { label: provider.name }]} />
 			<div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
 				<h1>{provider.name}</h1>
 				<TypeBadge type={provider.type} />

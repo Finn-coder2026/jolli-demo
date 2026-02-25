@@ -12,6 +12,8 @@ export interface IntegrationSetupProps {
 export interface BaseIntegrationFlowProps {
 	onComplete(): void;
 	onCancel?(): void;
+	/** When true, open external URLs in a new browser window instead of redirecting the current page */
+	openInNewWindow?: boolean;
 }
 
 export interface StepComponentProps {

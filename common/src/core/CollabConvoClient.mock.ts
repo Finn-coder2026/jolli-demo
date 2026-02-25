@@ -7,7 +7,9 @@ export function mockCollabConvoClient(partial?: Partial<CollabConvoClient>): Col
 		createCollabConvo: async () => convo,
 		getCollabConvo: async () => convo,
 		getCollabConvoByArtifact: async () => convo,
-		sendMessage: async () => ({ success: true, message: "Processing" }),
+		sendMessage: async () => {
+			// No-op mock
+		},
 		streamConvo: () => ({}) as EventSource,
 		...partial,
 	};

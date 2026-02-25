@@ -12,11 +12,30 @@ vi.mock("lucide-react", async importOriginal => {
 	};
 });
 
+// Mock useMercureSubscription hook
+vi.mock("../../hooks/useMercureSubscription", () => ({
+	useMercureSubscription: vi.fn(() => {
+		return { connected: true, reconnecting: false, usingMercure: false };
+	}),
+}));
+
+// Mock toast for verifying error notifications
+const mockToastError = vi.fn();
+vi.mock("../../components/ui/Sonner", () => ({
+	toast: {
+		error: (message: string) => mockToastError(message),
+		success: vi.fn(),
+		info: vi.fn(),
+		warning: vi.fn(),
+	},
+}));
+
 /**
  * Helper function to get the content from a NumberEdit editor element.
  * NumberEdit uses contentEditable div, so we need to access innerText instead of value.
  */
 function getEditorContent(testId: string): string {
+	// NumberEdit applies the testId to the wrapper, and appends "-editor" for the actual editor div
 	const editor = screen.getByTestId(`${testId}-editor`);
 	return editor.innerText;
 }
@@ -26,6 +45,7 @@ function getEditorContent(testId: string): string {
  * Simulates user input by setting innerText and firing input event.
  */
 function setEditorContent(testId: string, content: string): void {
+	// NumberEdit applies the testId to the wrapper, and appends "-editor" for the actual editor div
 	const editor = screen.getByTestId(`${testId}-editor`);
 	editor.innerText = content;
 	fireEvent.input(editor);
@@ -48,11 +68,6 @@ const mockSiteClient = {
 	createSite: vi.fn(),
 	regenerateSite: vi.fn(),
 	updateRepositoryFile: mockUpdateRepositoryFile,
-	checkUpdateStatus: vi.fn(),
-	toggleProtection: vi.fn(),
-	refreshProtectionStatus: vi.fn(),
-	publishSite: vi.fn(),
-	unpublishSite: vi.fn(),
 	deleteSite: vi.fn(),
 	updateSiteArticles: vi.fn(),
 	cancelBuild: vi.fn(),
@@ -70,8 +85,13 @@ const mockSiteClient = {
 	verifyCustomDomain: vi.fn(),
 	refreshDomainStatuses: vi.fn(),
 	updateJwtAuthConfig: vi.fn(),
+	updateBranding: vi.fn(),
 	getRepositoryTree: mockGetRepositoryTree,
 	getFileContent: mockGetFileContent,
+	executeBatchOperations: vi.fn(),
+	updateFolderStructure: vi.fn(),
+	syncTree: vi.fn().mockResolvedValue({ success: true, commitSha: "mock-commit-sha" }),
+	getSitesForArticle: vi.fn().mockResolvedValue([]),
 };
 
 const mockDocsite: Site = {
@@ -147,10 +167,15 @@ const mockFileContentResponse = {
 describe("RepositoryViewer", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		// Set up default mocks
+		// Reset the toast mock before each test
+		mockToastError.mockClear();
+		// Set up default mocks - NO jobId by default (for immediate success/error tests)
+		// Tests that need job-based behavior should set jobId explicitly
 		mockGetRepositoryTree.mockResolvedValue(mockGitHubTreeResponse);
+		// Return generic response for all files
+		// Syntax errors only block navigation AWAY from the errored file, not initial clicks
 		mockGetFileContent.mockResolvedValue(mockFileContentResponse);
-		mockUpdateRepositoryFile.mockResolvedValue(undefined);
+		mockUpdateRepositoryFile.mockResolvedValue({});
 		mockFormatCode.mockResolvedValue({ formatted: "" });
 		mockCreateFolder.mockResolvedValue({ success: true, path: "" });
 		mockDeleteFolder.mockResolvedValue({ success: true });
@@ -159,10 +184,17 @@ describe("RepositoryViewer", () => {
 		mockListFolderContents.mockResolvedValue({ files: [] });
 	});
 
-	const renderWithProvider = (docsite: Site) => {
+	const mockOnFileSave = vi.fn();
+
+	const renderWithProvider = (
+		docsite: Site,
+		{ onFileSave = mockOnFileSave }: { onFileSave?: (() => void) | undefined } = {},
+	) => {
 		const mockClient = createMockClient();
 		mockClient.sites = vi.fn(() => mockSiteClient);
-		return renderWithProviders(<RepositoryViewer docsite={docsite} />, { client: mockClient });
+		return renderWithProviders(<RepositoryViewer docsite={docsite} onFileSave={onFileSave} />, {
+			client: mockClient,
+		});
 	};
 
 	it("should not render if githubRepo is not defined", () => {
@@ -253,7 +285,7 @@ describe("RepositoryViewer", () => {
 
 		await waitFor(() => {
 			// File content is now displayed in NumberEdit editor
-			expect(getEditorContent("file-content-viewer")).toContain("Test Content");
+			expect(getEditorContent("file-content-editor")).toContain("Test Content");
 		});
 	});
 
@@ -306,6 +338,41 @@ describe("RepositoryViewer", () => {
 		});
 	});
 
+	it("should preserve expanded folder states after Sync Now", async () => {
+		renderWithProvider(mockDocsite);
+
+		// Wait for initial tree load
+		await waitFor(() => {
+			expect(screen.getByText("guide")).toBeDefined();
+		});
+
+		// The guide folder starts collapsed, setup.mdx should not be visible
+		expect(screen.queryByText("setup.mdx")).toBeNull();
+
+		// Expand the guide folder
+		const folderButton = screen.getByText("guide");
+		fireEvent.click(folderButton);
+
+		// setup.mdx should now be visible
+		await waitFor(() => {
+			expect(screen.getByText("setup.mdx")).toBeDefined();
+		});
+
+		// Click Sync Now to refetch the tree
+		const syncButton = screen.getByText("Sync Now");
+		fireEvent.click(syncButton);
+
+		// Wait for refetch to complete
+		await waitFor(() => {
+			expect(mockGetRepositoryTree).toHaveBeenCalledTimes(2);
+		});
+
+		// The guide folder should still be expanded, setup.mdx should still be visible
+		await waitFor(() => {
+			expect(screen.getByText("setup.mdx")).toBeDefined();
+		});
+	});
+
 	it("should handle file fetch errors gracefully", async () => {
 		mockGetFileContent.mockRejectedValueOnce(new Error("Not Found"));
 
@@ -321,7 +388,7 @@ describe("RepositoryViewer", () => {
 
 		await waitFor(() => {
 			// Error message is now displayed in NumberEdit viewer
-			expect(getEditorContent("file-content-viewer")).toContain("Error loading file");
+			expect(getEditorContent("file-content-editor")).toContain("Error loading file");
 		});
 	});
 
@@ -493,7 +560,8 @@ describe("RepositoryViewer", () => {
 			fireEvent.click(screen.getByText("theme.config.jsx"));
 
 			await waitFor(() => {
-				expect(screen.getByText("Edit File")).toBeDefined();
+				// Editable files open directly in the editable editor
+				expect(screen.getByTestId("file-content-editor-editor")).toBeDefined();
 			});
 		});
 
@@ -562,7 +630,8 @@ describe("RepositoryViewer", () => {
 			fireEvent.click(screen.getByText("_meta.json"));
 
 			await waitFor(() => {
-				expect(screen.getByText("Edit File")).toBeDefined();
+				// Editable files open directly in the editable editor
+				expect(screen.getByTestId("file-content-editor-editor")).toBeDefined();
 			});
 		});
 
@@ -585,7 +654,8 @@ describe("RepositoryViewer", () => {
 			fireEvent.click(screen.getByText("_meta.global.js"));
 
 			await waitFor(() => {
-				expect(screen.getByText("Edit File")).toBeDefined();
+				// Editable files open directly in the editable editor
+				expect(screen.getByTestId("file-content-editor-editor")).toBeDefined();
 			});
 		});
 
@@ -608,7 +678,8 @@ describe("RepositoryViewer", () => {
 			fireEvent.click(screen.getByText("layout.tsx"));
 
 			await waitFor(() => {
-				expect(screen.getByText("Edit File")).toBeDefined();
+				// Editable files open directly in the editable editor
+				expect(screen.getByTestId("file-content-editor-editor")).toBeDefined();
 			});
 		});
 
@@ -626,7 +697,8 @@ describe("RepositoryViewer", () => {
 			fireEvent.click(screen.getByText("_meta.ts"));
 
 			await waitFor(() => {
-				expect(screen.getByText("Edit File")).toBeDefined();
+				// Editable files open directly in the editable editor
+				expect(screen.getByTestId("file-content-editor-editor")).toBeDefined();
 			});
 		});
 
@@ -647,160 +719,6 @@ describe("RepositoryViewer", () => {
 
 			await waitFor(() => {
 				expect(screen.getByText("Read only - managed by Jolli")).toBeDefined();
-			});
-		});
-	});
-
-	describe("file content caching", () => {
-		const editableFilesTree = {
-			sha: "abc123",
-			truncated: false,
-			tree: [{ path: "theme.config.jsx", mode: "100644", type: "blob", sha: "s1", size: 100, url: "u1" }],
-		};
-
-		/** Helper to get the file tree button for a specific file */
-		function getFileTreeButton(filename: string): HTMLElement {
-			const buttons = screen.getAllByRole("button");
-			const fileButton = buttons.find(btn => {
-				const span = btn.querySelector("span.truncate");
-				return span?.textContent === filename;
-			});
-			if (!fileButton) {
-				throw new Error(`File button for "${filename}" not found`);
-			}
-			return fileButton;
-		}
-
-		it("should cache saved file content and return cached content on subsequent clicks", async () => {
-			const originalContent = btoa("original content");
-			const savedContent = "modified content";
-
-			mockGetRepositoryTree.mockResolvedValue(editableFilesTree);
-			mockGetFileContent.mockResolvedValueOnce({
-				name: "theme.config.jsx",
-				path: "theme.config.jsx",
-				sha: "s1",
-				type: "file",
-				content: originalContent,
-				encoding: "base64",
-			});
-
-			renderWithProvider(mockDocsite);
-
-			// Wait for tree to load
-			await waitFor(() => {
-				expect(getFileTreeButton("theme.config.jsx")).toBeDefined();
-			});
-
-			// Click on file to load content
-			fireEvent.click(getFileTreeButton("theme.config.jsx"));
-
-			await waitFor(() => {
-				expect(getEditorContent("file-content-viewer")).toBe("original content");
-			});
-
-			// Click Edit button
-			const editButton = screen.getByText("Edit File");
-			fireEvent.click(editButton);
-
-			// Modify content in NumberEdit editor
-			setEditorContent("file-content-editor", savedContent);
-
-			// Save the file
-			const saveButton = screen.getByText("Save File");
-			fireEvent.click(saveButton);
-
-			await waitFor(() => {
-				expect(screen.getByText("File saved successfully")).toBeDefined();
-			});
-
-			// The displayed content should now show the saved content
-			await waitFor(() => {
-				expect(getEditorContent("file-content-viewer")).toBe(savedContent);
-			});
-
-			// Reset mock to track new calls
-			const fileContentCallsAfterSave = mockGetFileContent.mock.calls.length;
-
-			// Click on the file again (the cache should be used)
-			fireEvent.click(getFileTreeButton("theme.config.jsx"));
-
-			// Wait a bit for any fetch calls
-			await new Promise(resolve => setTimeout(resolve, 100));
-
-			// No new getFileContent calls should have been made
-			// because it should use the cached content
-			const fileContentCallsNow = mockGetFileContent.mock.calls.length;
-			expect(fileContentCallsNow).toBe(fileContentCallsAfterSave);
-
-			// Content should still be the saved content
-			expect(getEditorContent("file-content-viewer")).toBe(savedContent);
-		});
-
-		it("should clear cache when Sync Now is clicked", async () => {
-			const originalContent = btoa("original content");
-			const savedContent = "modified content";
-			const newServerContent = btoa("new server content");
-
-			mockGetRepositoryTree.mockResolvedValue(editableFilesTree);
-			mockGetFileContent
-				// First file content load
-				.mockResolvedValueOnce({
-					name: "theme.config.jsx",
-					path: "theme.config.jsx",
-					sha: "s1",
-					type: "file",
-					content: originalContent,
-					encoding: "base64",
-				})
-				// File content fetch after cache cleared
-				.mockResolvedValueOnce({
-					name: "theme.config.jsx",
-					path: "theme.config.jsx",
-					sha: "s1",
-					type: "file",
-					content: newServerContent,
-					encoding: "base64",
-				});
-
-			renderWithProvider(mockDocsite);
-
-			// Wait for tree to load
-			await waitFor(() => {
-				expect(getFileTreeButton("theme.config.jsx")).toBeDefined();
-			});
-
-			// Click on file to load content
-			fireEvent.click(getFileTreeButton("theme.config.jsx"));
-
-			await waitFor(() => {
-				expect(getEditorContent("file-content-viewer")).toBe("original content");
-			});
-
-			// Click Edit, modify, and save
-			fireEvent.click(screen.getByText("Edit File"));
-			setEditorContent("file-content-editor", savedContent);
-			fireEvent.click(screen.getByText("Save File"));
-
-			await waitFor(() => {
-				expect(screen.getByText("File saved successfully")).toBeDefined();
-			});
-
-			// Click Sync Now to clear cache
-			const syncButton = screen.getByText("Sync Now");
-			fireEvent.click(syncButton);
-
-			await waitFor(() => {
-				// Tree should reload
-				expect(getFileTreeButton("theme.config.jsx")).toBeDefined();
-			});
-
-			// Click on the file again - should fetch from server since cache was cleared
-			fireEvent.click(getFileTreeButton("theme.config.jsx"));
-
-			await waitFor(() => {
-				// Should show the new server content, not the cached saved content
-				expect(getEditorContent("file-content-viewer")).toBe("new server content");
 			});
 		});
 	});
@@ -850,11 +768,10 @@ describe("RepositoryViewer", () => {
 			});
 			fireEvent.click(getFileTreeButton("_meta.ts"));
 
-			// Wait for file to load and click Edit
+			// Wait for file to load (editable files open directly in edit mode)
 			await waitFor(() => {
-				expect(screen.getByText("Edit File")).toBeDefined();
+				expect(screen.getByTestId("file-content-editor-editor")).toBeDefined();
 			});
-			fireEvent.click(screen.getByText("Edit File"));
 		}
 
 		it("should show validation error banner when _meta.ts has syntax errors", async () => {
@@ -869,88 +786,22 @@ describe("RepositoryViewer", () => {
 			});
 			fireEvent.click(getFileTreeButton("_meta.ts"));
 
-			// Wait for file to load
+			// Wait for file to load (editable files open directly in edit mode)
 			await waitFor(() => {
-				expect(screen.getByText("Edit File")).toBeDefined();
+				expect(screen.getByTestId("file-content-editor-editor")).toBeDefined();
 			});
-
-			// Click Edit
-			fireEvent.click(screen.getByText("Edit File"));
 
 			// Modify content (introduce syntax error - missing closing brace)
 			setEditorContent("file-content-editor", 'export default { intro: "Introduction"');
 
 			// Click Save - client-side validation will catch the syntax error
-			fireEvent.click(screen.getByText("Save File"));
+			fireEvent.click(screen.getByText("Save"));
 
 			// Should show validation error banner (client-side validation)
 			await waitFor(() => {
 				expect(screen.getByTestId("validation-error-banner")).toBeDefined();
 				expect(screen.getByText(/Issues/)).toBeDefined();
 			});
-		});
-
-		it("should clear validation error when canceling edit", async () => {
-			mockGetRepositoryTree.mockResolvedValueOnce(metaFilesTree);
-			mockGetFileContent.mockResolvedValueOnce(validMetaFileContentResponse);
-
-			renderWithProvider(mockDocsite);
-
-			// content folder is auto-expanded, so _meta.ts should be visible
-			await waitFor(() => {
-				expect(getFileTreeButton("_meta.ts")).toBeDefined();
-			});
-			fireEvent.click(getFileTreeButton("_meta.ts"));
-
-			await waitFor(() => {
-				expect(screen.getByText("Edit File")).toBeDefined();
-			});
-
-			// Edit and try to save (which will fail validation)
-			fireEvent.click(screen.getByText("Edit File"));
-			setEditorContent("file-content-editor", "this is not valid javascript");
-			fireEvent.click(screen.getByText("Save File"));
-
-			// Wait for error banner (client-side validation)
-			await waitFor(() => {
-				expect(screen.getByTestId("validation-error-banner")).toBeDefined();
-			});
-
-			// Click Cancel
-			fireEvent.click(screen.getByText("Cancel"));
-
-			// Error banner should be gone
-			await waitFor(() => {
-				expect(screen.queryByTestId("validation-error-banner")).toBeNull();
-			});
-		});
-
-		it("should save successfully when _meta.ts validation passes", async () => {
-			mockGetRepositoryTree.mockResolvedValue(metaFilesTree);
-			mockGetFileContent.mockResolvedValueOnce(validMetaFileContentResponse);
-
-			renderWithProvider(mockDocsite);
-
-			// content folder is auto-expanded, so _meta.ts should be visible
-			await waitFor(() => {
-				expect(getFileTreeButton("_meta.ts")).toBeDefined();
-			});
-			fireEvent.click(getFileTreeButton("_meta.ts"));
-
-			await waitFor(() => {
-				expect(screen.getByText("Edit File")).toBeDefined();
-			});
-
-			// Edit and save
-			fireEvent.click(screen.getByText("Edit File"));
-			setEditorContent("file-content-editor", 'export default { intro: "New Title" }');
-			fireEvent.click(screen.getByText("Save File"));
-
-			// Should show success message (not error banner)
-			await waitFor(() => {
-				expect(screen.getByText("File saved successfully")).toBeDefined();
-			});
-			expect(screen.queryByTestId("validation-error-banner")).toBeNull();
 		});
 
 		describe("debounced validation (client-side)", () => {
@@ -1064,13 +915,12 @@ describe("RepositoryViewer", () => {
 				fireEvent.click(getFileTreeButton("_meta.ts"));
 
 				await waitFor(() => {
-					expect(screen.getByText("Edit File")).toBeDefined();
+					expect(screen.getByTestId("file-content-editor-editor")).toBeDefined();
 				});
 
 				// Edit and try to save (client-side validation will catch the syntax error)
-				fireEvent.click(screen.getByText("Edit File"));
 				setEditorContent("file-content-editor", "not valid javascript code");
-				fireEvent.click(screen.getByText("Save File"));
+				fireEvent.click(screen.getByText("Save"));
 
 				// Wait for error banner (client-side validation)
 				await waitFor(() => {
@@ -1101,13 +951,12 @@ describe("RepositoryViewer", () => {
 				fireEvent.click(getFileTreeButton("_meta.ts"));
 
 				await waitFor(() => {
-					expect(screen.getByText("Edit File")).toBeDefined();
+					expect(screen.getByTestId("file-content-editor-editor")).toBeDefined();
 				});
 
 				// Edit and try to save (client-side validation will catch the missing brace)
-				fireEvent.click(screen.getByText("Edit File"));
 				setEditorContent("file-content-editor", "export default {\n  test: 'value'\n");
-				fireEvent.click(screen.getByText("Save File"));
+				fireEvent.click(screen.getByText("Save"));
 
 				// Wait for error banner (client-side validation)
 				await waitFor(() => {
@@ -1166,11 +1015,10 @@ describe("RepositoryViewer", () => {
 				});
 				fireEvent.click(getFileTreeButton("_meta.ts"));
 
-				// Wait for file to load and click Edit
+				// Wait for file to load (editable files open directly in edit mode)
 				await vi.waitFor(() => {
-					expect(screen.getByText("Edit File")).toBeDefined();
+					expect(screen.getByTestId("file-content-editor-editor")).toBeDefined();
 				});
-				fireEvent.click(screen.getByText("Edit File"));
 
 				// Type content to trigger validation (with missing entry)
 				setEditorContent("file-content-editor", 'export default { intro: "Introduction", guide: "Guide" }');
@@ -1251,11 +1099,10 @@ describe("RepositoryViewer", () => {
 			});
 			fireEvent.click(screen.getByText("_meta.ts"));
 
-			// Wait for Edit button and click it
+			// Wait for file to load (editable files open directly in edit mode)
 			await waitFor(() => {
-				expect(screen.getByText("Edit File")).toBeDefined();
+				expect(screen.getByTestId("file-content-editor-editor")).toBeDefined();
 			});
-			fireEvent.click(screen.getByText("Edit File"));
 
 			// Format button should be visible in edit mode
 			await waitFor(() => {
@@ -1278,10 +1125,10 @@ describe("RepositoryViewer", () => {
 			});
 			fireEvent.click(screen.getByText("_meta.ts"));
 
+			// Wait for file to load (editable files open directly in edit mode)
 			await waitFor(() => {
-				expect(screen.getByText("Edit File")).toBeDefined();
+				expect(screen.getByTestId("file-content-editor-editor")).toBeDefined();
 			});
-			fireEvent.click(screen.getByText("Edit File"));
 
 			// Click Format button
 			await waitFor(() => {
@@ -1482,9 +1329,8 @@ describe("RepositoryViewer", () => {
 			expect(options).toContain("content/guide");
 		});
 
-		it("should call moveFile API when Move button is clicked", async () => {
+		it("should update working tree when Move button is clicked", async () => {
 			mockGetRepositoryTree.mockResolvedValue(fileTreeWithSubfolders);
-			mockMoveFile.mockResolvedValueOnce({ success: true, newPath: "content/guide/intro.mdx" });
 
 			renderWithProvider(mockDocsite);
 
@@ -1509,14 +1355,17 @@ describe("RepositoryViewer", () => {
 			const select = screen.getByTestId("move-destination-select") as HTMLSelectElement;
 			fireEvent.change(select, { target: { value: "content/guide" } });
 
-			// Click Move button
+			// Click Move button - updates working tree only (no API call)
 			const moveButton = screen.getByTestId("move-file-button");
 			fireEvent.click(moveButton);
 
-			// Verify the move API was called
+			// Dialog should close
 			await waitFor(() => {
-				expect(mockMoveFile).toHaveBeenCalled();
+				expect(screen.queryByTestId("move-file-dialog")).toBeNull();
 			});
+
+			// Backend API should NOT be called (changes saved in batch later)
+			expect(mockMoveFile).not.toHaveBeenCalled();
 		});
 
 		it("should disable Move button when destination is the same as current location", async () => {
@@ -1673,7 +1522,7 @@ describe("RepositoryViewer", () => {
 			expect(screen.queryByTestId("context-menu-delete-folder")).toBeNull();
 		});
 
-		it("should not show context menu on creation-restricted protected folder (app)", async () => {
+		it("should show empty context menu on creation-restricted protected folder (app)", async () => {
 			mockGetRepositoryTree.mockResolvedValueOnce(fileTreeWithAppAndContent);
 
 			renderWithProvider(mockDocsite);
@@ -1687,9 +1536,16 @@ describe("RepositoryViewer", () => {
 			const appFolder = screen.getByTestId("folder-app");
 			fireEvent.contextMenu(appFolder);
 
-			// Context menu should NOT appear for creation-restricted protected root folders
-			// (no menu items would be shown since all options are disabled)
-			expect(screen.queryByTestId("folder-context-menu")).toBeNull();
+			// Context menu container appears but has no action buttons for creation-restricted folders
+			await waitFor(() => {
+				expect(screen.getByTestId("folder-context-menu")).toBeDefined();
+			});
+
+			// No action buttons should be visible for creation-restricted protected folders
+			expect(screen.queryByTestId("context-menu-new-file")).toBeNull();
+			expect(screen.queryByTestId("context-menu-new-folder")).toBeNull();
+			expect(screen.queryByTestId("context-menu-rename-folder")).toBeNull();
+			expect(screen.queryByTestId("context-menu-delete-folder")).toBeNull();
 		});
 
 		it("should show all options on subfolder", async () => {
@@ -1746,7 +1602,7 @@ describe("RepositoryViewer", () => {
 			});
 		});
 
-		it("should show context menu with only New File option when right-clicking on empty space (root level)", async () => {
+		it("should show context menu with New File and New Folder options when right-clicking on empty space (root level)", async () => {
 			mockGetRepositoryTree.mockResolvedValueOnce(fileTreeWithAppAndContent);
 
 			renderWithProvider(mockDocsite);
@@ -1765,10 +1621,10 @@ describe("RepositoryViewer", () => {
 				expect(screen.getByTestId("folder-context-menu")).toBeDefined();
 			});
 
-			// Should show New File option for root level (for config files)
+			// Should show New File and New Folder options for root level
 			expect(screen.getByTestId("context-menu-new-file")).toBeDefined();
-			// Should NOT show folder operations at root level (Nextra folders are pre-defined)
-			expect(screen.queryByTestId("context-menu-new-folder")).toBeNull();
+			expect(screen.getByTestId("context-menu-new-folder")).toBeDefined();
+			// Rename/delete should NOT show at root level (no folder path)
 			expect(screen.queryByTestId("context-menu-rename-folder")).toBeNull();
 			expect(screen.queryByTestId("context-menu-delete-folder")).toBeNull();
 		});
@@ -1978,6 +1834,230 @@ describe("RepositoryViewer", () => {
 		});
 	});
 
+	describe("working tree updates (manual save workflow)", () => {
+		const fileTreeWithFolders = {
+			sha: "abc123",
+			truncated: false,
+			tree: [
+				{
+					path: "content",
+					mode: "040000",
+					type: "tree",
+					sha: "content1",
+					url: "https://api.github.com/repos/test-org/test-repo/git/trees/content1",
+				},
+				{
+					path: "content/_meta.ts",
+					mode: "100644",
+					type: "blob",
+					sha: "meta1",
+					size: 100,
+					url: "https://api.github.com/repos/test-org/test-repo/git/blobs/meta1",
+				},
+				{
+					path: "content/intro.mdx",
+					mode: "100644",
+					type: "blob",
+					sha: "intro1",
+					size: 200,
+					url: "https://api.github.com/repos/test-org/test-repo/git/blobs/intro1",
+				},
+				{
+					path: "content/guides",
+					mode: "040000",
+					type: "tree",
+					sha: "guides1",
+					url: "https://api.github.com/repos/test-org/test-repo/git/trees/guides1",
+				},
+			],
+		};
+
+		it("should add folder to working tree without calling backend API", async () => {
+			mockGetRepositoryTree.mockResolvedValue(fileTreeWithFolders);
+
+			renderWithProvider(mockDocsite);
+
+			// Wait for tree to load - content folder is auto-expanded
+			await waitFor(() => {
+				expect(screen.getByTestId("folder-content")).toBeDefined();
+			});
+
+			// Right-click on content folder to open context menu
+			fireEvent.contextMenu(screen.getByTestId("folder-content"));
+
+			await waitFor(() => {
+				expect(screen.getByTestId("context-menu-new-folder")).toBeDefined();
+			});
+			fireEvent.click(screen.getByTestId("context-menu-new-folder"));
+
+			// Wait for new folder dialog
+			await waitFor(() => {
+				expect(screen.getByTestId("new-folder-dialog")).toBeDefined();
+			});
+
+			// Enter folder name
+			const input = screen.getByTestId("new-folder-name-input") as HTMLInputElement;
+			fireEvent.change(input, { target: { value: "new-folder" } });
+
+			// Click Create - this updates working tree only (no backend call)
+			fireEvent.click(screen.getByTestId("create-folder-button"));
+
+			// Folder should appear in the tree
+			await waitFor(() => {
+				expect(screen.getByText("new-folder")).toBeDefined();
+			});
+
+			// Backend API should NOT be called (changes saved in batch later)
+			expect(mockCreateFolder).not.toHaveBeenCalled();
+		});
+
+		it("should move file in working tree without calling backend API", async () => {
+			mockGetRepositoryTree.mockResolvedValue(fileTreeWithFolders);
+
+			renderWithProvider(mockDocsite);
+
+			// Wait for tree to load - content folder is auto-expanded
+			await waitFor(() => {
+				expect(screen.getByTestId("file-intro.mdx")).toBeDefined();
+				expect(screen.getByTestId("folder-guides")).toBeDefined();
+			});
+
+			// Right-click on intro.mdx to open context menu
+			fireEvent.contextMenu(screen.getByTestId("file-intro.mdx"));
+
+			await waitFor(() => {
+				expect(screen.getByTestId("context-menu-move-file")).toBeDefined();
+			});
+			fireEvent.click(screen.getByTestId("context-menu-move-file"));
+
+			// Wait for move file dialog
+			await waitFor(() => {
+				expect(screen.getByTestId("move-file-dialog")).toBeDefined();
+			});
+
+			// Select guides as destination
+			const select = screen.getByTestId("move-destination-select") as HTMLSelectElement;
+			fireEvent.change(select, { target: { value: "content/guides" } });
+
+			// Click Move - this updates working tree only (no backend call)
+			fireEvent.click(screen.getByTestId("move-file-button"));
+
+			// Dialog should close
+			await waitFor(() => {
+				expect(screen.queryByTestId("move-file-dialog")).toBeNull();
+			});
+
+			// Backend API should NOT be called (changes saved in batch later)
+			expect(mockMoveFile).not.toHaveBeenCalled();
+		});
+
+		it("should delete folder from working tree without calling backend API", async () => {
+			mockGetRepositoryTree.mockResolvedValue(fileTreeWithFolders);
+
+			renderWithProvider(mockDocsite);
+
+			// Wait for tree to load - content folder is auto-expanded
+			await waitFor(() => {
+				expect(screen.getByTestId("folder-guides")).toBeDefined();
+			});
+
+			// Right-click on guides folder
+			fireEvent.contextMenu(screen.getByTestId("folder-guides"));
+
+			await waitFor(() => {
+				expect(screen.getByTestId("context-menu-delete-folder")).toBeDefined();
+			});
+			fireEvent.click(screen.getByTestId("context-menu-delete-folder"));
+
+			// Wait for delete folder dialog
+			await waitFor(() => {
+				expect(screen.getByTestId("delete-folder-dialog")).toBeDefined();
+			});
+
+			// Confirm delete - this updates working tree only (no backend call)
+			fireEvent.click(screen.getByTestId("delete-folder-button"));
+
+			// Folder should disappear from tree
+			await waitFor(() => {
+				expect(screen.queryByTestId("folder-guides")).toBeNull();
+			});
+
+			// Backend API should NOT be called (changes saved in batch later)
+			expect(mockDeleteFolder).not.toHaveBeenCalled();
+		});
+
+		it("should rename folder in working tree without calling backend API", async () => {
+			mockGetRepositoryTree.mockResolvedValue(fileTreeWithFolders);
+
+			renderWithProvider(mockDocsite);
+
+			// Wait for tree to load
+			await waitFor(() => {
+				expect(screen.getByTestId("folder-guides")).toBeDefined();
+			});
+
+			// Right-click on guides folder
+			fireEvent.contextMenu(screen.getByTestId("folder-guides"));
+
+			await waitFor(() => {
+				expect(screen.getByTestId("context-menu-rename-folder")).toBeDefined();
+			});
+			fireEvent.click(screen.getByTestId("context-menu-rename-folder"));
+
+			// Wait for rename folder dialog
+			await waitFor(() => {
+				expect(screen.getByTestId("rename-folder-dialog")).toBeDefined();
+			});
+
+			// Enter new name
+			const input = screen.getByTestId("rename-folder-name-input") as HTMLInputElement;
+			fireEvent.change(input, { target: { value: "tutorials" } });
+
+			// Click Rename - this updates working tree only (no backend call)
+			fireEvent.click(screen.getByTestId("rename-folder-button"));
+
+			// Folder should be renamed in tree
+			await waitFor(() => {
+				expect(screen.getByText("tutorials")).toBeDefined();
+			});
+
+			// Backend API should NOT be called (changes saved in batch later)
+			expect(mockRenameFolder).not.toHaveBeenCalled();
+		});
+
+		it("should move file via drag-and-drop without calling backend API", async () => {
+			mockGetRepositoryTree.mockResolvedValue(fileTreeWithFolders);
+
+			renderWithProvider(mockDocsite);
+
+			// Wait for tree to load
+			await waitFor(() => {
+				expect(screen.getByTestId("file-intro.mdx")).toBeDefined();
+				expect(screen.getByTestId("folder-guides")).toBeDefined();
+			});
+
+			const mdxFile = screen.getByTestId("file-intro.mdx");
+			const guidesFolder = screen.getByTestId("folder-guides");
+
+			// Simulate drag and drop
+			const dataTransfer = {
+				setData: vi.fn(),
+				getData: vi.fn().mockReturnValue("content/intro.mdx"),
+				effectAllowed: "",
+				dropEffect: "",
+			};
+
+			// Start dragging
+			fireEvent.dragStart(mdxFile, { dataTransfer });
+
+			// Drop on guides folder - this updates working tree only (no backend call)
+			fireEvent.drop(guidesFolder.parentElement as HTMLElement, { dataTransfer });
+
+			// Backend API should NOT be called (changes saved in batch later)
+			expect(mockMoveFile).not.toHaveBeenCalled();
+		});
+	});
+
 	describe("drag and drop file moving", () => {
 		const fileTreeWithMultipleFolders = {
 			sha: "abc123",
@@ -2117,9 +2197,8 @@ describe("RepositoryViewer", () => {
 			});
 		});
 
-		it("should call moveFile API when file is dropped on a different folder", async () => {
+		it("should update working tree when file is dropped on a different folder", async () => {
 			mockGetRepositoryTree.mockResolvedValue(fileTreeWithMultipleFolders);
-			mockMoveFile.mockResolvedValueOnce({ success: true, newPath: "content/guides/intro.mdx" });
 
 			renderWithProvider(mockDocsite);
 
@@ -2143,16 +2222,14 @@ describe("RepositoryViewer", () => {
 			// Start dragging
 			fireEvent.dragStart(mdxFile, { dataTransfer });
 
-			// Drop on guides folder
+			// Drop on guides folder - updates working tree without API call
 			fireEvent.drop(guidesFolder.parentElement as HTMLElement, { dataTransfer });
 
-			// Wait for API call
-			await waitFor(() => {
-				expect(mockMoveFile).toHaveBeenCalled();
-			});
+			// Backend API should NOT be called (changes saved in batch later)
+			expect(mockMoveFile).not.toHaveBeenCalled();
 		});
 
-		it("should not move file when dropped on the same folder", async () => {
+		it("should not update tree when file is dropped on the same folder", async () => {
 			mockGetRepositoryTree.mockResolvedValueOnce(fileTreeWithMultipleFolders);
 
 			renderWithProvider(mockDocsite);
@@ -2176,9 +2253,9 @@ describe("RepositoryViewer", () => {
 			fireEvent.dragStart(mdxFile, { dataTransfer });
 			fireEvent.drop(contentFolder.parentElement as HTMLElement, { dataTransfer });
 
-			// Should not call moveFile when dropping on same folder
+			// File should still be in content folder (no change)
 			await waitFor(() => {
-				expect(mockMoveFile).not.toHaveBeenCalled();
+				expect(screen.getByTestId("file-intro.mdx")).toBeDefined();
 			});
 		});
 
@@ -2242,6 +2319,147 @@ describe("RepositoryViewer", () => {
 			// Opacity should be restored
 			await waitFor(() => {
 				expect(mdxFile.className).not.toContain("opacity-50");
+			});
+		});
+	});
+
+	describe("save and discard buttons", () => {
+		const fileTreeWithFolder = {
+			sha: "abc123",
+			truncated: false,
+			tree: [
+				{
+					path: "content",
+					mode: "040000",
+					type: "tree",
+					sha: "content1",
+					url: "https://api.github.com/repos/test-org/test-repo/git/trees/content1",
+				},
+				{
+					path: "content/_meta.ts",
+					mode: "100644",
+					type: "blob",
+					sha: "meta1",
+					size: 100,
+					url: "https://api.github.com/repos/test-org/test-repo/git/blobs/meta1",
+				},
+			],
+		};
+
+		it("should render Save and Discard buttons", async () => {
+			mockGetRepositoryTree.mockResolvedValue(fileTreeWithFolder);
+
+			renderWithProvider(mockDocsite);
+
+			await waitFor(() => {
+				expect(screen.getByTestId("folder-content")).toBeDefined();
+			});
+
+			// Verify buttons are rendered
+			expect(screen.getByTestId("save-changes-button")).toBeDefined();
+			expect(screen.getByTestId("discard-changes-button")).toBeDefined();
+		});
+
+		it("should have Save and Discard buttons disabled when no changes", async () => {
+			mockGetRepositoryTree.mockResolvedValue(fileTreeWithFolder);
+
+			renderWithProvider(mockDocsite);
+
+			await waitFor(() => {
+				expect(screen.getByTestId("folder-content")).toBeDefined();
+			});
+
+			// Buttons should be disabled when there are no changes
+			const saveButton = screen.getByTestId("save-changes-button");
+			const discardButton = screen.getByTestId("discard-changes-button");
+
+			expect(saveButton).toHaveProperty("disabled", true);
+			expect(discardButton).toHaveProperty("disabled", true);
+		});
+
+		it("should enable Save and Discard buttons when tree is modified", async () => {
+			mockGetRepositoryTree.mockResolvedValue(fileTreeWithFolder);
+
+			renderWithProvider(mockDocsite);
+
+			await waitFor(() => {
+				expect(screen.getByTestId("folder-content")).toBeDefined();
+			});
+
+			// Initially buttons should be disabled
+			expect(screen.getByTestId("save-changes-button")).toHaveProperty("disabled", true);
+			expect(screen.getByTestId("discard-changes-button")).toHaveProperty("disabled", true);
+
+			// Create a new folder to modify the working tree
+			fireEvent.contextMenu(screen.getByTestId("folder-content"));
+
+			await waitFor(() => {
+				expect(screen.getByTestId("context-menu-new-folder")).toBeDefined();
+			});
+			fireEvent.click(screen.getByTestId("context-menu-new-folder"));
+
+			await waitFor(() => {
+				expect(screen.getByTestId("new-folder-dialog")).toBeDefined();
+			});
+
+			const input = screen.getByTestId("new-folder-name-input") as HTMLInputElement;
+			fireEvent.change(input, { target: { value: "new-folder" } });
+			fireEvent.click(screen.getByTestId("create-folder-button"));
+
+			// Folder should appear
+			await waitFor(() => {
+				expect(screen.getByText("new-folder")).toBeDefined();
+			});
+
+			// Buttons should now be enabled
+			await waitFor(() => {
+				expect(screen.getByTestId("save-changes-button")).toHaveProperty("disabled", false);
+				expect(screen.getByTestId("discard-changes-button")).toHaveProperty("disabled", false);
+			});
+		});
+
+		it("should discard changes and disable buttons when Discard is clicked", async () => {
+			mockGetRepositoryTree.mockResolvedValue(fileTreeWithFolder);
+
+			renderWithProvider(mockDocsite);
+
+			await waitFor(() => {
+				expect(screen.getByTestId("folder-content")).toBeDefined();
+			});
+
+			// Create a new folder to modify the working tree
+			fireEvent.contextMenu(screen.getByTestId("folder-content"));
+
+			await waitFor(() => {
+				expect(screen.getByTestId("context-menu-new-folder")).toBeDefined();
+			});
+			fireEvent.click(screen.getByTestId("context-menu-new-folder"));
+
+			await waitFor(() => {
+				expect(screen.getByTestId("new-folder-dialog")).toBeDefined();
+			});
+
+			const input = screen.getByTestId("new-folder-name-input") as HTMLInputElement;
+			fireEvent.change(input, { target: { value: "new-folder" } });
+			fireEvent.click(screen.getByTestId("create-folder-button"));
+
+			// Folder should appear
+			await waitFor(() => {
+				expect(screen.getByText("new-folder")).toBeDefined();
+			});
+
+			// Click Discard button
+			fireEvent.click(screen.getByTestId("discard-changes-button"));
+
+			// New folder should be removed (reverted to original tree)
+			await waitFor(() => {
+				expect(screen.queryByText("new-folder")).toBeNull();
+			});
+
+			// Buttons should be disabled again
+			await waitFor(() => {
+				expect(screen.getByTestId("save-changes-button")).toHaveProperty("disabled", true);
+				expect(screen.getByTestId("discard-changes-button")).toHaveProperty("disabled", true);
 			});
 		});
 	});

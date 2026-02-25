@@ -4,9 +4,50 @@ import {
 	getDefaultSiteDomain,
 	getPrimarySiteDomain,
 	getVerifiedCustomDomain,
+	isAllowedLinkUrl,
 } from "./UrlUtil";
 import type { SiteWithUpdate } from "jolli-common";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+describe("isAllowedLinkUrl", () => {
+	it("should allow https: URLs", () => {
+		expect(isAllowedLinkUrl("https://example.com")).toBe(true);
+	});
+
+	it("should allow http: URLs", () => {
+		expect(isAllowedLinkUrl("http://example.com")).toBe(true);
+	});
+
+	it("should allow mailto: URLs", () => {
+		expect(isAllowedLinkUrl("mailto:user@example.com")).toBe(true);
+	});
+
+	it("should allow tel: URLs", () => {
+		expect(isAllowedLinkUrl("tel:+15555555555")).toBe(true);
+	});
+
+	it("should block javascript: URLs", () => {
+		expect(isAllowedLinkUrl("javascript:alert(1)")).toBe(false);
+	});
+
+	it("should block data: URLs", () => {
+		expect(isAllowedLinkUrl("data:text/html,<script>alert(1)</script>")).toBe(false);
+	});
+
+	it("should block file: URLs", () => {
+		expect(isAllowedLinkUrl("file:///etc/passwd")).toBe(false);
+	});
+
+	it("should return false when the URL constructor throws", () => {
+		vi.stubGlobal("URL", () => {
+			throw new TypeError("Invalid URL");
+		});
+
+		expect(isAllowedLinkUrl("definitely-not-a-url")).toBe(false);
+
+		vi.unstubAllGlobals();
+	});
+});
 
 describe("UrlUtil", () => {
 	describe("formatDomainUrl", () => {

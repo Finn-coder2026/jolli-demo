@@ -2,7 +2,7 @@ import type { FileTree } from "../github/DocsiteGitHub";
 import type { Doc } from "../model/Doc";
 import { generateDocusaurusFromArticles } from "./DocusaurusGenerationUtil";
 import { generateNextraFromArticles, getDeletedFilePathsFromChangedArticles } from "./NextraGenerationUtil";
-import type { ChangedArticle, ExistingNavMeta, FolderMetaInfo } from "jolli-common";
+import type { ChangedArticle, ExistingNavMeta, FolderMetaInfo, SiteBranding } from "jolli-common";
 
 export type DocFramework = "docusaurus-2" | "nextra";
 
@@ -22,11 +22,12 @@ export interface MigrationContext {
 
 export interface DocGeneratorOptions {
 	allowedDomain?: string; // For internal sites: domain-based authentication
-	regenerationMode?: boolean; // If true, only generate MD/MDX files (exclude config files)
-	/** @deprecated No longer used. _meta.ts is always regenerated to ensure consistency. */
-	navigationChanged?: boolean;
+	regenerationMode?: boolean; // Nextra: no-op (all files always generated). Docusaurus: skips config files.
 	migrationMode?: boolean; // If true, force full regeneration (upgrade from Nextra 3.x to 4.x)
 	migrationContext?: MigrationContext; // Context for 3.x to 4.x migration
+	theme?: SiteBranding; // Site branding/theme configuration
+	preserveNavOrder?: boolean; // When true, keep existing _meta.ts order (auto-sync off)
+	useSpaceFolderStructure?: boolean; // When true, force articles into space-derived folders
 }
 
 /**
@@ -35,6 +36,9 @@ export interface DocGeneratorOptions {
 export interface DocGeneratorResult {
 	files: Array<FileTree>;
 	removedNavEntries: Array<string>; // Navigation entries removed during _meta.ts merge
+	foldersToDelete: Array<string>; // Content folders that became empty and should be deleted
+	warnings: Array<string>; // Warnings about potential issues (e.g., slug collisions)
+	relocatedFilePaths: Array<string>; // Old file paths of articles moved by useSpaceFolderStructure
 }
 
 export interface DocGenerator {
@@ -65,8 +69,8 @@ class DocusaurusGenerator implements DocGenerator {
 		options?: DocGeneratorOptions,
 	): DocGeneratorResult {
 		const files = generateDocusaurusFromArticles(articles, siteName, displayName, options);
-		// Docusaurus doesn't have _meta.ts merge, so no removed entries
-		return { files, removedNavEntries: [] };
+		// Docusaurus doesn't have _meta.ts merge or folder tracking
+		return { files, removedNavEntries: [], foldersToDelete: [], warnings: [], relocatedFilePaths: [] };
 	}
 
 	getFrameworkIdentifier(): DocFramework {

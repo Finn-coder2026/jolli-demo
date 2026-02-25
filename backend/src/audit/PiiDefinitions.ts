@@ -2,8 +2,6 @@ import type { AuditResourceType } from "../model/AuditEvent";
 import { getRegisteredPiiFields, isRegisteredPiiField, registerPiiFields } from "./PiiDecorators";
 
 // Import models to trigger decorator registration
-import "../model/User";
-import "../model/Auth";
 import "../model/Doc";
 import "../model/Site";
 import "../model/Integration";
@@ -13,6 +11,20 @@ import "../model/Integration";
  * These are registered programmatically since there's no class to decorate.
  */
 function registerAdditionalPiiFields(): void {
+	// User resource type (previously registered via User model decorator)
+	registerPiiFields("user", {
+		email: { description: "User email address" },
+		name: { description: "User display name" },
+		picture: { description: "User profile picture URL" },
+	});
+
+	// Session resource type (previously registered via Auth model decorator)
+	registerPiiFields("session", {
+		email: { description: "Session user email" },
+		ip: { description: "Session IP address" },
+		device: { description: "Session device info" },
+	});
+
 	// Space resource type
 	registerPiiFields("space", {
 		ownerEmail: { description: "Space owner email" },
@@ -21,6 +33,12 @@ function registerAdditionalPiiFields(): void {
 
 	// Folder resource type - typically no PII fields
 	registerPiiFields("folder", {});
+
+	// Image resource type - no PII fields beyond global patterns
+	registerPiiFields("image", {});
+
+	// Owner invitation resource type - email covered by global patterns
+	registerPiiFields("owner_invitation", {});
 
 	// Settings resource type
 	registerPiiFields("settings", {

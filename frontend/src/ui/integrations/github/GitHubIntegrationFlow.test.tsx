@@ -221,6 +221,85 @@ describe("GitHubIntegrationFlow", () => {
 			});
 		});
 
+		it("should show localized error when connectExistingInstallation returns installation_not_available", async () => {
+			mockListAvailableInstallations.mockResolvedValue({ installations: mockInstallations });
+			mockConnectExistingInstallation.mockResolvedValue({
+				success: false,
+				error: "installation_not_available",
+			});
+
+			render(
+				<TestWrapper>
+					<GitHubIntegrationFlow onComplete={mockOnComplete} />
+				</TestWrapper>,
+			);
+
+			await waitFor(() => {
+				expect(screen.getByText("acme-org")).toBeDefined();
+			});
+
+			const acmeButton = screen.getByText("acme-org").closest("button");
+			if (acmeButton) {
+				fireEvent.click(acmeButton);
+			}
+
+			await waitFor(() => {
+				expect(
+					screen.getByText("This GitHub organization is already linked to another Jolli workspace."),
+				).toBeDefined();
+			});
+		});
+
+		it("should show error when connectExistingInstallation succeeds but has no redirectUrl", async () => {
+			mockListAvailableInstallations.mockResolvedValue({ installations: mockInstallations });
+			mockConnectExistingInstallation.mockResolvedValue({
+				success: true,
+			});
+
+			render(
+				<TestWrapper>
+					<GitHubIntegrationFlow onComplete={mockOnComplete} />
+				</TestWrapper>,
+			);
+
+			await waitFor(() => {
+				expect(screen.getByText("acme-org")).toBeDefined();
+			});
+
+			const acmeButton = screen.getByText("acme-org").closest("button");
+			if (acmeButton) {
+				fireEvent.click(acmeButton);
+			}
+
+			await waitFor(() => {
+				expect(screen.getByText("Failed to setup GitHub integration")).toBeDefined();
+			});
+		});
+
+		it("should show error when connectExistingInstallation throws non-Error", async () => {
+			mockListAvailableInstallations.mockResolvedValue({ installations: mockInstallations });
+			mockConnectExistingInstallation.mockRejectedValue("string error");
+
+			render(
+				<TestWrapper>
+					<GitHubIntegrationFlow onComplete={mockOnComplete} />
+				</TestWrapper>,
+			);
+
+			await waitFor(() => {
+				expect(screen.getByText("acme-org")).toBeDefined();
+			});
+
+			const acmeButton = screen.getByText("acme-org").closest("button");
+			if (acmeButton) {
+				fireEvent.click(acmeButton);
+			}
+
+			await waitFor(() => {
+				expect(screen.getByText("Failed to setup GitHub integration")).toBeDefined();
+			});
+		});
+
 		it("should show error when connectExistingInstallation throws", async () => {
 			mockListAvailableInstallations.mockResolvedValue({ installations: mockInstallations });
 			mockConnectExistingInstallation.mockRejectedValue(new Error("Network error"));
@@ -285,6 +364,100 @@ describe("GitHubIntegrationFlow", () => {
 			fireEvent.click(screen.getByText("Go Back"));
 
 			expect(mockOnComplete).toHaveBeenCalled();
+		});
+
+		it("should show error when Install on new org returns error response", async () => {
+			mockListAvailableInstallations.mockResolvedValue({ installations: mockInstallations });
+			// Return response with error field set
+			mockSetupGitHubRedirect.mockResolvedValue({ error: "GitHub app not configured" });
+
+			render(
+				<TestWrapper>
+					<GitHubIntegrationFlow onComplete={mockOnComplete} />
+				</TestWrapper>,
+			);
+
+			await waitFor(() => {
+				expect(screen.getByText("Install on new organization")).toBeDefined();
+			});
+
+			fireEvent.click(screen.getByText("Install on new organization"));
+
+			await waitFor(() => {
+				expect(screen.getByText("GitHub app not configured")).toBeDefined();
+			});
+
+			expect(mockRedirect).not.toHaveBeenCalled();
+		});
+
+		it("should show error when Install on new org returns no redirectUrl", async () => {
+			mockListAvailableInstallations.mockResolvedValue({ installations: mockInstallations });
+			// Return response with no redirectUrl and no error
+			mockSetupGitHubRedirect.mockResolvedValue({});
+
+			render(
+				<TestWrapper>
+					<GitHubIntegrationFlow onComplete={mockOnComplete} />
+				</TestWrapper>,
+			);
+
+			await waitFor(() => {
+				expect(screen.getByText("Install on new organization")).toBeDefined();
+			});
+
+			fireEvent.click(screen.getByText("Install on new organization"));
+
+			await waitFor(() => {
+				expect(screen.getByText("Failed to get installation URL")).toBeDefined();
+			});
+
+			expect(mockRedirect).not.toHaveBeenCalled();
+		});
+
+		it("should show error when Install on new org throws an error", async () => {
+			mockListAvailableInstallations.mockResolvedValue({ installations: mockInstallations });
+			mockSetupGitHubRedirect.mockRejectedValue(new Error("Network failure"));
+
+			render(
+				<TestWrapper>
+					<GitHubIntegrationFlow onComplete={mockOnComplete} />
+				</TestWrapper>,
+			);
+
+			await waitFor(() => {
+				expect(screen.getByText("Install on new organization")).toBeDefined();
+			});
+
+			fireEvent.click(screen.getByText("Install on new organization"));
+
+			await waitFor(() => {
+				expect(screen.getByText("Network failure")).toBeDefined();
+			});
+
+			expect(mockRedirect).not.toHaveBeenCalled();
+		});
+
+		it("should show generic error when Install on new org throws non-Error", async () => {
+			mockListAvailableInstallations.mockResolvedValue({ installations: mockInstallations });
+			mockSetupGitHubRedirect.mockRejectedValue("Unknown error");
+
+			render(
+				<TestWrapper>
+					<GitHubIntegrationFlow onComplete={mockOnComplete} />
+				</TestWrapper>,
+			);
+
+			await waitFor(() => {
+				expect(screen.getByText("Install on new organization")).toBeDefined();
+			});
+
+			fireEvent.click(screen.getByText("Install on new organization"));
+
+			await waitFor(() => {
+				expect(screen.getByText("Failed to setup GitHub integration")).toBeDefined();
+			});
+
+			expect(mockRedirect).not.toHaveBeenCalled();
 		});
 	});
 

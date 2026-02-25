@@ -87,7 +87,7 @@ describe("PreferencesContext", () => {
 		);
 
 		await waitFor(() => {
-			expect(screen.getByTestId("theme").textContent).toBe("light");
+			expect(screen.getByTestId("theme").textContent).toBe("system");
 		});
 	});
 
@@ -117,7 +117,7 @@ describe("PreferencesContext", () => {
 		);
 
 		await waitFor(() => {
-			expect(screen.getByTestId("theme").textContent).toBe("light");
+			expect(screen.getByTestId("theme").textContent).toBe("system");
 		});
 
 		fireEvent.click(screen.getByText("Set Dark"));
@@ -166,7 +166,7 @@ describe("usePreference hook", () => {
 		);
 
 		await waitFor(() => {
-			expect(screen.getByTestId("theme").textContent).toBe("light");
+			expect(screen.getByTestId("theme").textContent).toBe("system");
 		});
 
 		fireEvent.click(screen.getByText("Toggle"));

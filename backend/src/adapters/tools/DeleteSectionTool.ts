@@ -1,9 +1,9 @@
 import { parseSections, type Section } from "../../../../tools/jolliagent/src/jolliscript/parser";
 import type { ToolDef } from "../../../../tools/jolliagent/src/Types";
+import type { ActiveUserDao } from "../../dao/ActiveUserDao";
 import type { DocDao } from "../../dao/DocDao";
 import type { DocDraftDao } from "../../dao/DocDraftDao";
 import type { DocDraftSectionChangesDao } from "../../dao/DocDraftSectionChangesDao";
-import type { UserDao } from "../../dao/UserDao";
 import type { DocDraft } from "../../model/DocDraft";
 import { createSectionPathService, type SectionIdMapping, type SectionWithId } from "../../services/SectionPathService";
 import { getLog } from "../../util/Logger";
@@ -13,9 +13,9 @@ const log = getLog(import.meta);
 /**
  * Looks up article owner by ID, handling both numeric user IDs and emails
  */
-async function lookupArticleOwner(updatedBy: string, userDao: UserDao): Promise<{ id: number } | undefined> {
+async function lookupArticleOwner(updatedBy: string, userDao: ActiveUserDao): Promise<{ id: number } | undefined> {
 	const numericId = Number.parseInt(updatedBy, 10);
-	return !Number.isNaN(numericId) ? await userDao.findUserById(numericId) : await userDao.findUser(updatedBy);
+	return !Number.isNaN(numericId) ? await userDao.findById(numericId) : await userDao.findByEmail(updatedBy);
 }
 
 /**
@@ -25,7 +25,7 @@ async function findOrCreateArticleDraft(
 	article: { id: number; content: string; contentMetadata?: unknown; updatedBy: string },
 	articleId: string,
 	docDraftDao: DocDraftDao,
-	userDao?: UserDao,
+	userDao?: ActiveUserDao,
 ): Promise<DocDraft | undefined> {
 	const existingDraft = (await docDraftDao.findByDocId(article.id))[0];
 	if (existingDraft) {
@@ -250,7 +250,7 @@ export function executeDeleteSectionTool(
 	userId: number,
 	docDao?: DocDao,
 	docDraftSectionChangesDao?: DocDraftSectionChangesDao,
-	userDao?: UserDao,
+	userDao?: ActiveUserDao,
 ): Promise<string> {
 	const { sectionTitle } = args;
 
@@ -295,7 +295,7 @@ async function executeDeleteSection(
 	userId: number,
 	docDao?: DocDao,
 	docDraftSectionChangesDao?: DocDraftSectionChangesDao,
-	userDao?: UserDao,
+	userDao?: ActiveUserDao,
 ): Promise<string> {
 	const contentResult = await getContentResult(draftId, articleId, docDraftDao, docDao);
 	if (typeof contentResult === "string") {

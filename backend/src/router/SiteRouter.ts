@@ -1,13 +1,21 @@
 import { auditLog, computeAuditChanges } from "../audit";
 import { getConfig } from "../config/Config";
 import type { DaoProvider } from "../dao/DaoProvider";
-import type { DocDao } from "../dao/DocDao";
 import type { SiteDao } from "../dao/SiteDao";
 /* v8 ignore next */
 import { createDocsiteGitHub, type FileTree } from "../github/DocsiteGitHub";
 import { createOctokitGitHub } from "../github/OctokitGitHub";
+import type { PermissionMiddlewareFactory } from "../middleware/PermissionMiddleware";
 import type { Doc } from "../model/Doc";
-import type { CustomDomainInfo, NewSite, Site, SiteMetadata } from "../model/Site";
+import {
+	type CustomDomainInfo,
+	getMetadataForUpdate,
+	getSiteMetadata,
+	type NewSite,
+	requireSiteMetadata,
+	type Site,
+	type SiteMetadata,
+} from "../model/Site";
 import {
 	addBuildConnection,
 	broadcastBuildEvent,
@@ -20,6 +28,9 @@ import {
 } from "../services/BuildStreamService";
 import type { ImageStorageService } from "../services/ImageStorageService";
 import { getTenantContext } from "../tenant/TenantContext";
+import { resolveArticleLinks, validateArticleLinks } from "../util/ArticleLinkResolver";
+import { validateSiteBranding } from "../util/BrandingValidation";
+import { deepEquals } from "../util/DeepEquals";
 import { checkDnsConfiguration } from "../util/DnsUtil";
 import {
 	checkDeploymentStatus,
@@ -42,11 +53,13 @@ import { bundleSiteImages } from "../util/ImageBundler";
 import { getLog } from "../util/Logger";
 import {
 	convertToNextra4Config,
+	formatPreGenerationErrors,
 	getNextra3xFilesToDelete,
 	getOrphanedContentFiles,
 	MetaMerger,
 	parseNextra3ThemeConfig,
 	slugify,
+	validateArticlesForGeneration,
 } from "../util/NextraGenerationUtil";
 import { createOctokit } from "../util/OctokitUtil";
 import { generateGitHubRepoName, generateJolliSiteDomain } from "../util/SiteNameUtils";
@@ -58,9 +71,140 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import express, { type Router } from "express";
-import type { ChangedArticle, ChangedConfigFile, ExistingNavMeta, ExistingNavMetaEntry, UserInfo } from "jolli-common";
+import type {
+	ChangedArticle,
+	ChangedConfigFile,
+	ExistingNavMeta,
+	ExistingNavMetaEntry,
+	FileTreeNode,
+	SiteBranding,
+	UserInfo,
+} from "jolli-common";
 
 const log = getLog(import.meta);
+
+interface NeedsUpdateResult {
+	needsUpdate: boolean;
+	hasAuthChange: boolean;
+	hasBrandingChange: boolean;
+	hasFolderStructureChange: boolean;
+}
+
+/**
+ * Strips sensitive secrets (JWT private key and public key) from a site object
+ * before returning it in an API response. These keys must remain in the DB for
+ * server-side JWT signing/verification but must never be exposed to clients.
+ * @internal Exported for testing
+ */
+export function stripSiteSecrets<T extends { metadata?: SiteMetadata | undefined }>(
+	site: T | undefined,
+): T | undefined {
+	if (!site || !site.metadata?.jwtAuth) {
+		return site;
+	}
+	const { privateKey: _priv, publicKey: _pub, ...jwtAuthWithoutKeys } = site.metadata.jwtAuth;
+	return {
+		...site,
+		metadata: {
+			...site.metadata,
+			jwtAuth: jwtAuthWithoutKeys,
+		},
+	};
+}
+
+/**
+ * Builds a site response object with needsUpdate status and granular change flags.
+ * Centralizes the response shape used by list, detail, and update-articles endpoints.
+ * Automatically strips secrets before returning.
+ * @internal Exported for testing
+ */
+export function buildSiteUpdateResponse<T extends { metadata?: SiteMetadata | undefined }>(
+	site: T,
+	updateResult: NeedsUpdateResult,
+	changedArticles?: Array<ChangedArticle>,
+): T & { needsUpdate: boolean } {
+	const { needsUpdate, hasAuthChange, hasBrandingChange, hasFolderStructureChange } = updateResult;
+	const currentAuthEnabled = (site.metadata as SiteMetadata | undefined)?.jwtAuth?.enabled ?? false;
+	const generatedAuthEnabled = (site.metadata as SiteMetadata | undefined)?.generatedJwtAuthEnabled ?? false;
+	const expanded = {
+		...site,
+		needsUpdate,
+		...(changedArticles !== undefined && { changedArticles: needsUpdate ? changedArticles : [] }),
+		...(hasAuthChange && { authChange: { from: generatedAuthEnabled, to: currentAuthEnabled } }),
+		...(hasBrandingChange && { brandingChanged: true }),
+		...(hasFolderStructureChange && { folderStructureChanged: true }),
+	};
+	// stripSiteSecrets only returns undefined for undefined input; expanded is always defined
+	return stripSiteSecrets(expanded) as T & { needsUpdate: boolean };
+}
+
+/**
+ * Checks whether a file path contains path traversal sequences (e.g., "..", backslashes).
+ * @internal Exported for testing
+ */
+export function hasPathTraversal(filePath: string): boolean {
+	return filePath.includes("..") || filePath.includes("/") || filePath.includes("\\") || filePath.startsWith("/");
+}
+
+/**
+ * Recursively validates that no node in a file tree contains path traversal sequences.
+ * @internal Exported for testing
+ */
+export function hasTreePathTraversal(nodes: Array<FileTreeNode>): boolean {
+	for (const node of nodes) {
+		if (hasPathTraversal(node.name)) {
+			return true;
+		}
+		if (node.children && hasTreePathTraversal(node.children)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * Computes whether a site needs a rebuild based on article changes and config drift.
+ * Shared by the list, detail, and update-articles endpoints.
+ * @internal Exported for testing
+ */
+export function computeNeedsUpdate(
+	metadata: SiteMetadata | undefined,
+	articleChangesNeeded: boolean,
+): NeedsUpdateResult {
+	const currentAuthEnabled = metadata?.jwtAuth?.enabled ?? false;
+	const generatedAuthEnabled = metadata?.generatedJwtAuthEnabled ?? false;
+	const hasAuthChange = currentAuthEnabled !== generatedAuthEnabled;
+
+	const hasBrandingChange = !deepEquals(metadata?.branding, metadata?.generatedBranding);
+
+	const hasFolderStructureChange =
+		(metadata?.useSpaceFolderStructure ?? false) !== (metadata?.generatedUseSpaceFolderStructure ?? false);
+
+	return {
+		needsUpdate: articleChangesNeeded || hasAuthChange || hasBrandingChange || hasFolderStructureChange,
+		hasAuthChange,
+		hasBrandingChange,
+		hasFolderStructureChange,
+	};
+}
+
+/**
+ * Builds a map of JRN -> article title for storing alongside generated article JRNs.
+ * This allows correct slug derivation for articles that are later deleted from the DB.
+ * The title is extracted from contentMetadata (where the nextra generator gets it from).
+ * @internal Exported for testing
+ */
+export function buildArticleTitleMap(articles: Array<Doc>): Record<string, string> {
+	const titles: Record<string, string> = {};
+	for (const article of articles) {
+		const metadata = article.contentMetadata as { title?: string } | undefined;
+		const title = metadata?.title;
+		if (title) {
+			titles[article.jrn] = title;
+		}
+	}
+	return titles;
+}
 
 /**
  * Validates that the GitHub token has access to the configured organization.
@@ -122,11 +266,6 @@ export function computeHash(content: string): string {
 	return createHash("sha256").update(content, "utf8").digest("hex").substring(0, 16);
 }
 
-/**
- * Extracts config file hashes from generated files for change detection.
- * Returns hashes for content/_meta.ts and next.config.mjs if present.
- * @internal Exported for testing
- */
 /**
  * Writes a FileTree entry to disk, handling both text and binary (base64-encoded) files.
  * @internal Exported for testing
@@ -352,9 +491,13 @@ export function processContentFile(file: FileTree, folderContents: Map<string, F
 		return folderPath === "" ? file.content : undefined;
 	}
 
-	// Check if this is an MDX file (extract slug)
-	if (fileName.endsWith(".mdx")) {
-		folder.slugs.push(fileName.slice(0, -4));
+	// Check if this is a content file (extract slug from any supported extension)
+	const contentExtensions = [".mdx", ".md", ".json", ".yaml", ".yml"];
+	for (const ext of contentExtensions) {
+		if (fileName.endsWith(ext)) {
+			folder.slugs.push(fileName.slice(0, -ext.length));
+			break;
+		}
 	}
 
 	return;
@@ -397,7 +540,7 @@ const CONFIG_FILES: Array<{
  * making it much faster (~100-300ms vs 1-5s for full repo download).
  */
 async function getChangedConfigFiles(docsite: Site): Promise<Array<ChangedConfigFile>> {
-	const metadata = docsite.metadata as SiteMetadata | undefined;
+	const metadata = getSiteMetadata(docsite);
 	if (!metadata?.configFileHashes || !metadata.githubRepo) {
 		return []; // No stored hashes to compare against
 	}
@@ -464,6 +607,63 @@ function broadcastArticleValidation(siteId: number, articles: Array<Doc>): void 
 		}
 	}
 }
+
+/**
+ * Broadcast warnings about article cross-reference links that cannot be resolved.
+ * Non-blocking: the build continues even when unresolvable links are found.
+ */
+function broadcastArticleLinkWarnings(
+	siteId: number,
+	warnings: Array<{ articleTitle: string; linkText: string; unresolvedJrn: string }>,
+	step: number,
+): void {
+	broadcastBuildEvent(siteId, {
+		type: "build:stderr",
+		step,
+		output: `Warning: ${warnings.length} cross-reference link(s) point to articles not included in this site:`,
+	});
+	for (const warning of warnings) {
+		broadcastBuildEvent(siteId, {
+			type: "build:stderr",
+			step,
+			output: `  - "${warning.linkText}" in "${warning.articleTitle}" links to ${warning.unresolvedJrn}`,
+		});
+	}
+}
+
+/**
+ * Pre-build: validate article cross-reference links and broadcast warnings.
+ * Returns without blocking the build.
+ *
+ * Note: this intentionally duplicates warnings that also appear during
+ * post-generation resolution. The pre-build pass gives early feedback
+ * before the (slower) file generation step; the post-generation pass
+ * is the authoritative transform that converts/strips the actual links.
+ */
+function validateAndBroadcastArticleLinks(siteId: number, articles: Array<Doc>, step: number): void {
+	const siteArticleJrns = new Set(articles.map(a => a.jrn));
+	const warnings = validateArticleLinks(articles, siteArticleJrns);
+	if (warnings.length > 0) {
+		broadcastArticleLinkWarnings(siteId, warnings, step);
+	}
+}
+
+/**
+ * Post-generation: resolve JRN links to site URLs and broadcast any warnings.
+ * Returns the files with links transformed.
+ */
+function resolveAndBroadcastArticleLinks(
+	siteId: number,
+	files: Array<FileTree>,
+	articles: Array<Doc>,
+	step: number,
+): Array<FileTree> {
+	const { transformedFiles, warnings } = resolveArticleLinks(files, articles);
+	if (warnings.length > 0) {
+		broadcastArticleLinkWarnings(siteId, warnings, step);
+	}
+	return transformedFiles;
+}
 /* c8 ignore stop */
 
 /**
@@ -501,11 +701,20 @@ function buildSuccessMetadata(
 		protectionType: protectionTypeValue,
 		lastProtectionCheck: new Date().toISOString(),
 		generatedArticleJrns: articles.map(a => a.jrn),
+		generatedArticleTitles: buildArticleTitleMap(articles),
 		generatedJwtAuthEnabled: initialMetadata.jwtAuth?.enabled ?? false,
+		generatedUseSpaceFolderStructure: initialMetadata.useSpaceFolderStructure ?? false,
+		// Save branding at generation time for change detection
+		...(initialMetadata.branding
+			? { branding: initialMetadata.branding, generatedBranding: initialMetadata.branding }
+			: {}),
 		...(docsiteVisibility === "internal" && allowedDomain ? { allowedDomain } : {}),
 		...(initialMetadata.selectedArticleJrns ? { selectedArticleJrns: initialMetadata.selectedArticleJrns } : {}),
 		...(configFileHashes ? { configFileHashes } : {}),
 		...(initialMetadata.jwtAuth ? { jwtAuth: initialMetadata.jwtAuth } : {}),
+		...(initialMetadata.useSpaceFolderStructure !== undefined
+			? { useSpaceFolderStructure: initialMetadata.useSpaceFolderStructure }
+			: {}),
 	};
 }
 /* c8 ignore stop */
@@ -532,6 +741,9 @@ function buildErrorMetadata(
 		articleCount,
 		lastBuildError: errorMessage,
 		...(initialMetadata.jwtAuth ? { jwtAuth: initialMetadata.jwtAuth } : {}),
+		...(initialMetadata.useSpaceFolderStructure !== undefined
+			? { useSpaceFolderStructure: initialMetadata.useSpaceFolderStructure }
+			: {}),
 	};
 }
 /* c8 ignore stop */
@@ -582,6 +794,22 @@ async function buildDocsiteAsync(
 		// Output list of articles being included (zero articles is valid - generates a placeholder page)
 		broadcastArticleValidation(siteId, articles);
 
+		// Validate image references before generation (fail early if relative paths found)
+		const imageValidationResult = validateArticlesForGeneration(articles);
+		if (!imageValidationResult.isValid) {
+			const errorMessage = formatPreGenerationErrors(imageValidationResult);
+			log.error(
+				{ docsiteId: docsite.id, invalidArticles: imageValidationResult.invalidArticles.length },
+				"Site generation failed: invalid image references found",
+			);
+			broadcastBuildEvent(siteId, { type: "build:failed", error: errorMessage });
+			// Throw error to let catch block handle site status update
+			throw new Error(errorMessage);
+		}
+
+		// Validate article cross-reference links (non-blocking warning)
+		validateAndBroadcastArticleLinks(siteId, articles, 1);
+
 		// Step 2: Generate documentation project files
 		const step2Message = "[2/5] Generating documentation files...";
 		await siteDao.updateSite({
@@ -603,9 +831,12 @@ async function buildDocsiteAsync(
 			"Generated documentation files",
 		);
 
+		// Resolve article cross-reference links (JRN -> site URL)
+		const linkResolvedFiles = resolveAndBroadcastArticleLinks(siteId, generatedFiles, articles, 2);
+
 		// Bundle images from articles into static files (no orphan detection on create - no existing files)
 		const { files } = await bundleImagesIntoFilesImpl(
-			generatedFiles,
+			linkResolvedFiles,
 			siteId,
 			docsite.id,
 			imageStorageService,
@@ -925,8 +1156,8 @@ async function setDocsiteProtection(
 /* c8 ignore next 8 */
 export function createSiteRouter(
 	siteDaoProvider: DaoProvider<SiteDao>,
-	docDaoProvider: DaoProvider<DocDao>,
 	tokenUtil: TokenUtil<UserInfo>,
+	permissionMiddleware: PermissionMiddlewareFactory,
 	imageStorageService?: ImageStorageService,
 ): Router {
 	const router = express.Router();
@@ -936,24 +1167,17 @@ export function createSiteRouter(
 
 	// List all sites
 	/* c8 ignore next 2 */
-	router.get("/", async (_req, res) => {
+	router.get("/", permissionMiddleware.requirePermission("sites.view"), async (_req, res) => {
 		try {
 			const siteDao = siteDaoProvider.getDao(getTenantContext());
 			const docsites = await siteDao.listSites();
 
-			// Add needsUpdate flag to each docsite (includes auth changes)
+			// Add needsUpdate flag and granular change flags to each docsite
 			const docsitesWithUpdateStatus = await Promise.all(
 				docsites.map(async docsite => {
 					const articleChangesNeeded = await siteDao.checkIfNeedsUpdate(docsite.id);
-					// Check for auth setting changes since last build
-					const metadata = docsite.metadata;
-					const currentAuthEnabled = metadata?.jwtAuth?.enabled ?? false;
-					const generatedAuthEnabled = metadata?.generatedJwtAuthEnabled ?? false;
-					const hasAuthChange = currentAuthEnabled !== generatedAuthEnabled;
-					return {
-						...docsite,
-						needsUpdate: articleChangesNeeded || hasAuthChange,
-					};
+					const updateResult = computeNeedsUpdate(docsite.metadata, articleChangesNeeded);
+					return buildSiteUpdateResponse(docsite, updateResult);
 				}),
 			);
 
@@ -965,11 +1189,32 @@ export function createSiteRouter(
 	});
 
 	/**
+	 * GET /sites/for-article/:jrn
+	 * Gets all sites that include a given article (by JRN).
+	 * Returns lightweight site info for the article sites badge.
+	 */
+	router.get("/for-article/:jrn", permissionMiddleware.requirePermission("sites.view"), async (req, res) => {
+		try {
+			const jrn = req.params.jrn;
+			if (!jrn || jrn.length > 2048) {
+				res.status(400).json({ error: "Invalid JRN" });
+				return;
+			}
+			const siteDao = siteDaoProvider.getDao(getTenantContext());
+			const sites = await siteDao.getSitesForArticle(jrn);
+			res.json({ sites });
+		} catch (error) {
+			log.error({ jrn: req.params.jrn, error }, "Failed to get sites for article");
+			res.status(500).json({ error: "Failed to get sites for article" });
+		}
+	});
+
+	/**
 	 * GET /sites/check-subdomain?subdomain=xxx
 	 * Check if a subdomain is available.
 	 * Uses in-memory cache (10 second TTL) to reduce DB queries.
 	 */
-	router.get("/check-subdomain", async (req, res) => {
+	router.get("/check-subdomain", permissionMiddleware.requirePermission("sites.view"), async (req, res) => {
 		try {
 			const siteDao = siteDaoProvider.getDao(getTenantContext());
 			const { subdomain } = req.query;
@@ -1029,7 +1274,7 @@ export function createSiteRouter(
 	});
 
 	// Get site by ID
-	router.get("/:id", async (req, res) => {
+	router.get("/:id", permissionMiddleware.requirePermission("sites.view"), async (req, res) => {
 		try {
 			const siteDao = siteDaoProvider.getDao(getTenantContext());
 			const id = Number.parseInt(req.params.id, 10);
@@ -1041,7 +1286,7 @@ export function createSiteRouter(
 			let docsite = await siteDao.getSite(id);
 			if (docsite) {
 				// Check deployment status if it's currently building
-				const metadata = docsite.metadata as SiteMetadata | undefined;
+				const metadata = getSiteMetadata(docsite);
 				if (metadata?.deploymentStatus === "building" && metadata.productionDeploymentId) {
 					const config = getConfig();
 					const vercelToken = config.VERCEL_TOKEN;
@@ -1067,24 +1312,8 @@ export function createSiteRouter(
 				// Note: changedConfigFiles is fetched separately via /:id/changed-config-files endpoint
 				// for better page load performance (avoids blocking on GitHub API calls)
 				const changedArticles = await siteDao.getChangedArticles(id);
-
-				// Detect auth setting changes since last build
-				// Note: metadata is already declared above for deployment status check
-				const siteMetadata = docsite.metadata;
-				const currentAuthEnabled = siteMetadata?.jwtAuth?.enabled ?? false;
-				const generatedAuthEnabled = siteMetadata?.generatedJwtAuthEnabled ?? false;
-				const hasAuthChange = currentAuthEnabled !== generatedAuthEnabled;
-
-				const needsUpdate =
-					changedArticles.length > 0 || hasAuthChange || (await siteDao.checkIfNeedsUpdate(id));
-				res.json({
-					...docsite,
-					needsUpdate,
-					changedArticles: needsUpdate ? changedArticles : [],
-					// Include auth change info if auth settings differ from last build
-					...(hasAuthChange && { authChange: { from: generatedAuthEnabled, to: currentAuthEnabled } }),
-					// changedConfigFiles will be fetched async by the frontend
-				});
+				const updateResult = computeNeedsUpdate(docsite.metadata, changedArticles.length > 0);
+				res.json(buildSiteUpdateResponse(docsite, updateResult, changedArticles));
 			} else {
 				res.status(404).json({ error: "Docsite not found" });
 			}
@@ -1094,44 +1323,8 @@ export function createSiteRouter(
 		}
 	});
 
-	// Check if docsite needs update
-	router.get("/:id/check-update", async (req, res) => {
-		try {
-			const siteDao = siteDaoProvider.getDao(getTenantContext());
-			const docDao = docDaoProvider.getDao(getTenantContext());
-			const id = Number.parseInt(req.params.id, 10);
-			if (Number.isNaN(id)) {
-				res.status(400).json({ error: "Invalid docsite ID" });
-				return;
-			}
-
-			const docsite = await siteDao.getSite(id);
-			if (!docsite) {
-				res.status(404).json({ error: "Docsite not found" });
-				return;
-			}
-
-			const needsUpdate = await siteDao.checkIfNeedsUpdate(id);
-			const changedArticles = needsUpdate ? await siteDao.getChangedArticles(id) : [];
-
-			// Get latest article update time
-			const docs = await docDao.listDocs();
-			const latestArticleUpdate = docs.length > 0 ? Math.max(...docs.map(d => d.updatedAt.getTime())) : 0;
-
-			res.json({
-				needsUpdate,
-				lastGeneratedAt: docsite.lastGeneratedAt,
-				latestArticleUpdate: new Date(latestArticleUpdate),
-				changedArticles,
-			});
-		} catch (error) {
-			log.error(error, "Failed to check update status");
-			res.status(500).json({ error: "Failed to check update status" });
-		}
-	});
-
 	// Get changed config files for a site (async endpoint for performance)
-	router.get("/:id/changed-config-files", async (req, res) => {
+	router.get("/:id/changed-config-files", permissionMiddleware.requirePermission("sites.view"), async (req, res) => {
 		try {
 			const siteDao = siteDaoProvider.getDao(getTenantContext());
 			const id = Number.parseInt(req.params.id, 10);
@@ -1156,7 +1349,7 @@ export function createSiteRouter(
 
 	// SSE endpoint for build progress streaming
 	/* c8 ignore start */
-	router.get("/:id/build-stream", async (req, res) => {
+	router.get("/:id/build-stream", permissionMiddleware.requirePermission("sites.view"), async (req, res) => {
 		try {
 			const siteDao = siteDaoProvider.getDao(getTenantContext());
 			const id = Number.parseInt(req.params.id, 10);
@@ -1175,7 +1368,7 @@ export function createSiteRouter(
 			addBuildConnection(id, res);
 
 			// Send current status immediately (for reconnection)
-			const metadata = site.metadata as SiteMetadata | undefined;
+			const metadata = getSiteMetadata(site);
 			if (site.status === "building") {
 				sendBuildEvent(res, {
 					type: "build:step",
@@ -1237,10 +1430,11 @@ export function createSiteRouter(
 		}
 
 		// Validate framework (default to docusaurus-2 if not specified)
-		const selectedFramework: DocFramework = (framework as DocFramework) || "docusaurus-2";
-		if (!isValidFramework(selectedFramework)) {
+		const rawFramework = framework || "docusaurus-2";
+		if (!isValidFramework(rawFramework)) {
 			return { valid: false, status: 400, error: "Invalid framework specified" };
 		}
+		const selectedFramework = rawFramework;
 
 		// Validate name format (lowercase alphanumeric + hyphens only)
 		if (!/^[a-z0-9-]+$/.test(name)) {
@@ -1275,14 +1469,103 @@ export function createSiteRouter(
 			...(validatedSubdomain ? { subdomain: validatedSubdomain } : {}),
 		};
 	}
-	/* c8 ignore stop */
+
+	/** Generates JWT auth config keys if JWT auth is requested. */
+	async function generateJwtAuthConfig(
+		jwtAuth: { enabled?: boolean; mode?: "full" | "partial" } | undefined,
+		origin: string,
+		siteId: number,
+	): Promise<SiteMetadata["jwtAuth"] | undefined> {
+		if (!jwtAuth?.enabled) {
+			return;
+		}
+		const { generateKeyPairSync } = await import("node:crypto");
+		const keyPair = generateKeyPairSync("ec", {
+			namedCurve: "prime256v1",
+			publicKeyEncoding: { type: "spki", format: "pem" },
+			privateKeyEncoding: { type: "pkcs8", format: "pem" },
+		});
+		return {
+			enabled: true,
+			mode: jwtAuth.mode || "full",
+			loginUrl: `${origin}/api/sites/${siteId}/auth/jwt`,
+			publicKey: keyPair.publicKey,
+			privateKey: keyPair.privateKey,
+		};
+	}
+
+	/**
+	 * Builds the initial "pending" metadata for a newly created site record.
+	 * Returns only the user-selected fields; the full metadata is populated during the build.
+	 */
+	function buildPendingMetadata(
+		selectedArticles: Array<string> | undefined,
+		useSpaceFolderStructure: boolean | undefined,
+		branding: SiteBranding | undefined,
+	): Partial<SiteMetadata> | undefined {
+		if (selectedArticles === undefined && useSpaceFolderStructure === undefined && !branding) {
+			return;
+		}
+		return {
+			...(selectedArticles !== undefined ? { selectedArticleJrns: selectedArticles } : {}),
+			...(useSpaceFolderStructure !== undefined ? { useSpaceFolderStructure } : {}),
+			...(branding ? { branding } : {}),
+		};
+	}
+
+	/**
+	 * Validates the optional fields in a create-site request body.
+	 * Returns validated branding or an error response tuple.
+	 */
+	function validateCreateSiteBodyOptions(
+		body: Record<string, unknown>,
+	):
+		| { valid: true; branding: SiteBranding | undefined }
+		| { valid: false; status: number; error: string; details?: Array<string> } {
+		if (body.useSpaceFolderStructure !== undefined && typeof body.useSpaceFolderStructure !== "boolean") {
+			return { valid: false, status: 400, error: "useSpaceFolderStructure must be a boolean" };
+		}
+		if (body.branding && typeof body.branding === "object") {
+			const brandingValidation = validateSiteBranding(body.branding);
+			if (!brandingValidation.isValid) {
+				return {
+					valid: false,
+					status: 400,
+					error: "Invalid branding data",
+					details: brandingValidation.errors,
+				};
+			}
+			return { valid: true, branding: body.branding as SiteBranding };
+		}
+		return { valid: true, branding: undefined };
+	}
 
 	// Create site
-	/* c8 ignore start */
-	router.post("/", async (req, res) => {
+	router.post("/", permissionMiddleware.requirePermission("sites.edit"), async (req, res) => {
 		const siteDao = siteDaoProvider.getDao(getTenantContext());
-		const { name, displayName, visibility, framework, allowedDomain, selectedArticleJrns, subdomain, jwtAuth } =
-			req.body;
+		const {
+			name,
+			displayName,
+			visibility,
+			framework,
+			allowedDomain,
+			selectedArticleJrns,
+			subdomain,
+			jwtAuth,
+			useSpaceFolderStructure,
+		} = req.body;
+
+		// Validate optional body fields (branding, useSpaceFolderStructure)
+		const optionsValidation = validateCreateSiteBodyOptions(req.body);
+		if (!optionsValidation.valid) {
+			res.status(optionsValidation.status).json({
+				error: optionsValidation.error,
+				...(optionsValidation.details ? { details: optionsValidation.details } : {}),
+			});
+			return;
+		}
+		const validatedBranding = optionsValidation.branding;
+
 		// Prefer org-specific user ID (set by UserProvisioningMiddleware in multi-tenant mode)
 		const userId = req.orgUser?.id ?? tokenUtil.decodePayload(req)?.userId;
 
@@ -1319,11 +1602,10 @@ export function createSiteRouter(
 				userId,
 				visibility: (visibility as "internal" | "external") || "internal",
 				status: "pending",
-				// Store just selectedArticleJrns initially - full metadata will be added when status changes to "building"
-				metadata:
-					initialSelectedArticles !== undefined
-						? ({ selectedArticleJrns: initialSelectedArticles } as SiteMetadata)
-						: undefined,
+				// Pending metadata only has user-selected fields; full metadata is built during site generation
+				metadata: buildPendingMetadata(initialSelectedArticles, useSpaceFolderStructure, validatedBranding) as
+					| SiteMetadata
+					| undefined,
 				lastGeneratedAt: undefined,
 			};
 
@@ -1334,22 +1616,8 @@ export function createSiteRouter(
 			const articles = await siteDao.getArticlesForSite(docsite.id);
 
 			// Generate JWT auth config if enabled
-			let jwtAuthConfig: SiteMetadata["jwtAuth"] | undefined;
-			if (jwtAuth?.enabled) {
-				const { generateKeyPairSync } = await import("node:crypto");
-				const keyPair = generateKeyPairSync("ec", {
-					namedCurve: "prime256v1",
-					publicKeyEncoding: { type: "spki", format: "pem" },
-					privateKeyEncoding: { type: "pkcs8", format: "pem" },
-				});
-				const loginUrl = `${config.ORIGIN}/api/sites/${docsite.id}/auth/jwt`;
-				jwtAuthConfig = {
-					enabled: true,
-					mode: jwtAuth.mode || "full",
-					loginUrl,
-					publicKey: keyPair.publicKey,
-					privateKey: keyPair.privateKey,
-				};
+			const jwtAuthConfig = await generateJwtAuthConfig(jwtAuth, config.ORIGIN, docsite.id);
+			if (jwtAuthConfig) {
 				log.info({ docsiteId: docsite.id }, "Generated JWT auth keys for new site");
 			}
 
@@ -1362,6 +1630,8 @@ export function createSiteRouter(
 				buildProgress: "Preparing to build...",
 				...(initialSelectedArticles ? { selectedArticleJrns: initialSelectedArticles } : {}),
 				...(jwtAuthConfig ? { jwtAuth: jwtAuthConfig } : {}),
+				...(useSpaceFolderStructure !== undefined ? { useSpaceFolderStructure } : {}),
+				...(validatedBranding ? { branding: validatedBranding } : {}),
 			};
 
 			docsite = (await siteDao.updateSite({
@@ -1380,18 +1650,8 @@ export function createSiteRouter(
 				changes: computeAuditChanges(null, docsite as unknown as Record<string, unknown>, "site"),
 			});
 
-			// Audit log site creation
-			auditLog({
-				action: "create",
-				resourceType: "site",
-				resourceId: String(docsite.id),
-				resourceName: docsite.displayName || docsite.name,
-				actorId: typeof userId === "number" ? userId : null,
-				changes: computeAuditChanges(null, docsite as unknown as Record<string, unknown>, "site"),
-			});
-
 			// Return immediately with the docsite
-			res.status(201).json(docsite);
+			res.status(201).json(stripSiteSecrets(docsite));
 
 			// Continue processing asynchronously
 			const tenantContext = getTenantContext();
@@ -1424,7 +1684,7 @@ export function createSiteRouter(
 	 */
 	/* c8 ignore start */
 	function needsNextraMigration(docsite: Site): boolean {
-		const existingMetadata = docsite.metadata as SiteMetadata | undefined;
+		const existingMetadata = getSiteMetadata(docsite);
 		const frameworkFromMetadata = existingMetadata?.framework || "docusaurus-2";
 		const framework: DocFramework = isValidFramework(frameworkFromMetadata)
 			? frameworkFromMetadata
@@ -1484,15 +1744,8 @@ export function createSiteRouter(
 		const metaMerger = new MetaMerger();
 		const existingNavMeta = metaContent ? metaMerger.parse(metaContent) : undefined;
 
-		// Get deleted slugs from changed articles
-		const deletedSlugs = changedArticles
-			.filter(a => a.changeType === "deleted")
-			.map(a =>
-				a.title
-					.toLowerCase()
-					.replace(/\s+/g, "-")
-					.replace(/[^a-z0-9-]/g, ""),
-			);
+		// Get deleted slugs from changed articles (using slugify for consistency with nextra generator)
+		const deletedSlugs = changedArticles.filter(a => a.changeType === "deleted").map(a => slugify(a.title));
 
 		// Build context object without undefined values (exactOptionalPropertyTypes)
 		const context: MigrationContext = { deletedSlugs };
@@ -1579,11 +1832,8 @@ export function createSiteRouter(
 		docsite: Site,
 		changedArticles: Array<ChangedArticle>,
 	): Promise<RegenerationContexts> {
-		const metadata = docsite.metadata as SiteMetadata;
+		const metadata = requireSiteMetadata(docsite);
 		const [owner, repo] = metadata.githubRepo.split("/");
-
-		// Check if navigation has changed (new/deleted articles)
-		const navigationChanged = changedArticles.some(a => a.changeType === "new" || a.changeType === "deleted");
 
 		// Check if Nextra 3.x to 4.x migration is needed
 		if (needsNextraMigration(docsite)) {
@@ -1613,7 +1863,7 @@ export function createSiteRouter(
 		// 2. Entries manually added to _meta.ts that don't correspond to any article
 		// 3. Any other mismatch between _meta.ts and actual article files
 		if (metadata.framework === "nextra") {
-			log.info({ docsiteId: docsite.id, navigationChanged }, "Fetching existing _meta.ts for orphan detection");
+			log.info({ docsiteId: docsite.id }, "Fetching existing _meta.ts for orphan detection");
 			const existingNavMetaContext = await fetchExistingNavMeta(owner, repo, changedArticles);
 			if (existingNavMetaContext?.existingNavMeta) {
 				log.info(
@@ -1677,17 +1927,16 @@ export function createSiteRouter(
 		deletedFilePaths: Array<string>;
 		orphanedFiles: Array<string>; // Orphaned content files being removed
 		removedNavEntries: Array<string>; // Orphaned nav entries being removed from _meta.ts
+		emptyFolders: Array<string>; // Content folders that became empty and should be deleted
+		warnings: Array<string>; // Warnings about potential issues (e.g., slug collisions)
 		generator: DocGenerator;
 		migratedToNextra4: boolean;
 	} {
-		const existingMetadata = docsite.metadata as SiteMetadata | undefined;
+		const existingMetadata = getSiteMetadata(docsite);
 		const frameworkFromMetadata = existingMetadata?.framework || "docusaurus-2";
 		const framework: DocFramework = isValidFramework(frameworkFromMetadata)
 			? frameworkFromMetadata
 			: "docusaurus-2";
-
-		// Navigation changes when articles are added or deleted (not just updated)
-		const navigationChanged = changedArticles.some(a => a.changeType === "new" || a.changeType === "deleted");
 
 		// Check if this is a Nextra site that needs migration to 4.x
 		const needsMigration = needsNextraMigration(docsite);
@@ -1698,9 +1947,12 @@ export function createSiteRouter(
 		const contextToUse = needsMigration ? migrationContext : existingNavMetaContext;
 
 		const generator = createDocGenerator(framework);
+		// When the user has manually selected articles (auto-sync off), preserve their
+		// existing _meta.ts ordering so Navigation tab customizations survive publish.
+		const hasManualSelection = Array.isArray(existingMetadata?.selectedArticleJrns);
+
 		const generatorOptions: DocGeneratorOptions = {
 			regenerationMode: true,
-			navigationChanged,
 			// Enable migration mode if upgrading from Nextra 3.x to 4.x
 			migrationMode: needsMigration,
 			...(docsite.visibility === "internal" && existingMetadata?.allowedDomain
@@ -1708,6 +1960,13 @@ export function createSiteRouter(
 				: {}),
 			// Pass context for preserving nav customizations (migration or regeneration)
 			...(contextToUse !== undefined ? { migrationContext: contextToUse } : {}),
+			// Pass branding/theme configuration for site styling
+			...(existingMetadata?.branding !== undefined ? { theme: existingMetadata.branding } : {}),
+			// Preserve existing _meta.ts order when auto-sync is off (manual selection)
+			...(hasManualSelection ? { preserveNavOrder: true } : {}),
+			// When auto-nav is ON, force articles into their space-derived folders
+			// (overrides any manual file moves made while auto-nav was off)
+			...(existingMetadata?.useSpaceFolderStructure ? { useSpaceFolderStructure: true } : {}),
 		};
 
 		const generationResult = generator.generateFromArticles(
@@ -1716,8 +1975,15 @@ export function createSiteRouter(
 			docsite.displayName,
 			generatorOptions,
 		);
-		const { files, removedNavEntries } = generationResult;
+		const { files, removedNavEntries, foldersToDelete, warnings, relocatedFilePaths } = generationResult;
+
 		let deletedFilePaths = generator.getDeletedFilePaths(changedArticles);
+
+		// Delete old file paths for articles relocated by useSpaceFolderStructure.
+		// GitHub API ignores deletions for files that don't exist.
+		if (relocatedFilePaths.length > 0) {
+			deletedFilePaths = [...deletedFilePaths, ...relocatedFilePaths];
+		}
 		let orphanedFiles: Array<string> = [];
 
 		// For ALL Nextra sites, always delete old Pages Router files to ensure clean state.
@@ -1759,6 +2025,8 @@ export function createSiteRouter(
 			deletedFilePaths,
 			orphanedFiles,
 			removedNavEntries,
+			emptyFolders: foldersToDelete,
+			warnings,
 			generator,
 			migratedToNextra4: needsMigration,
 		};
@@ -1804,7 +2072,9 @@ export function createSiteRouter(
 				? { protectionType: protectionStatus.protectionType }
 				: {}),
 			generatedArticleJrns: articles.map(a => a.jrn),
+			generatedArticleTitles: buildArticleTitleMap(articles),
 			generatedJwtAuthEnabled: existingMetadata.jwtAuth?.enabled ?? false,
+			generatedUseSpaceFolderStructure: existingMetadata.useSpaceFolderStructure ?? false,
 			// Preserve optional fields if they exist
 			...(existingMetadata.allowedDomain ? { allowedDomain: existingMetadata.allowedDomain } : {}),
 			...(existingMetadata.selectedArticleJrns
@@ -1819,6 +2089,14 @@ export function createSiteRouter(
 			...(existingMetadata.customDomains ? { customDomains: existingMetadata.customDomains } : {}),
 			// Preserve JWT auth configuration across redeployments
 			...(existingMetadata.jwtAuth ? { jwtAuth: existingMetadata.jwtAuth } : {}),
+			// Preserve branding and update generatedBranding to reflect this build
+			...(existingMetadata.branding
+				? { branding: existingMetadata.branding, generatedBranding: existingMetadata.branding }
+				: {}),
+			// Preserve folder structure setting
+			...(existingMetadata.useSpaceFolderStructure !== undefined
+				? { useSpaceFolderStructure: existingMetadata.useSpaceFolderStructure }
+				: {}),
 		};
 	}
 	/* c8 ignore stop */
@@ -1842,7 +2120,7 @@ export function createSiteRouter(
 		broadcastBuildEvent(siteId, { type: "build:mode", mode: "rebuild", totalSteps });
 
 		try {
-			const existingMetadata = docsite.metadata as SiteMetadata;
+			const existingMetadata = requireSiteMetadata(docsite);
 
 			// Step 1: Fetch articles
 			const { articles, changedArticles } = await executeStep1FetchArticles(
@@ -1863,8 +2141,24 @@ export function createSiteRouter(
 				changedArticles,
 			);
 
+			// Validate image references before generation (fail early if relative paths found)
+			const imageValidationResult = validateArticlesForGeneration(articles);
+			if (!imageValidationResult.isValid) {
+				const errorMessage = formatPreGenerationErrors(imageValidationResult);
+				log.error(
+					{ docsiteId: docsite.id, invalidArticles: imageValidationResult.invalidArticles.length },
+					"Site regeneration failed: invalid image references found",
+				);
+				broadcastBuildEvent(siteId, { type: "build:failed", error: errorMessage });
+				// Throw error to let catch block handle site status update
+				throw new Error(errorMessage);
+			}
+
+			// Validate article cross-reference links (non-blocking warning)
+			validateAndBroadcastArticleLinks(siteId, articles, 2);
+
 			// Step 3: Generate files
-			const { files, deletedFilePaths, migratedToNextra4 } = await executeStep3GenerateFiles(
+			const { files, deletedFilePaths, emptyFolders, migratedToNextra4 } = await executeStep3GenerateFiles(
 				siteDao,
 				docsite,
 				siteId,
@@ -1885,6 +2179,7 @@ export function createSiteRouter(
 				existingMetadata,
 				files,
 				deletedFilePaths,
+				emptyFolders,
 			);
 
 			// Step 5: Write files and deploy to Vercel with streaming
@@ -1941,12 +2236,11 @@ export function createSiteRouter(
 				docsiteId: docsite.id,
 				articleCount: articles.length,
 				changedCount: changedArticles.length,
-				selectedJrns: (docsite.metadata as SiteMetadata | undefined)?.selectedArticleJrns,
+				selectedJrns: getSiteMetadata(docsite)?.selectedArticleJrns,
 				articleJrns: articles.map(a => a.jrn),
 			},
 			"Fetched articles and change info for rebuild",
 		);
-
 		// Broadcast article list (zero articles is valid - generates a placeholder page)
 		if (articles.length === 0) {
 			broadcastBuildEvent(siteId, {
@@ -2022,7 +2316,12 @@ export function createSiteRouter(
 		changedArticles: Array<ChangedArticle>,
 		migrationContext: MigrationContext | undefined,
 		existingNavMetaContext: MigrationContext | undefined,
-	): Promise<{ files: Array<FileTree>; deletedFilePaths: Array<string>; migratedToNextra4: boolean }> {
+	): Promise<{
+		files: Array<FileTree>;
+		deletedFilePaths: Array<string>;
+		emptyFolders: Array<string>;
+		migratedToNextra4: boolean;
+	}> {
 		const step3Message = "[3/7] Generating documentation files...";
 		log.info({ docsiteId: docsite.id }, "Regenerating documentation project");
 		await siteDao.updateSite({
@@ -2031,11 +2330,11 @@ export function createSiteRouter(
 		});
 		broadcastBuildEvent(siteId, { type: "build:step", step: 3, total: totalSteps, message: step3Message });
 
-		const metadata = docsite.metadata as SiteMetadata;
+		const metadata = requireSiteMetadata(docsite);
 		const [owner, repo] = metadata.githubRepo.split("/");
 		const existingFilePaths = await fetchExistingFilePaths(owner, repo, docsite.id);
 
-		const { files, deletedFilePaths, orphanedFiles, removedNavEntries, migratedToNextra4 } =
+		const { files, deletedFilePaths, orphanedFiles, removedNavEntries, emptyFolders, warnings, migratedToNextra4 } =
 			generateFilesAndDeletedPaths(
 				docsite,
 				articles,
@@ -2073,9 +2372,37 @@ export function createSiteRouter(
 			}
 		}
 
+		// Broadcast empty folders being removed
+		if (emptyFolders.length > 0) {
+			broadcastBuildEvent(siteId, {
+				type: "build:stdout",
+				step: 3,
+				output: `Cleaning up ${emptyFolders.length} empty folder(s):`,
+			});
+			for (const folder of emptyFolders) {
+				broadcastBuildEvent(siteId, { type: "build:stdout", step: 3, output: `  - Removing: ${folder}` });
+			}
+		}
+
+		// Log and broadcast warnings (e.g., slug collisions)
+		if (warnings.length > 0) {
+			log.warn({ docsiteId: docsite.id, warnings }, "Generation produced %d warning(s)", warnings.length);
+			broadcastBuildEvent(siteId, {
+				type: "build:stdout",
+				step: 3,
+				output: `Warning: ${warnings.length} issue(s) detected during generation:`,
+			});
+			for (const warning of warnings) {
+				broadcastBuildEvent(siteId, { type: "build:stdout", step: 3, output: `  ⚠ ${warning}` });
+			}
+		}
+
+		// Resolve article cross-reference links (JRN -> site URL)
+		const linkResolvedFiles = resolveAndBroadcastArticleLinks(siteId, files, articles, 3);
+
 		// Bundle images from articles into static files and detect orphaned images
 		const { files: finalFiles, orphanedImagePaths } = await bundleImagesIntoFiles(
-			files,
+			linkResolvedFiles,
 			siteId,
 			docsite.id,
 			existingFilePaths,
@@ -2096,7 +2423,13 @@ export function createSiteRouter(
 		// Include orphaned images in files to delete
 		const allDeletedFilePaths = [...deletedFilePaths, ...orphanedImagePaths];
 
-		return { files: finalFiles, deletedFilePaths: allDeletedFilePaths, migratedToNextra4 };
+		// Add _meta.ts files from empty folders to deletedFilePaths so they're removed in the same commit
+		// This prevents race conditions where Vercel builds before folder deletion completes
+		for (const folderPath of emptyFolders) {
+			allDeletedFilePaths.push(`${folderPath}/_meta.ts`);
+		}
+
+		return { files: finalFiles, deletedFilePaths: allDeletedFilePaths, emptyFolders, migratedToNextra4 };
 	}
 
 	async function executeStep4GitHubOperations(
@@ -2107,8 +2440,9 @@ export function createSiteRouter(
 		existingMetadata: SiteMetadata,
 		files: Array<FileTree>,
 		deletedFilePaths: Array<string>,
+		emptyFolders: Array<string>,
 	): Promise<{ allFiles: Array<FileTree>; metadata: SiteMetadata; owner: string; repo: string }> {
-		const metadata = docsite.metadata as SiteMetadata;
+		const metadata = requireSiteMetadata(docsite);
 		const [owner, repo] = metadata.githubRepo.split("/");
 
 		// Step 4: Upload to GitHub and download complete repo
@@ -2137,6 +2471,24 @@ export function createSiteRouter(
 			{ docsiteId: docsite.id, commitSha: newCommitSha },
 			"Updated GitHub repository (preserved custom files)",
 		);
+
+		// Delete empty folders (folders with only _meta.ts or completely empty after article removal)
+		// This must happen after the main upload to avoid conflicts
+		if (emptyFolders.length > 0) {
+			log.info({ docsiteId: docsite.id, emptyFolders }, "Deleting empty content folders");
+			for (const folderPath of emptyFolders) {
+				try {
+					await githubClient.deleteFolder(owner, repo, folderPath);
+					log.info({ docsiteId: docsite.id, folderPath }, "Deleted empty folder");
+				} catch (error) {
+					// Log but don't fail - folder might already be gone or have other issues
+					log.warn(
+						{ docsiteId: docsite.id, folderPath, error },
+						"Failed to delete empty folder (may not exist)",
+					);
+				}
+			}
+		}
 
 		log.info({ docsiteId: docsite.id, commitSha: newCommitSha }, "Downloading all files from specific commit");
 		const allFiles = await githubClient.downloadRepository(owner, repo, newCommitSha);
@@ -2369,7 +2721,7 @@ export function createSiteRouter(
 			"Failed to regenerate docsite",
 		);
 
-		const errorMetadata = docsite.metadata as SiteMetadata;
+		const errorMetadata = requireSiteMetadata(docsite);
 		const updatedMetadata: SiteMetadata = {
 			...errorMetadata,
 			lastBuildError: errorMessage,
@@ -2387,7 +2739,7 @@ export function createSiteRouter(
 
 	// Regenerate docsite (update site with latest articles)
 	/* c8 ignore start */
-	router.put("/:id/regenerate", async (req, res) => {
+	router.put("/:id/regenerate", permissionMiddleware.requirePermission("sites.edit"), async (req, res) => {
 		try {
 			const siteDao = siteDaoProvider.getDao(getTenantContext());
 			const id = Number.parseInt(req.params.id, 10);
@@ -2430,7 +2782,7 @@ export function createSiteRouter(
 			});
 
 			// Return immediately
-			res.json(docsite);
+			res.json(stripSiteSecrets(docsite));
 
 			// Continue processing asynchronously
 			regenerateDocsiteAsync(siteDao, docsite, config);
@@ -2442,7 +2794,7 @@ export function createSiteRouter(
 	/* c8 ignore stop */
 
 	// Update site articles (change article selection)
-	router.put("/:id/articles", async (req, res) => {
+	router.put("/:id/articles", permissionMiddleware.requirePermission("sites.edit"), async (req, res) => {
 		try {
 			const siteDao = siteDaoProvider.getDao(getTenantContext());
 			const id = Number.parseInt(req.params.id, 10);
@@ -2466,7 +2818,7 @@ export function createSiteRouter(
 			}
 
 			// Update metadata with new article selection
-			const metadata = (oldDocsite.metadata as SiteMetadata) || ({} as SiteMetadata);
+			const metadata = getMetadataForUpdate(oldDocsite);
 			const updatedMetadata: SiteMetadata = {
 				...metadata,
 			};
@@ -2484,6 +2836,10 @@ export function createSiteRouter(
 				...oldDocsite,
 				metadata: updatedMetadata,
 			});
+			if (!updatedDocsite) {
+				res.status(404).json({ error: "Site not found after update" });
+				return;
+			}
 
 			// Audit log
 			const userId = req.orgUser?.id ?? tokenUtil.decodePayload(req)?.userId;
@@ -2504,16 +2860,9 @@ export function createSiteRouter(
 				},
 			});
 
-			// Return site with needsUpdate flag and auth change detection
-			const articleChangesNeeded = await siteDao.checkIfNeedsUpdate(id);
+			// Return site with needsUpdate flag and change detection
 			const changedArticles = await siteDao.getChangedArticles(id);
-
-			// Detect auth setting changes since last build
-			const currentAuthEnabled = updatedMetadata?.jwtAuth?.enabled ?? false;
-			const generatedAuthEnabled = updatedMetadata?.generatedJwtAuthEnabled ?? false;
-			const hasAuthChange = currentAuthEnabled !== generatedAuthEnabled;
-
-			const needsUpdate = articleChangesNeeded || changedArticles.length > 0 || hasAuthChange;
+			const updateResult = computeNeedsUpdate(updatedMetadata, changedArticles.length > 0);
 
 			log.info(
 				{
@@ -2525,174 +2874,16 @@ export function createSiteRouter(
 				"Updated site article selection",
 			);
 
-			res.json({
-				...updatedDocsite,
-				needsUpdate,
-				changedArticles: needsUpdate ? changedArticles : [],
-				...(hasAuthChange && { authChange: { from: generatedAuthEnabled, to: currentAuthEnabled } }),
-			});
+			res.json(buildSiteUpdateResponse(updatedDocsite, updateResult, changedArticles));
 		} catch (error) {
 			log.error(error, "Failed to update site articles");
 			res.status(500).json({ error: "Failed to update site articles" });
 		}
 	});
 
-	// Toggle protection on/off
-	/* c8 ignore start */
-	router.post("/:id/toggle-protection", async (req, res) => {
-		try {
-			const siteDao = siteDaoProvider.getDao(getTenantContext());
-			const id = Number.parseInt(req.params.id, 10);
-			if (Number.isNaN(id)) {
-				res.status(400).json({ error: "Invalid docsite ID" });
-				return;
-			}
-
-			const oldDocsite = await siteDao.getSite(id);
-			if (!oldDocsite) {
-				res.status(404).json({ error: "Docsite not found" });
-				return;
-			}
-
-			const config = getConfig();
-			const vercelToken = config.VERCEL_TOKEN;
-			if (!vercelToken) {
-				res.status(500).json({ error: "VERCEL_TOKEN is not configured" });
-				return;
-			}
-
-			// Use repo name from metadata for Vercel project operations (backwards compatible)
-			const siteMetadata = oldDocsite.metadata as SiteMetadata;
-			const [, vercelProjectName] = siteMetadata.githubRepo.split("/");
-
-			// Get current protection status
-			const deployer = new VercelDeployer(vercelToken);
-			const currentStatus = await deployer.getProjectProtection(vercelProjectName);
-			log.info({ docsiteId: id, currentStatus }, "Current protection status");
-
-			// Toggle protection
-			const enableProtection = !currentStatus.isProtected;
-			await deployer.setProjectProtection(vercelProjectName, enableProtection);
-
-			// Get updated protection status
-			const newStatus = await deployer.getProjectProtection(vercelProjectName);
-			log.info({ docsiteId: id, newStatus }, "Protection toggled");
-
-			// Update metadata
-			const metadata = oldDocsite.metadata as SiteMetadata;
-			const updatedMetadata: SiteMetadata = {
-				...metadata,
-				isProtected: newStatus.isProtected,
-				protectionType: newStatus.protectionType,
-				lastProtectionCheck: new Date().toISOString(),
-			};
-
-			const updatedDocsite = await siteDao.updateSite({
-				...oldDocsite,
-				metadata: updatedMetadata,
-			});
-
-			// Audit log
-			const userId = req.orgUser?.id ?? tokenUtil.decodePayload(req)?.userId;
-			auditLog({
-				action: "update",
-				resourceType: "site",
-				resourceId: String(id),
-				resourceName: oldDocsite.displayName || oldDocsite.name,
-				actorId: typeof userId === "number" ? userId : null,
-				changes: computeAuditChanges(
-					oldDocsite as unknown as Record<string, unknown>,
-					updatedDocsite as unknown as Record<string, unknown>,
-					"site",
-				),
-				metadata: {
-					operation: "toggle_protection",
-					isProtected: newStatus.isProtected,
-				},
-			});
-
-			res.json(updatedDocsite);
-		} catch (error) {
-			log.error(error, "Failed to toggle protection");
-			res.status(500).json({ error: "Failed to toggle protection" });
-		}
-	});
-	/* c8 ignore stop */
-
-	// Refresh protection status
-	/* c8 ignore start */
-	router.post("/:id/refresh-protection", async (req, res) => {
-		try {
-			const siteDao = siteDaoProvider.getDao(getTenantContext());
-			const id = Number.parseInt(req.params.id, 10);
-			if (Number.isNaN(id)) {
-				res.status(400).json({ error: "Invalid docsite ID" });
-				return;
-			}
-
-			const oldDocsite = await siteDao.getSite(id);
-			if (!oldDocsite) {
-				res.status(404).json({ error: "Docsite not found" });
-				return;
-			}
-
-			const config = getConfig();
-			const vercelToken = config.VERCEL_TOKEN;
-			if (!vercelToken) {
-				res.status(500).json({ error: "VERCEL_TOKEN is not configured" });
-				return;
-			}
-
-			// Use repo name from metadata for Vercel project operations (backwards compatible)
-			const metadata = oldDocsite.metadata as SiteMetadata;
-			const [, vercelProjectName] = metadata.githubRepo.split("/");
-
-			// Get current protection status from Vercel
-			const deployer = new VercelDeployer(vercelToken);
-			const protectionStatus = await deployer.getProjectProtection(vercelProjectName);
-			log.info({ docsiteId: id, protectionStatus }, "Protection status refreshed");
-			const updatedMetadata: SiteMetadata = {
-				...metadata,
-				isProtected: protectionStatus.isProtected,
-				protectionType: protectionStatus.protectionType,
-				lastProtectionCheck: new Date().toISOString(),
-			};
-
-			const updatedDocsite = await siteDao.updateSite({
-				...oldDocsite,
-				metadata: updatedMetadata,
-			});
-
-			// Audit log
-			const userId = req.orgUser?.id ?? tokenUtil.decodePayload(req)?.userId;
-			auditLog({
-				action: "update",
-				resourceType: "site",
-				resourceId: String(id),
-				resourceName: oldDocsite.displayName || oldDocsite.name,
-				actorId: typeof userId === "number" ? userId : null,
-				changes: computeAuditChanges(
-					oldDocsite as unknown as Record<string, unknown>,
-					updatedDocsite as unknown as Record<string, unknown>,
-					"site",
-				),
-				metadata: {
-					operation: "refresh_protection",
-					isProtected: protectionStatus.isProtected,
-				},
-			});
-
-			res.json(updatedDocsite);
-		} catch (error) {
-			log.error(error, "Failed to refresh protection status");
-			res.status(500).json({ error: "Failed to refresh protection status" });
-		}
-	});
-	/* c8 ignore stop */
-
 	// Update repository file
 	/* c8 ignore start */
-	router.put("/:id/repository-file", async (req, res) => {
+	router.put("/:id/repository-file", permissionMiddleware.requirePermission("sites.edit"), async (req, res) => {
 		try {
 			const siteDao = siteDaoProvider.getDao(getTenantContext());
 			const id = Number.parseInt(req.params.id, 10);
@@ -2704,6 +2895,12 @@ export function createSiteRouter(
 			const { filePath, content } = req.body;
 			if (!filePath || content === undefined) {
 				res.status(400).json({ error: "filePath and content are required" });
+				return;
+			}
+
+			// Validate filePath doesn't contain path traversal sequences
+			if (hasPathTraversal(filePath)) {
+				res.status(400).json({ error: "Invalid file path" });
 				return;
 			}
 
@@ -2722,7 +2919,7 @@ export function createSiteRouter(
 				return;
 			}
 
-			const metadata = docsite.metadata as SiteMetadata | undefined;
+			const metadata = getSiteMetadata(docsite);
 			if (!metadata?.githubRepo) {
 				res.status(400).json({ error: "Site does not have a GitHub repository" });
 				return;
@@ -2765,7 +2962,7 @@ Updated via Jolli repository editor`;
 	/* c8 ignore stop */
 
 	// Format code using Biome
-	router.post("/format-code", async (req, res) => {
+	router.post("/format-code", permissionMiddleware.requirePermission("sites.edit"), async (req, res) => {
 		try {
 			const { content, filePath } = req.body;
 
@@ -2834,7 +3031,7 @@ Updated via Jolli repository editor`;
 	});
 
 	// Cancel build - allows users to stop a stuck or in-progress build
-	router.post("/:id/cancel-build", async (req, res) => {
+	router.post("/:id/cancel-build", permissionMiddleware.requirePermission("sites.edit"), async (req, res) => {
 		try {
 			const siteDao = siteDaoProvider.getDao(getTenantContext());
 			const id = Number.parseInt(req.params.id, 10);
@@ -2869,7 +3066,7 @@ Updated via Jolli repository editor`;
 			}
 
 			// Update status to error with cancellation message
-			const existingMetadata = (docsite.metadata as SiteMetadata) || ({} as SiteMetadata);
+			const existingMetadata = getMetadataForUpdate(docsite);
 			// Remove buildProgress by destructuring and omitting it
 			const { buildProgress: _unused, ...metadataWithoutProgress } = existingMetadata;
 			const updatedDocsite = await siteDao.updateSite({
@@ -2889,7 +3086,7 @@ Updated via Jolli repository editor`;
 
 			log.info({ siteId: id }, "Build cancelled by user");
 
-			res.json(updatedDocsite);
+			res.json(stripSiteSecrets(updatedDocsite));
 		} catch (error) {
 			log.error(error, "Failed to cancel build");
 			res.status(500).json({ error: "Failed to cancel build" });
@@ -2897,7 +3094,7 @@ Updated via Jolli repository editor`;
 	});
 
 	// Validate _meta.ts syntax - called when saving in RepositoryViewer
-	router.post("/:id/validate-meta", async (req, res) => {
+	router.post("/:id/validate-meta", permissionMiddleware.requirePermission("sites.edit"), async (req, res) => {
 		try {
 			const siteDao = siteDaoProvider.getDao(getTenantContext());
 			const id = Number.parseInt(req.params.id, 10);
@@ -2940,7 +3137,7 @@ Updated via Jolli repository editor`;
 
 	// Validate consistency between _meta.ts and content folder - called before rebuild
 	/* c8 ignore start */
-	router.post("/:id/validate-consistency", async (req, res) => {
+	router.post("/:id/validate-consistency", permissionMiddleware.requirePermission("sites.edit"), async (req, res) => {
 		try {
 			const siteDao = siteDaoProvider.getDao(getTenantContext());
 			const id = Number.parseInt(req.params.id, 10);
@@ -2955,7 +3152,7 @@ Updated via Jolli repository editor`;
 				return;
 			}
 
-			const metadata = docsite.metadata as SiteMetadata | undefined;
+			const metadata = getSiteMetadata(docsite);
 			if (!metadata?.githubRepo) {
 				res.status(400).json({ error: "Site does not have a GitHub repository" });
 				return;
@@ -3002,7 +3199,7 @@ Updated via Jolli repository editor`;
 
 	// Delete site
 	/* c8 ignore start */
-	router.delete("/:id", async (req, res) => {
+	router.delete("/:id", permissionMiddleware.requirePermission("sites.edit"), async (req, res) => {
 		try {
 			const siteDao = siteDaoProvider.getDao(getTenantContext());
 			const id = Number.parseInt(req.params.id, 10);
@@ -3033,23 +3230,13 @@ Updated via Jolli repository editor`;
 				changes: computeAuditChanges(docsite as unknown as Record<string, unknown>, null, "site"),
 			});
 
-			// Audit log site deletion
-			auditLog({
-				action: "delete",
-				resourceType: "site",
-				resourceId: String(id),
-				resourceName: docsite.displayName || docsite.name,
-				actorId: typeof userId === "number" ? userId : null,
-				changes: computeAuditChanges(docsite as unknown as Record<string, unknown>, null, "site"),
-			});
-
 			// Return immediately
 			res.status(204).send();
 
 			// Clean up resources asynchronously
 			(async () => {
 				const config = getConfig();
-				const metadata = docsite.metadata as SiteMetadata | undefined;
+				const metadata = getSiteMetadata(docsite);
 
 				if (metadata?.githubRepo) {
 					try {
@@ -3080,7 +3267,9 @@ Updated via Jolli repository editor`;
 						);
 					}
 				}
-			})();
+			})().catch(error => {
+				log.error({ docsiteId: id, error }, "Unexpected error during async site cleanup");
+			});
 		} catch (error) {
 			log.error(error, "Failed to delete site");
 			res.status(500).json({ error: "Failed to delete site" });
@@ -3090,7 +3279,7 @@ Updated via Jolli repository editor`;
 
 	// Create folder in site repository
 	/* c8 ignore start */
-	router.post("/:id/folders", async (req, res) => {
+	router.post("/:id/folders", permissionMiddleware.requirePermission("sites.edit"), async (req, res) => {
 		try {
 			const id = Number.parseInt(req.params.id, 10);
 			if (Number.isNaN(id)) {
@@ -3117,7 +3306,7 @@ Updated via Jolli repository editor`;
 				return;
 			}
 
-			const metadata = docsite.metadata as SiteMetadata | undefined;
+			const metadata = getSiteMetadata(docsite);
 			if (!metadata?.githubRepo) {
 				res.status(400).json({ error: "Site does not have a GitHub repository" });
 				return;
@@ -3156,7 +3345,7 @@ Updated via Jolli repository editor`;
 
 	// Delete folder from site repository
 	/* c8 ignore start */
-	router.delete("/:id/folders", async (req, res) => {
+	router.delete("/:id/folders", permissionMiddleware.requirePermission("sites.edit"), async (req, res) => {
 		try {
 			const id = Number.parseInt(req.params.id, 10);
 			if (Number.isNaN(id)) {
@@ -3192,7 +3381,7 @@ Updated via Jolli repository editor`;
 				return;
 			}
 
-			const metadata = docsite.metadata as SiteMetadata | undefined;
+			const metadata = getSiteMetadata(docsite);
 			if (!metadata?.githubRepo) {
 				res.status(400).json({ error: "Site does not have a GitHub repository" });
 				return;
@@ -3231,7 +3420,7 @@ Updated via Jolli repository editor`;
 
 	// Rename folder in site repository
 	/* c8 ignore start */
-	router.put("/:id/folders/rename", async (req, res) => {
+	router.put("/:id/folders/rename", permissionMiddleware.requirePermission("sites.edit"), async (req, res) => {
 		try {
 			const id = Number.parseInt(req.params.id, 10);
 			if (Number.isNaN(id)) {
@@ -3276,7 +3465,7 @@ Updated via Jolli repository editor`;
 				return;
 			}
 
-			const metadata = docsite.metadata as SiteMetadata | undefined;
+			const metadata = getSiteMetadata(docsite);
 			if (!metadata?.githubRepo) {
 				res.status(400).json({ error: "Site does not have a GitHub repository" });
 				return;
@@ -3321,7 +3510,7 @@ Updated via Jolli repository editor`;
 
 	// Move file to different folder in site repository
 	/* c8 ignore start */
-	router.put("/:id/files/move", async (req, res) => {
+	router.put("/:id/files/move", permissionMiddleware.requirePermission("sites.edit"), async (req, res) => {
 		try {
 			const id = Number.parseInt(req.params.id, 10);
 			if (Number.isNaN(id)) {
@@ -3358,7 +3547,7 @@ Updated via Jolli repository editor`;
 				return;
 			}
 
-			const metadata = docsite.metadata as SiteMetadata | undefined;
+			const metadata = getSiteMetadata(docsite);
 			if (!metadata?.githubRepo) {
 				res.status(400).json({ error: "Site does not have a GitHub repository" });
 				return;
@@ -3410,7 +3599,7 @@ Updated via Jolli repository editor`;
 
 	// List folder contents in site repository
 	/* c8 ignore start */
-	router.get("/:id/folders/contents", async (req, res) => {
+	router.get("/:id/folders/contents", permissionMiddleware.requirePermission("sites.view"), async (req, res) => {
 		try {
 			const id = Number.parseInt(req.params.id, 10);
 			if (Number.isNaN(id)) {
@@ -3433,7 +3622,7 @@ Updated via Jolli repository editor`;
 				return;
 			}
 
-			const metadata = docsite.metadata as SiteMetadata | undefined;
+			const metadata = getSiteMetadata(docsite);
 			if (!metadata?.githubRepo) {
 				res.status(400).json({ error: "Site does not have a GitHub repository" });
 				return;
@@ -3467,7 +3656,7 @@ Updated via Jolli repository editor`;
 	 * This proxies the GitHub API request using the server's GITHUB_TOKEN,
 	 * allowing the frontend to access private repositories.
 	 */
-	router.get("/:id/github/tree", async (req, res) => {
+	router.get("/:id/github/tree", permissionMiddleware.requirePermission("sites.view"), async (req, res) => {
 		const id = Number.parseInt(req.params.id, 10);
 		if (Number.isNaN(id)) {
 			res.status(400).json({ error: "Invalid site ID" });
@@ -3482,7 +3671,7 @@ Updated via Jolli repository editor`;
 				return;
 			}
 
-			const metadata = docsite.metadata as SiteMetadata | undefined;
+			const metadata = getSiteMetadata(docsite);
 			if (!metadata?.githubRepo) {
 				res.status(400).json({ error: "Site does not have a GitHub repository" });
 				return;
@@ -3512,7 +3701,7 @@ Updated via Jolli repository editor`;
 	 * This proxies the GitHub API request using the server's GITHUB_TOKEN,
 	 * allowing the frontend to access private repositories.
 	 */
-	router.get("/:id/github/content", async (req, res) => {
+	router.get("/:id/github/content", permissionMiddleware.requirePermission("sites.view"), async (req, res) => {
 		const id = Number.parseInt(req.params.id, 10);
 		if (Number.isNaN(id)) {
 			res.status(400).json({ error: "Invalid site ID" });
@@ -3525,6 +3714,11 @@ Updated via Jolli repository editor`;
 			return;
 		}
 
+		if (filePath.includes("..") || filePath.startsWith("/")) {
+			res.status(400).json({ error: "Invalid file path" });
+			return;
+		}
+
 		try {
 			const siteDao = siteDaoProvider.getDao(getTenantContext());
 			const docsite = await siteDao.getSite(id);
@@ -3533,7 +3727,7 @@ Updated via Jolli repository editor`;
 				return;
 			}
 
-			const metadata = docsite.metadata as SiteMetadata | undefined;
+			const metadata = getSiteMetadata(docsite);
 			if (!metadata?.githubRepo) {
 				res.status(400).json({ error: "Site does not have a GitHub repository" });
 				return;
@@ -3564,7 +3758,7 @@ Updated via Jolli repository editor`;
 	 * Helper to get Vercel project name from site metadata.
 	 */
 	function getVercelProjectName(site: Site): string | null {
-		const metadata = site.metadata as SiteMetadata | undefined;
+		const metadata = getSiteMetadata(site);
 		if (!metadata?.githubRepo) {
 			return null;
 		}
@@ -3576,7 +3770,7 @@ Updated via Jolli repository editor`;
 	 * POST /sites/:id/domains
 	 * Add a custom domain to a site.
 	 */
-	router.post("/:id/domains", async (req, res) => {
+	router.post("/:id/domains", permissionMiddleware.requirePermission("sites.edit"), async (req, res) => {
 		try {
 			const siteDao = siteDaoProvider.getDao(getTenantContext());
 			const id = Number.parseInt(req.params.id, 10);
@@ -3612,7 +3806,7 @@ Updated via Jolli repository editor`;
 				return;
 			}
 
-			const metadata = (site.metadata || {}) as SiteMetadata;
+			const metadata = getMetadataForUpdate(site);
 
 			// Check limit (1 custom domain per site)
 			if (metadata.customDomains && metadata.customDomains.length >= 1) {
@@ -3703,7 +3897,7 @@ Updated via Jolli repository editor`;
 	 * DELETE /sites/:id/domains/:domain
 	 * Remove a custom domain from a site.
 	 */
-	router.delete("/:id/domains/:domain", async (req, res) => {
+	router.delete("/:id/domains/:domain", permissionMiddleware.requirePermission("sites.edit"), async (req, res) => {
 		try {
 			const siteDao = siteDaoProvider.getDao(getTenantContext());
 			const id = Number.parseInt(req.params.id, 10);
@@ -3721,7 +3915,7 @@ Updated via Jolli repository editor`;
 				return;
 			}
 
-			const metadata = (site.metadata || {}) as SiteMetadata;
+			const metadata = getMetadataForUpdate(site);
 
 			// Check if domain exists on site
 			if (!metadata.customDomains?.some(d => d.domain === domain.toLowerCase())) {
@@ -3782,49 +3976,160 @@ Updated via Jolli repository editor`;
 	 * GET /sites/:id/domains/:domain/status
 	 * Check verification status of a custom domain.
 	 */
-	router.get("/:id/domains/:domain/status", async (req, res) => {
-		try {
-			const siteDao = siteDaoProvider.getDao(getTenantContext());
-			const id = Number.parseInt(req.params.id, 10);
-			if (Number.isNaN(id)) {
-				res.status(400).json({ error: "Invalid site ID" });
-				return;
-			}
-
-			const { domain } = req.params;
-
-			const site = await siteDao.getSite(id);
-			if (!site) {
-				res.status(404).json({ error: "Site not found" });
-				return;
-			}
-
-			const metadata = (site.metadata || {}) as SiteMetadata;
-			const domainInfo = metadata.customDomains?.find(d => d.domain === domain.toLowerCase());
-
-			if (!domainInfo) {
-				res.status(404).json({ error: "Domain not found on this site" });
-				return;
-			}
-
-			// Get fresh status from Vercel
-			const config = getConfig();
-			const vercelToken = config.VERCEL_TOKEN;
-			if (!vercelToken) {
-				res.json({ domain: domainInfo });
-				return;
-			}
-
-			const projectName = getVercelProjectName(site);
-			if (!projectName) {
-				res.json({ domain: domainInfo });
-				return;
-			}
-
-			const vercelDeployer = new VercelDeployer(vercelToken);
-
+	router.get(
+		"/:id/domains/:domain/status",
+		permissionMiddleware.requirePermission("sites.view"),
+		async (req, res) => {
 			try {
-				const status = await vercelDeployer.getDomainStatus(projectName, domain);
+				const siteDao = siteDaoProvider.getDao(getTenantContext());
+				const id = Number.parseInt(req.params.id, 10);
+				if (Number.isNaN(id)) {
+					res.status(400).json({ error: "Invalid site ID" });
+					return;
+				}
+
+				const { domain } = req.params;
+
+				const site = await siteDao.getSite(id);
+				if (!site) {
+					res.status(404).json({ error: "Site not found" });
+					return;
+				}
+
+				const metadata = getMetadataForUpdate(site);
+				const domainInfo = metadata.customDomains?.find(d => d.domain === domain.toLowerCase());
+
+				if (!domainInfo) {
+					res.status(404).json({ error: "Domain not found on this site" });
+					return;
+				}
+
+				// Get fresh status from Vercel
+				const config = getConfig();
+				const vercelToken = config.VERCEL_TOKEN;
+				if (!vercelToken) {
+					res.json({ domain: domainInfo });
+					return;
+				}
+
+				const projectName = getVercelProjectName(site);
+				if (!projectName) {
+					res.json({ domain: domainInfo });
+					return;
+				}
+
+				const vercelDeployer = new VercelDeployer(vercelToken);
+
+				try {
+					const status = await vercelDeployer.getDomainStatus(projectName, domain);
+
+					// Check if DNS is actually configured to point to Vercel
+					const dnsCheck = await checkDnsConfiguration(domain.toLowerCase());
+
+					// Status is "verified" only if DNS is configured AND Vercel is happy
+					const isFullyVerified = dnsCheck.configured && status.verified;
+
+					const now = new Date().toISOString();
+
+					if (isFullyVerified && domainInfo.status !== "verified") {
+						const updatedDomain: CustomDomainInfo = {
+							domain: domainInfo.domain,
+							status: "verified",
+							addedAt: domainInfo.addedAt,
+							verifiedAt: now,
+							lastCheckedAt: now,
+						};
+
+						const updatedMetadata: SiteMetadata = {
+							...metadata,
+							customDomains: [updatedDomain],
+						};
+
+						await siteDao.updateSite({ ...site, metadata: updatedMetadata });
+						res.json({ domain: updatedDomain });
+						return;
+					}
+
+					// If not fully verified, ensure we return pending status with verification info
+					if (!isFullyVerified && domainInfo.status === "verified") {
+						// Domain was verified but DNS is no longer configured - update to pending
+						const updatedDomain: CustomDomainInfo = {
+							domain: domainInfo.domain,
+							status: "pending",
+							addedAt: domainInfo.addedAt,
+							lastCheckedAt: now,
+							...(status.verification && { verification: status.verification }),
+						};
+
+						const updatedMetadata: SiteMetadata = {
+							...metadata,
+							customDomains: [updatedDomain],
+						};
+
+						await siteDao.updateSite({ ...site, metadata: updatedMetadata });
+						res.json({ domain: updatedDomain });
+						return;
+					}
+
+					res.json({ domain: domainInfo, verification: status.verification });
+				} catch (vercelError) {
+					log.warn(vercelError, "Failed to get domain status from Vercel, returning cached status");
+					res.json({ domain: domainInfo });
+				}
+			} catch (error) {
+				log.error(error, "Failed to check domain status");
+				res.status(500).json({ error: "Failed to check status" });
+			}
+		},
+	);
+
+	/**
+	 * POST /sites/:id/domains/:domain/verify
+	 * Trigger verification check for a custom domain.
+	 */
+	router.post(
+		"/:id/domains/:domain/verify",
+		permissionMiddleware.requirePermission("sites.edit"),
+		async (req, res) => {
+			try {
+				const siteDao = siteDaoProvider.getDao(getTenantContext());
+				const id = Number.parseInt(req.params.id, 10);
+				if (Number.isNaN(id)) {
+					res.status(400).json({ error: "Invalid site ID" });
+					return;
+				}
+
+				const { domain } = req.params;
+
+				const site = await siteDao.getSite(id);
+				if (!site) {
+					res.status(404).json({ error: "Site not found" });
+					return;
+				}
+
+				const metadata = getMetadataForUpdate(site);
+				const domainInfo = metadata.customDomains?.find(d => d.domain === domain.toLowerCase());
+
+				if (!domainInfo) {
+					res.status(404).json({ error: "Domain not found on this site" });
+					return;
+				}
+
+				const config = getConfig();
+				const vercelToken = config.VERCEL_TOKEN;
+				if (!vercelToken) {
+					res.status(500).json({ error: "Vercel integration not configured" });
+					return;
+				}
+
+				const projectName = getVercelProjectName(site);
+				if (!projectName) {
+					res.status(400).json({ error: "Site has no Vercel project configured" });
+					return;
+				}
+
+				const vercelDeployer = new VercelDeployer(vercelToken);
+				const status = await vercelDeployer.verifyDomain(projectName, domain);
 
 				// Check if DNS is actually configured to point to Vercel
 				const dnsCheck = await checkDnsConfiguration(domain.toLowerCase());
@@ -3833,154 +4138,51 @@ Updated via Jolli repository editor`;
 				const isFullyVerified = dnsCheck.configured && status.verified;
 
 				const now = new Date().toISOString();
+				const updatedDomain: CustomDomainInfo = {
+					domain: domainInfo.domain,
+					status: isFullyVerified ? "verified" : "pending",
+					addedAt: domainInfo.addedAt,
+					lastCheckedAt: now,
+					...(isFullyVerified && { verifiedAt: now }),
+					...(!isFullyVerified && domainInfo.verifiedAt && { verifiedAt: domainInfo.verifiedAt }),
+					...(status.verification && { verification: status.verification }),
+				};
 
-				if (isFullyVerified && domainInfo.status !== "verified") {
-					const updatedDomain: CustomDomainInfo = {
-						domain: domainInfo.domain,
-						status: "verified",
-						addedAt: domainInfo.addedAt,
-						verifiedAt: now,
-						lastCheckedAt: now,
-					};
+				const updatedMetadata: SiteMetadata = {
+					...metadata,
+					customDomains: [updatedDomain],
+				};
 
-					const updatedMetadata: SiteMetadata = {
-						...metadata,
-						customDomains: [updatedDomain],
-					};
+				const updatedSite = await siteDao.updateSite({ ...site, metadata: updatedMetadata });
 
-					await siteDao.updateSite({ ...site, metadata: updatedMetadata });
-					res.json({ domain: updatedDomain });
-					return;
-				}
+				// Audit log
+				const userId = req.orgUser?.id ?? tokenUtil.decodePayload(req)?.userId;
+				auditLog({
+					action: "update",
+					resourceType: "site",
+					resourceId: String(id),
+					resourceName: site.displayName || site.name,
+					actorId: typeof userId === "number" ? userId : null,
+					changes: computeAuditChanges(
+						site as unknown as Record<string, unknown>,
+						updatedSite as unknown as Record<string, unknown>,
+						"site",
+					),
+					metadata: {
+						operation: "verify_custom_domain",
+						domain: domain.toLowerCase(),
+						verified: isFullyVerified,
+					},
+				});
 
-				// If not fully verified, ensure we return pending status with verification info
-				if (!isFullyVerified && domainInfo.status === "verified") {
-					// Domain was verified but DNS is no longer configured - update to pending
-					const updatedDomain: CustomDomainInfo = {
-						domain: domainInfo.domain,
-						status: "pending",
-						addedAt: domainInfo.addedAt,
-						lastCheckedAt: now,
-						...(status.verification && { verification: status.verification }),
-					};
-
-					const updatedMetadata: SiteMetadata = {
-						...metadata,
-						customDomains: [updatedDomain],
-					};
-
-					await siteDao.updateSite({ ...site, metadata: updatedMetadata });
-					res.json({ domain: updatedDomain });
-					return;
-				}
-
-				res.json({ domain: domainInfo, verification: status.verification });
-			} catch (vercelError) {
-				log.warn(vercelError, "Failed to get domain status from Vercel, returning cached status");
-				res.json({ domain: domainInfo });
+				log.info({ siteId: id, domain, verified: status.verified }, "Verified custom domain");
+				res.json({ domain: updatedDomain });
+			} catch (error) {
+				log.error(error, "Failed to verify domain");
+				res.status(500).json({ error: "Failed to verify domain" });
 			}
-		} catch (error) {
-			log.error(error, "Failed to check domain status");
-			res.status(500).json({ error: "Failed to check status" });
-		}
-	});
-
-	/**
-	 * POST /sites/:id/domains/:domain/verify
-	 * Trigger verification check for a custom domain.
-	 */
-	router.post("/:id/domains/:domain/verify", async (req, res) => {
-		try {
-			const siteDao = siteDaoProvider.getDao(getTenantContext());
-			const id = Number.parseInt(req.params.id, 10);
-			if (Number.isNaN(id)) {
-				res.status(400).json({ error: "Invalid site ID" });
-				return;
-			}
-
-			const { domain } = req.params;
-
-			const site = await siteDao.getSite(id);
-			if (!site) {
-				res.status(404).json({ error: "Site not found" });
-				return;
-			}
-
-			const metadata = (site.metadata || {}) as SiteMetadata;
-			const domainInfo = metadata.customDomains?.find(d => d.domain === domain.toLowerCase());
-
-			if (!domainInfo) {
-				res.status(404).json({ error: "Domain not found on this site" });
-				return;
-			}
-
-			const config = getConfig();
-			const vercelToken = config.VERCEL_TOKEN;
-			if (!vercelToken) {
-				res.status(500).json({ error: "Vercel integration not configured" });
-				return;
-			}
-
-			const projectName = getVercelProjectName(site);
-			if (!projectName) {
-				res.status(400).json({ error: "Site has no Vercel project configured" });
-				return;
-			}
-
-			const vercelDeployer = new VercelDeployer(vercelToken);
-			const status = await vercelDeployer.verifyDomain(projectName, domain);
-
-			// Check if DNS is actually configured to point to Vercel
-			const dnsCheck = await checkDnsConfiguration(domain.toLowerCase());
-
-			// Status is "verified" only if DNS is configured AND Vercel is happy
-			const isFullyVerified = dnsCheck.configured && status.verified;
-
-			const now = new Date().toISOString();
-			const updatedDomain: CustomDomainInfo = {
-				domain: domainInfo.domain,
-				status: isFullyVerified ? "verified" : "pending",
-				addedAt: domainInfo.addedAt,
-				lastCheckedAt: now,
-				...(isFullyVerified && { verifiedAt: now }),
-				...(!isFullyVerified && domainInfo.verifiedAt && { verifiedAt: domainInfo.verifiedAt }),
-				...(status.verification && { verification: status.verification }),
-			};
-
-			const updatedMetadata: SiteMetadata = {
-				...metadata,
-				customDomains: [updatedDomain],
-			};
-
-			const updatedSite = await siteDao.updateSite({ ...site, metadata: updatedMetadata });
-
-			// Audit log
-			const userId = req.orgUser?.id ?? tokenUtil.decodePayload(req)?.userId;
-			auditLog({
-				action: "update",
-				resourceType: "site",
-				resourceId: String(id),
-				resourceName: site.displayName || site.name,
-				actorId: typeof userId === "number" ? userId : null,
-				changes: computeAuditChanges(
-					site as unknown as Record<string, unknown>,
-					updatedSite as unknown as Record<string, unknown>,
-					"site",
-				),
-				metadata: {
-					operation: "verify_custom_domain",
-					domain: domain.toLowerCase(),
-					verified: isFullyVerified,
-				},
-			});
-
-			log.info({ siteId: id, domain, verified: status.verified }, "Verified custom domain");
-			res.json({ domain: updatedDomain });
-		} catch (error) {
-			log.error(error, "Failed to verify domain");
-			res.status(500).json({ error: "Failed to verify domain" });
-		}
-	});
+		},
+	);
 
 	/**
 	 * Process a single domain refresh and return updated domain info
@@ -4030,7 +4232,7 @@ Updated via Jolli repository editor`;
 	 * POST /sites/:id/domains/refresh
 	 * Refresh verification status of all custom domains on a site.
 	 */
-	router.post("/:id/domains/refresh", async (req, res) => {
+	router.post("/:id/domains/refresh", permissionMiddleware.requirePermission("sites.edit"), async (req, res) => {
 		try {
 			const siteDao = siteDaoProvider.getDao(getTenantContext());
 			const id = Number.parseInt(req.params.id, 10);
@@ -4045,7 +4247,7 @@ Updated via Jolli repository editor`;
 				return;
 			}
 
-			const metadata = (site.metadata || {}) as SiteMetadata;
+			const metadata = getMetadataForUpdate(site);
 			const customDomains = metadata.customDomains || [];
 
 			if (customDomains.length === 0) {
@@ -4116,7 +4318,7 @@ Updated via Jolli repository editor`;
 	 * Response:
 	 * - publicKey: The public key in PEM format (for doc site to verify JWTs)
 	 */
-	router.post("/:id/auth/keys", async (req, res) => {
+	router.post("/:id/auth/keys", permissionMiddleware.requirePermission("sites.edit"), async (req, res) => {
 		try {
 			const siteDao = siteDaoProvider.getDao(getTenantContext());
 			const id = Number.parseInt(req.params.id, 10);
@@ -4131,9 +4333,12 @@ Updated via Jolli repository editor`;
 				return;
 			}
 
-			const metadata = (site.metadata || {}) as SiteMetadata;
+			const metadata = getMetadataForUpdate(site);
 
-			// If keys already exist, return existing public key (idempotent)
+			// If keys already exist, return existing public key (idempotent).
+			// Note: This endpoint intentionally returns the public key — it is not
+			// sensitive and clients need it for JWT verification. stripSiteSecrets
+			// is not used here because this returns only { publicKey }, not a site object.
 			if (metadata.jwtAuth?.publicKey && metadata.jwtAuth?.privateKey) {
 				res.json({ publicKey: metadata.jwtAuth.publicKey });
 				return;
@@ -4200,7 +4405,7 @@ Updated via Jolli repository editor`;
 	 *
 	 * Response: Updated Site object
 	 */
-	router.put("/:id/auth/config", async (req, res) => {
+	router.put("/:id/auth/config", permissionMiddleware.requirePermission("sites.edit"), async (req, res) => {
 		try {
 			const siteDao = siteDaoProvider.getDao(getTenantContext());
 			const id = Number.parseInt(req.params.id, 10);
@@ -4230,7 +4435,7 @@ Updated via Jolli repository editor`;
 			}
 
 			/* v8 ignore next */
-			const metadata = (site.metadata || {}) as SiteMetadata;
+			const metadata = getMetadataForUpdate(site);
 			/* v8 ignore next */
 			let { publicKey, privateKey } = metadata.jwtAuth || {};
 
@@ -4314,12 +4519,253 @@ Updated via Jolli repository editor`;
 			}
 
 			log.info({ siteId: id, enabled, mode }, "Updated JWT auth config");
-			res.json(updatedSite);
+			res.json(stripSiteSecrets(updatedSite));
 		} catch (error) {
 			log.error(error, "Failed to update JWT auth config");
 			res.status(500).json({ error: "Failed to update JWT auth config" });
 		}
 	});
+
+	/**
+	 * PUT /sites/:id/branding
+	 * Update branding configuration for a site.
+	 *
+	 * Request body: SiteBranding object with branding properties
+	 *
+	 * Response: Updated Site object
+	 */
+	router.put("/:id/branding", permissionMiddleware.requirePermission("sites.edit"), async (req, res) => {
+		try {
+			const siteDao = siteDaoProvider.getDao(getTenantContext());
+			const id = Number.parseInt(req.params.id, 10);
+			if (Number.isNaN(id)) {
+				res.status(400).json({ error: "Invalid site ID" });
+				return;
+			}
+
+			const site = await siteDao.getSite(id);
+			if (!site) {
+				res.status(404).json({ error: "Site not found" });
+				return;
+			}
+
+			// Validate branding input
+			const validation = validateSiteBranding(req.body);
+			if (!validation.isValid) {
+				log.warn({ siteId: id, errors: validation.errors }, "Invalid branding data");
+				res.status(400).json({ error: "Invalid branding data", details: validation.errors });
+				return;
+			}
+
+			const branding = req.body as SiteBranding;
+
+			// Update site metadata with branding config
+			/* v8 ignore next */
+			const metadata = getMetadataForUpdate(site);
+			const updatedMetadata: SiteMetadata = {
+				...metadata,
+				branding,
+			};
+
+			const updatedSite = await siteDao.updateSite({ ...site, metadata: updatedMetadata });
+
+			// Audit log
+			/* v8 ignore next */
+			const userId = req.orgUser?.id ?? tokenUtil.decodePayload(req)?.userId;
+			auditLog({
+				action: "update",
+				resourceType: "site",
+				resourceId: String(id),
+				/* v8 ignore next */
+				resourceName: site.displayName || site.name,
+				/* v8 ignore next */
+				actorId: typeof userId === "number" ? userId : null,
+				changes: computeAuditChanges(
+					site as unknown as Record<string, unknown>,
+					updatedSite as unknown as Record<string, unknown>,
+					"site",
+				),
+				metadata: {
+					operation: "update_branding",
+				},
+			});
+
+			log.info({ siteId: id }, "Updated site branding");
+			res.json(stripSiteSecrets(updatedSite));
+		} catch (error) {
+			const siteId = Number.parseInt(req.params.id, 10);
+			log.error(
+				{ err: error, siteId: Number.isNaN(siteId) ? req.params.id : siteId },
+				"Failed to update site branding",
+			);
+			res.status(500).json({ error: "Failed to update site branding" });
+		}
+	});
+
+	/**
+	 * PUT /api/sites/:id/folder-structure
+	 * Updates whether the site uses space folder structure for navigation.
+	 * When enabled, site navigation mirrors the space folder structure instead of being manually editable.
+	 */
+	router.put("/:id/folder-structure", permissionMiddleware.requirePermission("sites.edit"), async (req, res) => {
+		try {
+			const siteDao = siteDaoProvider.getDao(getTenantContext());
+			const id = Number.parseInt(req.params.id, 10);
+			if (Number.isNaN(id)) {
+				res.status(400).json({ error: "Invalid site ID" });
+				return;
+			}
+
+			const site = await siteDao.getSite(id);
+			if (!site) {
+				res.status(404).json({ error: "Site not found" });
+				return;
+			}
+
+			const { useSpaceFolderStructure } = req.body as { useSpaceFolderStructure: boolean };
+			if (typeof useSpaceFolderStructure !== "boolean") {
+				res.status(400).json({ error: "useSpaceFolderStructure must be a boolean" });
+				return;
+			}
+
+			/* v8 ignore next */
+			const metadata = getMetadataForUpdate(site);
+			const updatedMetadata: SiteMetadata = {
+				...metadata,
+				useSpaceFolderStructure,
+			};
+
+			const updatedSite = await siteDao.updateSite({ ...site, metadata: updatedMetadata });
+			log.info({ siteId: id, useSpaceFolderStructure }, "Updated site folder structure setting");
+
+			// Audit log
+			/* v8 ignore next */
+			const userId = req.orgUser?.id ?? tokenUtil.decodePayload(req)?.userId;
+			auditLog({
+				action: "update",
+				resourceType: "site",
+				resourceId: String(id),
+				/* v8 ignore next */
+				resourceName: site.displayName || site.name,
+				/* v8 ignore next */
+				actorId: typeof userId === "number" ? userId : null,
+				changes: computeAuditChanges(
+					site as unknown as Record<string, unknown>,
+					updatedSite as unknown as Record<string, unknown>,
+					"site",
+				),
+				metadata: {
+					operation: "update_folder_structure",
+				},
+			});
+
+			res.json(stripSiteSecrets(updatedSite));
+		} catch (error) {
+			const siteId = Number.parseInt(req.params.id, 10);
+			log.error(
+				{ err: error, siteId: Number.isNaN(siteId) ? req.params.id : siteId },
+				"Failed to update folder structure setting",
+			);
+			res.status(500).json({ error: "Failed to update folder structure setting" });
+		}
+	});
+
+	/**
+	 * POST /api/sites/:id/repository/sync
+	 * Syncs the entire file tree to GitHub in a single atomic commit.
+	 * Replaces the old batch operations approach with a simpler tree-based sync.
+	 */
+	/* c8 ignore start */
+	router.post("/:id/repository/sync", permissionMiddleware.requirePermission("sites.edit"), async (req, res) => {
+		try {
+			const siteDao = siteDaoProvider.getDao(getTenantContext());
+			const id = Number.parseInt(req.params.id, 10);
+			if (Number.isNaN(id)) {
+				res.status(400).json({ error: "Invalid site ID" });
+				return;
+			}
+
+			const { tree, commitMessage } = req.body as {
+				tree: Array<FileTreeNode>;
+				commitMessage?: string;
+			};
+
+			if (!tree || !Array.isArray(tree)) {
+				res.status(400).json({ error: "tree array is required" });
+				return;
+			}
+
+			// Validate tree paths don't contain traversal sequences
+			if (hasTreePathTraversal(tree)) {
+				res.status(400).json({ error: "Invalid file path in tree" });
+				return;
+			}
+
+			const docsite = await siteDao.getSite(id);
+			if (!docsite) {
+				res.status(404).json({ error: "Site not found" });
+				return;
+			}
+
+			const metadata = getSiteMetadata(docsite);
+			if (!metadata?.githubRepo) {
+				res.status(400).json({ error: "Site does not have a GitHub repository" });
+				return;
+			}
+
+			const [owner, repo] = metadata.githubRepo.split("/");
+			const octokit = createOctokit();
+			const githubClient = createDocsiteGitHub(octokit);
+
+			// Count files in tree for logging
+			function countFiles(nodes: Array<FileTreeNode>): number {
+				let count = 0;
+				for (const node of nodes) {
+					if (node.type === "file") {
+						count++;
+					}
+					if (node.children) {
+						count += countFiles(node.children);
+					}
+				}
+				return count;
+			}
+			const fileCount = countFiles(tree);
+
+			// Build commit message
+			const message =
+				commitMessage ||
+				`Update repository via Jolli
+
+${fileCount} file(s) synced`;
+
+			// Sync tree to GitHub
+			const newCommitSha = await githubClient.syncTreeToGitHub(owner, repo, tree, message);
+
+			log.info({ siteId: id, fileCount, commitSha: newCommitSha }, "Synced repository tree");
+
+			// Audit log
+			const userId = req.orgUser?.id ?? tokenUtil.decodePayload(req)?.userId;
+			auditLog({
+				action: "update",
+				resourceType: "site",
+				resourceId: String(id),
+				resourceName: docsite.displayName || docsite.name,
+				actorId: typeof userId === "number" ? userId : null,
+				changes: [],
+				metadata: {
+					operation: "sync_repository_tree",
+					fileCount,
+				},
+			});
+
+			res.json({ success: true, commitSha: newCommitSha });
+		} catch (error) {
+			log.error(error, "Failed to sync repository tree");
+			res.status(500).json({ error: "Failed to sync repository tree" });
+		}
+	});
+	/* c8 ignore stop */
 
 	return router;
 }

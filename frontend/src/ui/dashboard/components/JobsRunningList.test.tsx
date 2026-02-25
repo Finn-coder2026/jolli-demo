@@ -1,6 +1,7 @@
 import { ClientProvider } from "../../../contexts/ClientContext";
 import { DevToolsProvider } from "../../../contexts/DevToolsContext";
 import { NavigationProvider } from "../../../contexts/NavigationContext";
+import { PermissionProvider } from "../../../contexts/PermissionContext";
 import { RouterProvider } from "../../../contexts/RouterContext";
 import { JobsRunningList } from "./JobsRunningList";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/preact";
@@ -26,6 +27,24 @@ const mockJobsApi = {
 
 const mockClient = {
 	jobs: vi.fn(() => mockJobsApi),
+	roles: vi.fn(() => ({
+		getCurrentUserPermissions: vi.fn().mockResolvedValue({
+			role: {
+				id: 1,
+				name: "Member",
+				slug: "member",
+				description: null,
+				isBuiltIn: true,
+				isDefault: true,
+				priority: 50,
+				clonedFrom: null,
+				createdAt: "2024-01-01T00:00:00.000Z",
+				updatedAt: "2024-01-01T00:00:00.000Z",
+				permissions: [],
+			},
+			permissions: ["users.view"],
+		}),
+	})),
 };
 
 // Registry to track EventSource instance for job events
@@ -61,7 +80,9 @@ function TestWrapper({ children }: { children: ReactElement }): ReactElement {
 		<ClientProvider>
 			<RouterProvider initialPath="/">
 				<DevToolsProvider>
-					<NavigationProvider pathname="/">{children}</NavigationProvider>
+					<PermissionProvider>
+						<NavigationProvider pathname="/">{children}</NavigationProvider>
+					</PermissionProvider>
 				</DevToolsProvider>
 			</RouterProvider>
 		</ClientProvider>

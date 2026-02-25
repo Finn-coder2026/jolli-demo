@@ -1,9 +1,10 @@
 import type { Database } from "../core/Database";
+import type { TokenUtil } from "../util/TokenUtil";
 import { getTenantContext } from "./TenantContext";
 import { createTenantMiddleware, type TenantMiddlewareConfig } from "./TenantMiddleware";
 import type { TenantOrgConnectionManager } from "./TenantOrgConnectionManager";
 import type { TenantRegistryClient } from "./TenantRegistryClient";
-import type { Org, Tenant } from "jolli-common";
+import type { Org, Tenant, UserInfo } from "jolli-common";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 function createMockTenant(overrides: Partial<Tenant> = {}): Tenant {
@@ -46,7 +47,12 @@ function createMockDatabase(): Database {
 
 interface MockRequest {
 	headers: Record<string, string | Array<string> | undefined>;
+	cookies?: Record<string, string>;
 	hostname?: string;
+	protocol?: string;
+	originalUrl?: string;
+	path?: string;
+	url?: string;
 }
 
 interface MockResponse {
@@ -54,11 +60,33 @@ interface MockResponse {
 	json: ReturnType<typeof vi.fn>;
 }
 
-function createMockRequest(headers: Record<string, string> = {}, hostname?: string): MockRequest {
+function createMockRequest(
+	headers: Record<string, string> = {},
+	hostname?: string,
+	options?: {
+		protocol?: string;
+		originalUrl?: string;
+		path?: string;
+		url?: string;
+		cookies?: Record<string, string>;
+	},
+): MockRequest {
 	const request: MockRequest = { headers };
 	if (hostname !== undefined) {
 		request.hostname = hostname;
 	}
+	if (options?.protocol) {
+		request.protocol = options.protocol;
+	}
+	if (options?.originalUrl) {
+		request.originalUrl = options.originalUrl;
+	}
+	if (options?.cookies) {
+		request.cookies = options.cookies;
+	}
+	// Default path and url to "/" if not provided
+	request.path = options?.path ?? "/";
+	request.url = options?.url ?? "/";
 	return request;
 }
 
@@ -66,6 +94,7 @@ function createMockResponse(): MockResponse {
 	const res = {
 		status: vi.fn().mockReturnThis(),
 		json: vi.fn().mockReturnThis(),
+		clearCookie: vi.fn().mockReturnThis(),
 	};
 	return res;
 }
@@ -85,6 +114,7 @@ describe("TenantMiddleware", () => {
 			getTenantByDomain: vi.fn(),
 			getTenantDatabaseConfig: vi.fn(),
 			listTenants: vi.fn(),
+			listTenantsWithDefaultOrg: vi.fn(),
 			listAllActiveTenants: vi.fn(),
 			getOrg: vi.fn(),
 			getOrgBySlug: vi.fn(),
@@ -93,6 +123,7 @@ describe("TenantMiddleware", () => {
 			listAllActiveOrgs: vi.fn(),
 			getTenantOrgByInstallationId: vi.fn(),
 			createInstallationMapping: vi.fn(),
+			ensureInstallationMapping: vi.fn(),
 			deleteInstallationMapping: vi.fn(),
 			close: vi.fn(),
 		};
@@ -103,19 +134,45 @@ describe("TenantMiddleware", () => {
 			closeAll: vi.fn(),
 			getCacheSize: vi.fn(),
 			evictExpired: vi.fn(),
+			checkAllConnectionsHealth: vi.fn(),
 		};
 
 		config = {
 			registryClient,
 			connectionManager,
-			defaultDatabase: mockDatabase,
 		};
 	});
 
 	describe("header resolution", () => {
-		it("returns 404 when tenant cannot be determined from URL or headers", async () => {
+		it("returns 401 when tenant cannot be determined and no auth credentials present", async () => {
 			const middleware = createTenantMiddleware(config);
 			const req = createMockRequest();
+			const res = createMockResponse();
+			const next = vi.fn();
+
+			await middleware(req as never, res as never, next);
+
+			expect(res.status).toHaveBeenCalledWith(401);
+			expect(res.json).toHaveBeenCalledWith({ error: "Not authorized" });
+			expect(next).not.toHaveBeenCalled();
+		});
+
+		it("returns 404 when tenant cannot be determined but auth credentials present", async () => {
+			const middleware = createTenantMiddleware(config);
+			const req = createMockRequest({}, undefined, { cookies: { authToken: "some-token" } });
+			const res = createMockResponse();
+			const next = vi.fn();
+
+			await middleware(req as never, res as never, next);
+
+			expect(res.status).toHaveBeenCalledWith(404);
+			expect(res.json).toHaveBeenCalledWith({ error: "Unable to determine tenant from URL" });
+			expect(next).not.toHaveBeenCalled();
+		});
+
+		it("returns 404 when tenant cannot be determined but Authorization header present", async () => {
+			const middleware = createTenantMiddleware(config);
+			const req = createMockRequest({ authorization: "Bearer some-token" });
 			const res = createMockResponse();
 			const next = vi.fn();
 
@@ -147,6 +204,69 @@ describe("TenantMiddleware", () => {
 
 			expect(registryClient.getTenantBySlug).toHaveBeenCalledWith("test-tenant");
 			expect(next).toHaveBeenCalled();
+		});
+	});
+
+	describe("authGatewayOrigin redirects", () => {
+		it("includes redirectTo in 404 error when authGatewayOrigin is configured and tenant not found", async () => {
+			(registryClient.getTenantBySlug as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+
+			const gatewayConfig: TenantMiddlewareConfig = {
+				...config,
+				authGatewayOrigin: "https://admin.jolli.app",
+			};
+			const middleware = createTenantMiddleware(gatewayConfig);
+			const req = createMockRequest({ "x-tenant-slug": "unknown-tenant" });
+			const res = createMockResponse();
+			const next = vi.fn();
+
+			await middleware(req as never, res as never, next);
+
+			expect(res.status).toHaveBeenCalledWith(404);
+			expect(res.json).toHaveBeenCalledWith({
+				error: "Tenant not found: unknown-tenant",
+				redirectTo: "https://admin.jolli.app/login",
+			});
+			expect(next).not.toHaveBeenCalled();
+		});
+
+		it("returns 401 when authGatewayOrigin is configured but no resolution and no auth", async () => {
+			const gatewayConfig: TenantMiddlewareConfig = {
+				...config,
+				authGatewayOrigin: "https://admin.jolli.app",
+			};
+			const middleware = createTenantMiddleware(gatewayConfig);
+			// No headers, no subdomain, no auth → 401 takes priority
+			const req = createMockRequest();
+			const res = createMockResponse();
+			const next = vi.fn();
+
+			await middleware(req as never, res as never, next);
+
+			expect(res.status).toHaveBeenCalledWith(401);
+			expect(res.json).toHaveBeenCalledWith({ error: "Not authorized" });
+			expect(next).not.toHaveBeenCalled();
+		});
+
+		it("includes redirectTo in 404 when authGatewayOrigin configured and auth credentials present", async () => {
+			const gatewayConfig: TenantMiddlewareConfig = {
+				...config,
+				authGatewayOrigin: "https://admin.jolli.app",
+			};
+			const middleware = createTenantMiddleware(gatewayConfig);
+			// Has auth cookie but no tenant resolution
+			const req = createMockRequest({}, undefined, { cookies: { authToken: "some-token" } });
+			const res = createMockResponse();
+			const next = vi.fn();
+
+			await middleware(req as never, res as never, next);
+
+			expect(res.status).toHaveBeenCalledWith(404);
+			expect(res.json).toHaveBeenCalledWith({
+				error: "Unable to determine tenant from URL",
+				redirectTo: "https://admin.jolli.app/login",
+			});
+			expect(next).not.toHaveBeenCalled();
 		});
 	});
 
@@ -388,27 +508,40 @@ describe("TenantMiddleware", () => {
 			expect(next).toHaveBeenCalled();
 		});
 
-		it("uses 'jolli' as tenant slug for baseDomain itself", async () => {
-			const tenant = createMockTenant({ slug: "jolli" });
-			const org = createMockOrg();
-			(registryClient.getTenantBySlug as ReturnType<typeof vi.fn>).mockResolvedValue(tenant);
-			(registryClient.getDefaultOrg as ReturnType<typeof vi.fn>).mockResolvedValue(org);
-
+		it("returns 401 for bare baseDomain without path and no auth credentials", async () => {
 			const customConfig: TenantMiddlewareConfig = {
 				...config,
 				baseDomain: "jolli.app",
 			};
 			const middleware = createTenantMiddleware(customConfig);
+			// Access bare base domain without any tenant in path and no auth
 			const req = createMockRequest({}, "jolli.app");
 			const res = createMockResponse();
 			const next = vi.fn();
 
 			await middleware(req as never, res as never, next);
 
-			expect(registryClient.getTenantByDomain).not.toHaveBeenCalled();
-			// Should use "jolli" as tenant slug for bare baseDomain
-			expect(registryClient.getTenantBySlug).toHaveBeenCalledWith("jolli");
-			expect(next).toHaveBeenCalled();
+			// No auth credentials → 401 (user needs to login)
+			expect(res.status).toHaveBeenCalledWith(401);
+			expect(next).not.toHaveBeenCalled();
+		});
+
+		it("returns 404 for bare baseDomain without path when auth credentials present", async () => {
+			const customConfig: TenantMiddlewareConfig = {
+				...config,
+				baseDomain: "jolli.app",
+			};
+			const middleware = createTenantMiddleware(customConfig);
+			// Access bare base domain with auth but no tenant in path
+			const req = createMockRequest({}, "jolli.app", { cookies: { authToken: "some-token" } });
+			const res = createMockResponse();
+			const next = vi.fn();
+
+			await middleware(req as never, res as never, next);
+
+			// Has auth but no tenant specified → 404 (tenant not found)
+			expect(res.status).toHaveBeenCalledWith(404);
+			expect(next).not.toHaveBeenCalled();
 		});
 
 		it("returns 404 when custom domain is not verified", async () => {
@@ -556,87 +689,6 @@ describe("TenantMiddleware", () => {
 			// Should use header resolution
 			expect(registryClient.getTenantBySlug).toHaveBeenCalledWith("test-tenant");
 			expect(next).toHaveBeenCalled();
-		});
-	});
-
-	describe("jolli tenant fallback", () => {
-		it("uses default database when jolli tenant not in registry and accessing base domain", async () => {
-			(registryClient.getTenantBySlug as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
-
-			const customConfig: TenantMiddlewareConfig = {
-				...config,
-				baseDomain: "dougschroeder.dev",
-			};
-			const middleware = createTenantMiddleware(customConfig);
-			// Access the base domain directly (no subdomain)
-			const req = createMockRequest({}, "dougschroeder.dev");
-			const res = createMockResponse();
-
-			let capturedContext: ReturnType<typeof getTenantContext> | undefined;
-			const next = vi.fn(() => {
-				capturedContext = getTenantContext();
-			});
-
-			await middleware(req as never, res as never, next);
-
-			// Should NOT return 404
-			expect(res.status).not.toHaveBeenCalled();
-			// Should call next (proceed with default database)
-			expect(next).toHaveBeenCalled();
-			// Should have tenant context with default jolli tenant
-			expect(capturedContext).toBeDefined();
-			expect(capturedContext?.tenant.slug).toBe("jolli");
-			expect(capturedContext?.tenant.id).toBe("00000000-0000-0000-0000-000000000000");
-			expect(capturedContext?.org.slug).toBe("default");
-			expect(capturedContext?.org.id).toBe("00000000-0000-0000-0000-000000000001");
-			expect(capturedContext?.database).toBe(mockDatabase);
-		});
-
-		it("uses registry tenant when jolli tenant IS in registry", async () => {
-			const tenant = createMockTenant({ id: "registry-jolli", slug: "jolli" });
-			const org = createMockOrg();
-			(registryClient.getTenantBySlug as ReturnType<typeof vi.fn>).mockResolvedValue(tenant);
-			(registryClient.getDefaultOrg as ReturnType<typeof vi.fn>).mockResolvedValue(org);
-
-			const customConfig: TenantMiddlewareConfig = {
-				...config,
-				baseDomain: "dougschroeder.dev",
-			};
-			const middleware = createTenantMiddleware(customConfig);
-			const req = createMockRequest({}, "dougschroeder.dev");
-			const res = createMockResponse();
-
-			let capturedContext: ReturnType<typeof getTenantContext> | undefined;
-			const next = vi.fn(() => {
-				capturedContext = getTenantContext();
-			});
-
-			await middleware(req as never, res as never, next);
-
-			// Should use the registry tenant, not the default
-			expect(capturedContext?.tenant.id).toBe("registry-jolli");
-			// Should have called connectionManager for registry tenant
-			expect(connectionManager.getConnection).toHaveBeenCalledWith(tenant, org);
-		});
-
-		it("still returns 404 for non-jolli tenants not in registry", async () => {
-			(registryClient.getTenantBySlug as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
-
-			const customConfig: TenantMiddlewareConfig = {
-				...config,
-				baseDomain: "jolli.app",
-			};
-			const middleware = createTenantMiddleware(customConfig);
-			const req = createMockRequest({}, "unknown.jolli.app");
-			const res = createMockResponse();
-			const next = vi.fn();
-
-			await middleware(req as never, res as never, next);
-
-			expect(registryClient.getTenantBySlug).toHaveBeenCalledWith("unknown");
-			expect(res.status).toHaveBeenCalledWith(404);
-			expect(res.json).toHaveBeenCalledWith({ error: "Tenant not found: unknown" });
-			expect(next).not.toHaveBeenCalled();
 		});
 	});
 
@@ -960,6 +1012,527 @@ describe("TenantMiddleware", () => {
 			expect(res.status).toHaveBeenCalledWith(500);
 			expect(res.json).toHaveBeenCalledWith({ error: "Internal server error" });
 			expect(next).not.toHaveBeenCalled();
+		});
+	});
+
+	describe("JWT resolution", () => {
+		let tokenUtil: TokenUtil<UserInfo>;
+
+		beforeEach(() => {
+			tokenUtil = {
+				decodePayload: vi.fn(),
+				generateToken: vi.fn(),
+				decodePayloadFromToken: vi.fn(),
+			};
+		});
+
+		it("resolves tenant from JWT when tenantId and orgId are present", async () => {
+			const tenant = createMockTenant();
+			const org = createMockOrg();
+			(tokenUtil.decodePayload as ReturnType<typeof vi.fn>).mockReturnValue({
+				userId: 1,
+				email: "test@example.com",
+				name: "Test User",
+				tenantId: "tenant-123",
+				orgId: "org-123",
+			});
+			(registryClient.getTenant as ReturnType<typeof vi.fn>).mockResolvedValue(tenant);
+			(registryClient.getOrg as ReturnType<typeof vi.fn>).mockResolvedValue(org);
+
+			const jwtConfig: TenantMiddlewareConfig = {
+				...config,
+				tokenUtil,
+			};
+			const middleware = createTenantMiddleware(jwtConfig);
+			const req = createMockRequest();
+			const res = createMockResponse();
+
+			let capturedContext: ReturnType<typeof getTenantContext> | undefined;
+			const next = vi.fn(() => {
+				capturedContext = getTenantContext();
+			});
+
+			await middleware(req as never, res as never, next);
+
+			expect(tokenUtil.decodePayload).toHaveBeenCalled();
+			expect(registryClient.getTenant).toHaveBeenCalledWith("tenant-123");
+			expect(registryClient.getOrg).toHaveBeenCalledWith("org-123");
+			expect(next).toHaveBeenCalled();
+			expect(capturedContext?.tenant.id).toBe("tenant-123");
+			expect(capturedContext?.org.id).toBe("org-123");
+		});
+
+		it("returns 403 with redirectTo when JWT tenant differs from subdomain tenant", async () => {
+			const jwtTenant = createMockTenant({ id: "jwt-tenant-id", slug: "jwt-tenant" });
+			const jwtOrg = createMockOrg({ id: "jwt-org-id", tenantId: "jwt-tenant-id" });
+			(tokenUtil.decodePayload as ReturnType<typeof vi.fn>).mockReturnValue({
+				userId: 1,
+				email: "test@example.com",
+				name: "Test User",
+				tenantId: "jwt-tenant-id",
+				orgId: "jwt-org-id",
+			});
+			(registryClient.getTenant as ReturnType<typeof vi.fn>).mockResolvedValue(jwtTenant);
+			(registryClient.getOrg as ReturnType<typeof vi.fn>).mockResolvedValue(jwtOrg);
+
+			const jwtConfig: TenantMiddlewareConfig = {
+				...config,
+				tokenUtil,
+				baseDomain: "jolli.app",
+			};
+			const middleware = createTenantMiddleware(jwtConfig);
+			// Request has subdomain for different tenant
+			const req = createMockRequest({}, "other-tenant.jolli.app", {
+				protocol: "https",
+				originalUrl: "/api/test",
+			});
+			const res = createMockResponse();
+			const next = vi.fn();
+
+			await middleware(req as never, res as never, next);
+
+			// Should return 403 with redirectTo to correct tenant domain
+			// Free tier (no feature flags) → path-based URL
+			expect(res.status).toHaveBeenCalledWith(403);
+			expect(res.json).toHaveBeenCalledWith({
+				error: "tenant_mismatch",
+				// Backend returns only the tenant origin, frontend appends the path
+				redirectTo: "https://jolli.app/jwt-tenant",
+			});
+			expect(next).not.toHaveBeenCalled();
+		});
+
+		it("proceeds normally when JWT tenant matches subdomain tenant", async () => {
+			const tenant = createMockTenant({ id: "tenant-123", slug: "acme" });
+			const org = createMockOrg({ id: "org-123", tenantId: "tenant-123" });
+			(tokenUtil.decodePayload as ReturnType<typeof vi.fn>).mockReturnValue({
+				userId: 1,
+				email: "test@example.com",
+				name: "Test User",
+				tenantId: "tenant-123",
+				orgId: "org-123",
+			});
+			(registryClient.getTenant as ReturnType<typeof vi.fn>).mockResolvedValue(tenant);
+			(registryClient.getOrg as ReturnType<typeof vi.fn>).mockResolvedValue(org);
+
+			const jwtConfig: TenantMiddlewareConfig = {
+				...config,
+				tokenUtil,
+				baseDomain: "jolli.app",
+			};
+			const middleware = createTenantMiddleware(jwtConfig);
+			// Request has same tenant in subdomain as JWT
+			const req = createMockRequest({}, "acme.jolli.app");
+			const res = createMockResponse();
+
+			let capturedContext: ReturnType<typeof getTenantContext> | undefined;
+			const next = vi.fn(() => {
+				capturedContext = getTenantContext();
+			});
+
+			await middleware(req as never, res as never, next);
+
+			// Should proceed normally
+			expect(next).toHaveBeenCalled();
+			expect(capturedContext?.tenant.slug).toBe("acme");
+			expect(res.status).not.toHaveBeenCalled();
+		});
+
+		it("redirects to custom domain when JWT tenant has primaryDomain", async () => {
+			const jwtTenant = createMockTenant({
+				id: "jwt-tenant-id",
+				slug: "jwt-tenant",
+				primaryDomain: "docs.acme.com",
+				featureFlags: { customDomain: true },
+			});
+			const jwtOrg = createMockOrg({ id: "jwt-org-id", tenantId: "jwt-tenant-id" });
+			(tokenUtil.decodePayload as ReturnType<typeof vi.fn>).mockReturnValue({
+				userId: 1,
+				email: "test@example.com",
+				name: "Test User",
+				tenantId: "jwt-tenant-id",
+				orgId: "jwt-org-id",
+			});
+			(registryClient.getTenant as ReturnType<typeof vi.fn>).mockResolvedValue(jwtTenant);
+			(registryClient.getOrg as ReturnType<typeof vi.fn>).mockResolvedValue(jwtOrg);
+
+			const jwtConfig: TenantMiddlewareConfig = {
+				...config,
+				tokenUtil,
+				baseDomain: "jolli.app",
+			};
+			const middleware = createTenantMiddleware(jwtConfig);
+			// Request has subdomain for different tenant
+			const req = createMockRequest({}, "other-tenant.jolli.app", {
+				protocol: "https",
+				originalUrl: "/dashboard",
+			});
+			const res = createMockResponse();
+			const next = vi.fn();
+
+			await middleware(req as never, res as never, next);
+
+			// Should redirect to custom domain origin (frontend appends path)
+			expect(res.status).toHaveBeenCalledWith(403);
+			expect(res.json).toHaveBeenCalledWith({
+				error: "tenant_mismatch",
+				redirectTo: "https://docs.acme.com",
+			});
+			expect(next).not.toHaveBeenCalled();
+		});
+
+		it("redirects to subdomain URL when JWT tenant has subdomain feature enabled", async () => {
+			const jwtTenant = createMockTenant({
+				id: "jwt-tenant-id",
+				slug: "jwt-tenant",
+				featureFlags: { subdomain: true },
+			});
+			const jwtOrg = createMockOrg({ id: "jwt-org-id", tenantId: "jwt-tenant-id" });
+			(tokenUtil.decodePayload as ReturnType<typeof vi.fn>).mockReturnValue({
+				userId: 1,
+				email: "test@example.com",
+				name: "Test User",
+				tenantId: "jwt-tenant-id",
+				orgId: "jwt-org-id",
+			});
+			(registryClient.getTenant as ReturnType<typeof vi.fn>).mockResolvedValue(jwtTenant);
+			(registryClient.getOrg as ReturnType<typeof vi.fn>).mockResolvedValue(jwtOrg);
+
+			const jwtConfig: TenantMiddlewareConfig = {
+				...config,
+				tokenUtil,
+				baseDomain: "jolli.app",
+			};
+			const middleware = createTenantMiddleware(jwtConfig);
+			// Request has subdomain for different tenant
+			const req = createMockRequest({}, "other-tenant.jolli.app", {
+				protocol: "https",
+				originalUrl: "/api/test",
+			});
+			const res = createMockResponse();
+			const next = vi.fn();
+
+			await middleware(req as never, res as never, next);
+
+			// Should redirect to subdomain URL without API path (frontend appends page path)
+			expect(res.status).toHaveBeenCalledWith(403);
+			expect(res.json).toHaveBeenCalledWith({
+				error: "tenant_mismatch",
+				redirectTo: "https://jwt-tenant.jolli.app",
+			});
+			expect(next).not.toHaveBeenCalled();
+		});
+
+		it("returns 403 with redirectTo when accessing wrong custom domain", async () => {
+			const jwtTenant = createMockTenant({
+				id: "jwt-tenant-id",
+				slug: "jwt-tenant",
+				primaryDomain: "docs.acme.com",
+				featureFlags: { customDomain: true },
+			});
+			const jwtOrg = createMockOrg({ id: "jwt-org-id", tenantId: "jwt-tenant-id" });
+			(tokenUtil.decodePayload as ReturnType<typeof vi.fn>).mockReturnValue({
+				userId: 1,
+				email: "test@example.com",
+				name: "Test User",
+				tenantId: "jwt-tenant-id",
+				orgId: "jwt-org-id",
+			});
+			(registryClient.getTenant as ReturnType<typeof vi.fn>).mockResolvedValue(jwtTenant);
+			(registryClient.getOrg as ReturnType<typeof vi.fn>).mockResolvedValue(jwtOrg);
+
+			const jwtConfig: TenantMiddlewareConfig = {
+				...config,
+				tokenUtil,
+				baseDomain: "jolli.app",
+			};
+			const middleware = createTenantMiddleware(jwtConfig);
+			// Request is for a different custom domain
+			const req = createMockRequest({}, "docs.other.com", { protocol: "https", originalUrl: "/api/data" });
+			const res = createMockResponse();
+			const next = vi.fn();
+
+			await middleware(req as never, res as never, next);
+
+			// Should redirect to correct custom domain
+			expect(res.status).toHaveBeenCalledWith(403);
+			expect(res.json).toHaveBeenCalledWith({
+				error: "tenant_mismatch",
+				// Backend returns only the tenant origin, frontend appends the path
+				redirectTo: "https://docs.acme.com",
+			});
+			expect(next).not.toHaveBeenCalled();
+		});
+
+		it("proceeds normally when JWT tenant matches custom domain", async () => {
+			const jwtTenant = createMockTenant({
+				id: "jwt-tenant-id",
+				slug: "jwt-tenant",
+				primaryDomain: "docs.acme.com",
+			});
+			const jwtOrg = createMockOrg({ id: "jwt-org-id", tenantId: "jwt-tenant-id" });
+			(tokenUtil.decodePayload as ReturnType<typeof vi.fn>).mockReturnValue({
+				userId: 1,
+				email: "test@example.com",
+				name: "Test User",
+				tenantId: "jwt-tenant-id",
+				orgId: "jwt-org-id",
+			});
+			(registryClient.getTenant as ReturnType<typeof vi.fn>).mockResolvedValue(jwtTenant);
+			(registryClient.getOrg as ReturnType<typeof vi.fn>).mockResolvedValue(jwtOrg);
+
+			const jwtConfig: TenantMiddlewareConfig = {
+				...config,
+				tokenUtil,
+				baseDomain: "jolli.app",
+			};
+			const middleware = createTenantMiddleware(jwtConfig);
+			// Request is for the correct custom domain
+			const req = createMockRequest({}, "docs.acme.com");
+			const res = createMockResponse();
+
+			let capturedContext: ReturnType<typeof getTenantContext> | undefined;
+			const next = vi.fn(() => {
+				capturedContext = getTenantContext();
+			});
+
+			await middleware(req as never, res as never, next);
+
+			// Should proceed normally
+			expect(next).toHaveBeenCalled();
+			expect(capturedContext?.tenant.slug).toBe("jwt-tenant");
+			expect(res.status).not.toHaveBeenCalled();
+		});
+
+		it("skips mismatch check when baseDomain is not configured", async () => {
+			const jwtTenant = createMockTenant({ id: "jwt-tenant-id", slug: "jwt-tenant" });
+			const jwtOrg = createMockOrg({ id: "jwt-org-id", tenantId: "jwt-tenant-id" });
+			(tokenUtil.decodePayload as ReturnType<typeof vi.fn>).mockReturnValue({
+				userId: 1,
+				email: "test@example.com",
+				name: "Test User",
+				tenantId: "jwt-tenant-id",
+				orgId: "jwt-org-id",
+			});
+			(registryClient.getTenant as ReturnType<typeof vi.fn>).mockResolvedValue(jwtTenant);
+			(registryClient.getOrg as ReturnType<typeof vi.fn>).mockResolvedValue(jwtOrg);
+
+			const jwtConfig: TenantMiddlewareConfig = {
+				...config,
+				tokenUtil,
+				// No baseDomain configured
+			};
+			const middleware = createTenantMiddleware(jwtConfig);
+			const req = createMockRequest({}, "any-domain.com");
+			const res = createMockResponse();
+
+			let capturedContext: ReturnType<typeof getTenantContext> | undefined;
+			const next = vi.fn(() => {
+				capturedContext = getTenantContext();
+			});
+
+			await middleware(req as never, res as never, next);
+
+			// Should proceed normally (no subdomain resolution possible without baseDomain)
+			expect(next).toHaveBeenCalled();
+			expect(capturedContext?.tenant.slug).toBe("jwt-tenant");
+			expect(res.status).not.toHaveBeenCalled();
+		});
+
+		it("falls back to subdomain when JWT has no tenantId", async () => {
+			const tenant = createMockTenant({ slug: "acme" });
+			const org = createMockOrg();
+			(tokenUtil.decodePayload as ReturnType<typeof vi.fn>).mockReturnValue({
+				userId: 1,
+				email: "test@example.com",
+				name: "Test User",
+				// No tenantId/orgId
+			});
+			(registryClient.getTenantBySlug as ReturnType<typeof vi.fn>).mockResolvedValue(tenant);
+			(registryClient.getDefaultOrg as ReturnType<typeof vi.fn>).mockResolvedValue(org);
+
+			const jwtConfig: TenantMiddlewareConfig = {
+				...config,
+				tokenUtil,
+				baseDomain: "jolli.app",
+			};
+			const middleware = createTenantMiddleware(jwtConfig);
+			const req = createMockRequest({}, "acme.jolli.app");
+			const res = createMockResponse();
+			const next = vi.fn();
+
+			await middleware(req as never, res as never, next);
+
+			// Should fall back to subdomain resolution
+			expect(registryClient.getTenant).not.toHaveBeenCalled();
+			expect(registryClient.getTenantBySlug).toHaveBeenCalledWith("acme");
+			expect(next).toHaveBeenCalled();
+		});
+
+		it("returns 401 when JWT tenant not found (deleted)", async () => {
+			(tokenUtil.decodePayload as ReturnType<typeof vi.fn>).mockReturnValue({
+				userId: 1,
+				email: "test@example.com",
+				name: "Test User",
+				tenantId: "nonexistent-tenant",
+				orgId: "org-123",
+			});
+			(registryClient.getTenant as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+
+			const jwtConfig: TenantMiddlewareConfig = {
+				...config,
+				tokenUtil,
+				baseDomain: "jolli.app",
+			};
+			const middleware = createTenantMiddleware(jwtConfig);
+			const req = createMockRequest({}, "acme.jolli.app");
+			const res = createMockResponse();
+			const next = vi.fn();
+
+			await middleware(req as never, res as never, next);
+
+			// Should return 401 session_invalid instead of falling back
+			expect(res.status).toHaveBeenCalledWith(401);
+			expect(res.json).toHaveBeenCalledWith({ error: "session_invalid" });
+			expect(next).not.toHaveBeenCalled();
+		});
+
+		it("returns 401 when JWT org not found (deleted)", async () => {
+			const jwtTenant = createMockTenant({ id: "jwt-tenant-id" });
+			(tokenUtil.decodePayload as ReturnType<typeof vi.fn>).mockReturnValue({
+				userId: 1,
+				email: "test@example.com",
+				name: "Test User",
+				tenantId: "jwt-tenant-id",
+				orgId: "nonexistent-org",
+			});
+			(registryClient.getTenant as ReturnType<typeof vi.fn>).mockResolvedValue(jwtTenant);
+			(registryClient.getOrg as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+
+			const jwtConfig: TenantMiddlewareConfig = {
+				...config,
+				tokenUtil,
+				baseDomain: "jolli.app",
+			};
+			const middleware = createTenantMiddleware(jwtConfig);
+			const req = createMockRequest({}, "acme.jolli.app");
+			const res = createMockResponse();
+			const next = vi.fn();
+
+			await middleware(req as never, res as never, next);
+
+			// Should return 401 session_invalid instead of falling back
+			expect(res.status).toHaveBeenCalledWith(401);
+			expect(res.json).toHaveBeenCalledWith({ error: "session_invalid" });
+			expect(next).not.toHaveBeenCalled();
+		});
+
+		it("returns 401 when org does not belong to tenant", async () => {
+			const tenant = createMockTenant({ id: "tenant-123" });
+			const org = createMockOrg({ id: "org-456", tenantId: "different-tenant" });
+			(tokenUtil.decodePayload as ReturnType<typeof vi.fn>).mockReturnValue({
+				userId: 1,
+				email: "test@example.com",
+				name: "Test User",
+				tenantId: "tenant-123",
+				orgId: "org-456",
+			});
+			(registryClient.getTenant as ReturnType<typeof vi.fn>).mockResolvedValue(tenant);
+			(registryClient.getOrg as ReturnType<typeof vi.fn>).mockResolvedValue(org);
+
+			const jwtConfig: TenantMiddlewareConfig = {
+				...config,
+				tokenUtil,
+			};
+			const middleware = createTenantMiddleware(jwtConfig);
+			const req = createMockRequest({ "x-tenant-slug": "test-tenant" });
+			const res = createMockResponse();
+			const next = vi.fn();
+
+			await middleware(req as never, res as never, next);
+
+			// Should return 401 session_invalid instead of falling back
+			expect(res.status).toHaveBeenCalledWith(401);
+			expect(res.json).toHaveBeenCalledWith({ error: "session_invalid" });
+			expect(next).not.toHaveBeenCalled();
+		});
+
+		it("returns 403 when JWT tenant is not active", async () => {
+			const suspendedTenant = createMockTenant({ status: "suspended" });
+			const org = createMockOrg();
+			(tokenUtil.decodePayload as ReturnType<typeof vi.fn>).mockReturnValue({
+				userId: 1,
+				email: "test@example.com",
+				name: "Test User",
+				tenantId: "tenant-123",
+				orgId: "org-123",
+			});
+			(registryClient.getTenant as ReturnType<typeof vi.fn>).mockResolvedValue(suspendedTenant);
+			(registryClient.getOrg as ReturnType<typeof vi.fn>).mockResolvedValue(org);
+
+			const jwtConfig: TenantMiddlewareConfig = {
+				...config,
+				tokenUtil,
+			};
+			const middleware = createTenantMiddleware(jwtConfig);
+			const req = createMockRequest();
+			const res = createMockResponse();
+			const next = vi.fn();
+
+			await middleware(req as never, res as never, next);
+
+			expect(res.status).toHaveBeenCalledWith(403);
+			expect(res.json).toHaveBeenCalledWith({ error: "Tenant is not active: test-tenant" });
+			expect(next).not.toHaveBeenCalled();
+		});
+
+		it("returns 403 when JWT org is not active", async () => {
+			const tenant = createMockTenant();
+			const suspendedOrg = createMockOrg({ status: "suspended" });
+			(tokenUtil.decodePayload as ReturnType<typeof vi.fn>).mockReturnValue({
+				userId: 1,
+				email: "test@example.com",
+				name: "Test User",
+				tenantId: "tenant-123",
+				orgId: "org-123",
+			});
+			(registryClient.getTenant as ReturnType<typeof vi.fn>).mockResolvedValue(tenant);
+			(registryClient.getOrg as ReturnType<typeof vi.fn>).mockResolvedValue(suspendedOrg);
+
+			const jwtConfig: TenantMiddlewareConfig = {
+				...config,
+				tokenUtil,
+			};
+			const middleware = createTenantMiddleware(jwtConfig);
+			const req = createMockRequest();
+			const res = createMockResponse();
+			const next = vi.fn();
+
+			await middleware(req as never, res as never, next);
+
+			expect(res.status).toHaveBeenCalledWith(403);
+			expect(res.json).toHaveBeenCalledWith({ error: "Org is not active: default" });
+			expect(next).not.toHaveBeenCalled();
+		});
+
+		it("skips JWT resolution when tokenUtil is not configured", async () => {
+			const tenant = createMockTenant();
+			const org = createMockOrg();
+			(registryClient.getTenantBySlug as ReturnType<typeof vi.fn>).mockResolvedValue(tenant);
+			(registryClient.getDefaultOrg as ReturnType<typeof vi.fn>).mockResolvedValue(org);
+
+			// No tokenUtil in config
+			const middleware = createTenantMiddleware(config);
+			const req = createMockRequest({ "x-tenant-slug": "test-tenant" });
+			const res = createMockResponse();
+			const next = vi.fn();
+
+			await middleware(req as never, res as never, next);
+
+			// Should use header resolution directly
+			expect(registryClient.getTenant).not.toHaveBeenCalled();
+			expect(registryClient.getTenantBySlug).toHaveBeenCalledWith("test-tenant");
+			expect(next).toHaveBeenCalled();
 		});
 	});
 });

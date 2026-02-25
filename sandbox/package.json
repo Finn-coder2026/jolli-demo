@@ -1,0 +1,24 @@
+{
+	"name": "jolli-sandbox",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"build": "npm run prepare && tsx Build.ts",
+		"build:legacy": "npm run prepare && tsx Build.ts e2b-legacy",
+		"build:only": "tsx Build.ts",
+		"docker:build": "npm run prepare && docker build -f e2b.Dockerfile -t jolli-e2b --platform linux/amd64 .",
+		"docker:build:only": "docker build -f e2b.Dockerfile -t jolli-e2b --platform linux/amd64 .",
+		"prepare:dist": "cd ../tools/jolliagent && npm run build && cd ../../sandbox && rm -rf dist && cp -r ../tools/jolliagent/dist dist",
+		"prepare:tools": "echo 'Vendoring tools...' && for t in code2docusaurus docusaurus2vercel docs2docusaurus code2openapi; do cd ../tools/$t && npm run build && npm run package && cd ../../sandbox && mkdir -p dist/tools/$t && cp -r ../tools/$t/dist dist/tools/$t/ && cp ../tools/$t/package.json dist/tools/$t/; done",
+		"prepare:cli": "cd ../cli && bun run build:linux && cd ../sandbox && mkdir -p dist/bin && cp ../cli/dist/bin/jolli-linux-x64 dist/bin/jolli",
+		"prepare": "npm run prepare:dist && npm run prepare:tools && npm run prepare:cli",
+		"clean": "rm -rf dist"
+	},
+	"dependencies": {
+		"dotenv": "17.2.3"
+	},
+	"devDependencies": {
+		"tsx": "4.20.6",
+		"typescript": "^5.7.2"
+	}
+}

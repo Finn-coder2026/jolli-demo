@@ -1,3 +1,6 @@
+---
+jrn: MKKIR4UFAMRTFUCL
+---
 # Localization (i18n) Guide
 
 This document provides comprehensive guidance on implementing internationalization (i18n) in Jolli using [Intlayer](https://intlayer.org).

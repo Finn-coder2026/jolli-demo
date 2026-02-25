@@ -7,7 +7,7 @@ import { useEffect, useMemo, useState } from "react";
 
 function buildGitHubRepoBreadcrumbs(containerName: string): Array<BreadcrumbItem> {
 	return [
-		{ label: "Integrations", path: "/integrations" },
+		{ label: "Sources", path: "/integrations" },
 		{ label: "GitHub", path: "/integrations/github" },
 		{ label: containerName },
 	];
@@ -243,7 +243,7 @@ export function useGitHubRepoList({ containerName, containerType }: UseGitHubRep
 		try {
 			await client.github().deleteGitHubInstallation(containerId);
 
-			// Navigate back to integrations list with removal info for success banner
+			// Navigate back to sources list with removal info for success banner
 			const params = new URLSearchParams({
 				removed: containerName,
 				removed_type: containerType,

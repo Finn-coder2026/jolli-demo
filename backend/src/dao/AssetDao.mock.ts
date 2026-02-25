@@ -15,6 +15,8 @@ function mockAsset(overrides: Partial<Asset> = {}): Asset {
 		createdAt: new Date("2024-01-01"),
 		updatedAt: new Date("2024-01-01"),
 		deletedAt: null,
+		orphanedAt: null,
+		spaceId: null,
 		...overrides,
 	};
 }
@@ -23,6 +25,7 @@ export function mockAssetDao(): AssetDao {
 	return {
 		createAsset: vi.fn().mockResolvedValue(mockAsset()),
 		findByS3Key: vi.fn().mockResolvedValue(mockAsset()),
+		findByS3KeyWithSpaceAccess: vi.fn().mockResolvedValue(mockAsset()),
 		findById: vi.fn().mockResolvedValue(mockAsset()),
 		listAssets: vi.fn().mockResolvedValue([mockAsset()]),
 		listByUploader: vi.fn().mockResolvedValue([mockAsset()]),
@@ -30,5 +33,10 @@ export function mockAssetDao(): AssetDao {
 		softDelete: vi.fn().mockResolvedValue(true),
 		hardDelete: vi.fn().mockResolvedValue(true),
 		deleteAll: vi.fn().mockResolvedValue(undefined),
+		listActiveAssets: vi.fn().mockResolvedValue([mockAsset()]),
+		markAsOrphaned: vi.fn().mockResolvedValue(0),
+		restoreToActive: vi.fn().mockResolvedValue(0),
+		findOrphanedOlderThan: vi.fn().mockResolvedValue([]),
+		findRecentlyUploaded: vi.fn().mockResolvedValue([]),
 	};
 }

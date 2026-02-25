@@ -153,7 +153,6 @@ describe("IngestRouter", () => {
 				slug: "readme",
 				path: "",
 				parentId: undefined,
-				sortOrder: 0,
 				spaceId: undefined,
 			});
 		});

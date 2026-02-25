@@ -11,6 +11,7 @@
 
 import type { NavMeta } from "../templates/app-router/index.js";
 import { isApiPageEntry, isExternalLink, isSeparator, isVirtualGroup } from "./migration.js";
+import { runInNewContext } from "node:vm";
 import type {
 	ApiPageMetaEntry,
 	ConsistencyValidationResult,
@@ -98,6 +99,15 @@ export interface MergeAllResult {
 // ===== Type Guards =====
 
 /**
+ * Checks if an href points to an external resource.
+ * External hrefs start with http://, https://, or mailto:
+ * These are user-added links that should be preserved even if no corresponding article exists.
+ */
+function isExternalHref(href: string): boolean {
+	return href.startsWith("http://") || href.startsWith("https://") || href.startsWith("mailto:");
+}
+
+/**
  * Type guard to check if an entry is a display modifier (e.g., { display: 'hidden' })
  * These special entries are used by Nextra for navigation control and should always be preserved.
  */
@@ -161,8 +171,8 @@ export class MetaMerger {
 			if (!exportMatch) {
 				return { valid: false, error: "Missing 'export default { ... }' structure" };
 			}
-			// Try to evaluate the object literal
-			new Function(`return (${exportMatch[1]})`)();
+			// Evaluate the object literal in a sandboxed context (no access to require, process, etc.)
+			runInNewContext(`(${exportMatch[1]})`, Object.create(null), { timeout: 1000 });
 		} catch (error) {
 			return {
 				valid: false,
@@ -296,14 +306,18 @@ export class MetaMerger {
 	}
 
 	/**
-	 * Parse _meta.ts content to object - no fallback on error
+	 * Parse _meta.ts content to object - no fallback on error.
+	 * Uses vm.runInNewContext for sandboxed evaluation (no access to require, process, etc.)
 	 */
 	private parseMetaContent(content: string): Record<string, unknown> {
 		const exportMatch = content.match(/export\s+default\s+(\{[\s\S]*\})\s*;?\s*$/);
 		if (!exportMatch) {
 			throw new Error("Invalid _meta.ts structure");
 		}
-		return new Function(`return (${exportMatch[1]})`)();
+		return runInNewContext(`(${exportMatch[1]})`, Object.create(null), { timeout: 1000 }) as Record<
+			string,
+			unknown
+		>;
 	}
 
 	/**
@@ -424,7 +438,11 @@ export class MetaMerger {
 	}
 
 	/**
-	 * Process a virtual group entry, filtering out removed items
+	 * Process a virtual group entry, filtering out removed items.
+	 * Preserves only items matching current article slugs.
+	 *
+	 * Note: External link items inside virtual groups are NOT preserved.
+	 * Users should use top-level external links instead (which ARE preserved).
 	 */
 	private processVirtualGroup(
 		key: string,
@@ -437,6 +455,7 @@ export class MetaMerger {
 		const filteredItems: Record<string, string> = {};
 		for (const [itemKey, itemValue] of Object.entries(value.items)) {
 			if (newSlugSet.has(itemKey) && !deletedSet.has(itemKey)) {
+				// Item matches an article slug - preserve it
 				filteredItems[itemKey] = itemValue;
 				usedSlugs.add(itemKey);
 				report.preserved.push(`${key}/${itemKey}`);
@@ -539,10 +558,14 @@ export class MetaMerger {
 			result[key] = value;
 			report.preserved.push(key);
 		} else if (isApiPageEntry(value)) {
+			// API page entries: preserve if either:
+			// 1. They exist in the new generation (baseNavMeta), OR
+			// 2. They have an external href (user-added external links)
 			const baseEntry = options.baseNavMeta?.[key];
-			if (baseEntry !== undefined) {
+			const hasExternalHref = value.href ? isExternalHref(value.href) : false;
+			if (baseEntry !== undefined || hasExternalHref) {
 				result[key] = value;
-				report.preserved.push(key);
+				report.preserved.push(hasExternalHref ? `${key} (external link)` : key);
 			} else {
 				report.removed.push(key);
 			}

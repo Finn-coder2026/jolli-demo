@@ -1,9 +1,21 @@
-import { buildPath, DEFAULT_SLUG_MAX_LENGTH, generateSlug, isValidSlug } from "./SlugUtils";
+import {
+	buildPath,
+	DEFAULT_NANOID_LENGTH,
+	DEFAULT_SLUG_MAX_LENGTH,
+	generateSlug,
+	generateUniqueSlug,
+	isValidSlug,
+} from "./SlugUtils";
 import { describe, expect, it, vi } from "vitest";
 
 // Mock randomUUID for deterministic tests
 vi.mock("node:crypto", () => ({
 	randomUUID: vi.fn(() => "a1b2c3d4-e5f6-7890-abcd-ef1234567890"),
+}));
+
+// Mock nanoid for deterministic tests
+vi.mock("nanoid", () => ({
+	customAlphabet: vi.fn(() => vi.fn(() => "a2b4c6x")),
 }));
 
 describe("SlugUtils", () => {
@@ -123,6 +135,53 @@ describe("SlugUtils", () => {
 
 		it("handles slugs with special characters", () => {
 			expect(buildPath("/docs", "hello-world_test.md")).toBe("/docs/hello-world_test.md");
+		});
+	});
+
+	describe("generateUniqueSlug", () => {
+		it("generates unique slug with nanoid suffix for English text", () => {
+			expect(generateUniqueSlug("Getting Started")).toBe("getting-started-a2b4c6x");
+			expect(generateUniqueSlug("Hello World")).toBe("hello-world-a2b4c6x");
+		});
+
+		it("generates unique slug with UUID base for Chinese text", () => {
+			expect(generateUniqueSlug("用户认证")).toBe("a1b2c3d4-a2b4c6x");
+		});
+
+		it("handles special characters via slugify", () => {
+			expect(generateUniqueSlug("Hello!@#World")).toBe("helloworld-a2b4c6x");
+			expect(generateUniqueSlug("Test & Demo")).toBe("test-and-demo-a2b4c6x");
+		});
+
+		it("respects custom suffix length", () => {
+			expect(generateUniqueSlug("test", 3)).toBe("test-a2b4c6x");
+		});
+
+		it("respects custom max length for base slug", () => {
+			const longText = "a".repeat(100);
+			const result = generateUniqueSlug(longText, 6, 10);
+			// Base is truncated to 10, plus "-" and nanoid suffix
+			expect(result).toBe("aaaaaaaaaa-a2b4c6x");
+		});
+
+		it("has default nanoid length of 7", () => {
+			expect(DEFAULT_NANOID_LENGTH).toBe(7);
+		});
+
+		it("falls back to basic slug when slugify returns empty", () => {
+			// When text has only special characters that slugify removes
+			expect(generateUniqueSlug("!!!")).toBe("-a2b4c6x");
+		});
+
+		it("handles mixed content", () => {
+			expect(generateUniqueSlug("Test 123")).toBe("test-123-a2b4c6x");
+		});
+
+		it("uses only lowercase letters and digits in suffix", () => {
+			// The mock returns "a2b4c6x" which contains only lowercase letters and digits
+			const slug = generateUniqueSlug("test");
+			const suffix = slug.split("-").pop();
+			expect(suffix).toMatch(/^[a-z0-9]+$/);
 		});
 	});
 });

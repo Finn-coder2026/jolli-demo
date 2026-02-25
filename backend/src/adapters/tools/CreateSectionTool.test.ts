@@ -27,7 +27,7 @@ describe("CreateSectionTool", () => {
 					insertAfter: {
 						type: "string",
 						description:
-							"The exact title of the section to insert after (case-sensitive). Use null to insert at the very beginning (before first heading).",
+							"The exact title of the section to insert after (case-sensitive). To append at the end, use the title of the last section in the article. Use null to insert at the very beginning (before first heading).",
 					},
 				},
 				required: ["sectionTitle", "content", "insertAfter"],
@@ -56,6 +56,7 @@ describe("CreateSectionTool", () => {
 			countMySharedNewDrafts: vi.fn(),
 			countSharedWithMeDrafts: vi.fn(),
 			countArticlesWithAgentSuggestions: vi.fn(),
+			getAllContent: vi.fn(),
 		});
 
 		it("returns error if draft not found", async () => {
@@ -907,14 +908,14 @@ Intro content here.`;
 			});
 
 			const mockUserDao = {
-				findUser: vi.fn().mockResolvedValue({
+				findByEmail: vi.fn().mockResolvedValue({
 					id: 5,
 					email: "user@example.com",
 					externalId: "ext-123",
 					createdAt: new Date(),
 					updatedAt: new Date(),
 				}),
-				findUserById: vi.fn(),
+				findById: vi.fn(),
 			};
 
 			const mockDocDraftSectionChangesDao = {
@@ -984,14 +985,14 @@ Intro content here.`;
 			});
 
 			const mockUserDao = {
-				findUser: vi.fn().mockResolvedValue({
+				findByEmail: vi.fn().mockResolvedValue({
 					id: 5,
 					email: "user@example.com",
 					externalId: "ext-123",
 					createdAt: new Date(),
 					updatedAt: new Date(),
 				}),
-				findUserById: vi.fn(),
+				findById: vi.fn(),
 			};
 
 			const mockDocDraftSectionChangesDao = {
@@ -1061,8 +1062,8 @@ Intro content here.`;
 			});
 
 			const mockUserDao = {
-				findUser: vi.fn(),
-				findUserById: vi.fn().mockResolvedValue({
+				findByEmail: vi.fn(),
+				findById: vi.fn().mockResolvedValue({
 					id: 99,
 					email: "numericuser@example.com",
 					externalId: "ext-99",
@@ -1091,8 +1092,8 @@ Intro content here.`;
 			);
 
 			expect(result).toContain("Suggested creating section");
-			expect(mockUserDao.findUserById).toHaveBeenCalledWith(99);
-			expect(mockUserDao.findUser).not.toHaveBeenCalled();
+			expect(mockUserDao.findById).toHaveBeenCalledWith(99);
+			expect(mockUserDao.findByEmail).not.toHaveBeenCalled();
 			expect(dao.createDocDraft).toHaveBeenCalledWith({
 				docId: 42,
 				title: "Test Article",
@@ -1139,8 +1140,8 @@ Intro content here.`;
 
 			// User not found
 			const mockUserDao = {
-				findUser: vi.fn().mockResolvedValue(undefined),
-				findUserById: vi.fn(),
+				findByEmail: vi.fn().mockResolvedValue(undefined),
+				findById: vi.fn(),
 			};
 
 			const mockDocDraftSectionChangesDao = {

@@ -4,7 +4,7 @@ import { Inbox, Loader2 } from "lucide-react";
 import { type ReactElement, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { useIntlayer } from "react-intlayer";
 
-const infiniteScrollVariants = cva("relative overflow-auto", {
+const infiniteScrollVariants = cva("relative overflow-auto scrollbar-thin", {
 	variants: {
 		padding: {
 			none: "",

@@ -22,6 +22,7 @@ jolli/
 ├── backend/          # Express.js API server (Node.js)
 ├── frontend/         # React/Preact web application
 ├── common/           # Shared TypeScript types and utilities
+├── cli/              # Bun-based sync CLI (standalone, not in npm workspaces)
 ├── manager/          # Next.js management application
 ├── tools/            # CLI tools for documentation workflows
 │   ├── code2docusaurus/    # Generate docs from code
@@ -57,6 +58,12 @@ jolli/
 | [`frontend/`](./frontend/) | React/Preact web UI with shadcn/ui components, Tailwind CSS styling | [README](./frontend/README.md) |
 | [`common/`](./common/) | Shared TypeScript types, interfaces, and utilities used by backend and frontend | [README](./common/README.md) |
 | [`manager/`](./manager/) | Next.js management application | [README](./manager/README.md) |
+
+### CLI (Standalone)
+
+| Folder | Description | README |
+|--------|-------------|--------|
+| [`cli/`](./cli/) | Bun-based sync CLI for local markdown synchronization. **Not part of npm workspaces** - uses Bun runtime and `bun test`. Run with `npm run cli:test` from root. | [README](./cli/README.md) |
 
 ### Tools
 
@@ -143,6 +150,9 @@ cd frontend && npm test
 # Run full validation (clean, build, lint, test)
 cd backend && npm run all
 cd frontend && npm run all
+
+# Run CLI tests (uses Bun, not part of workspaces)
+npm run cli:test
 ```
 
 ### Code Quality

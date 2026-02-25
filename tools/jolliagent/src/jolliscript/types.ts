@@ -1,4 +1,4 @@
-import type { Code, RootContent } from "mdast";
+import type { Code, Heading, RootContent } from "mdast";
 
 export type Fence = {
 	lang: string | null;
@@ -107,6 +107,7 @@ export type Section = {
 	startLine: number; // 0-indexed line where section starts (heading line or first content line)
 	endLine: number; // 0-indexed line where section ends (last content line before next section)
 	headingDepth?: number | undefined; // 1-6 for headings (H1-H6), undefined for preamble
+	headingNode?: Heading; // original heading MDAST node for lossless markdown reconstruction
 	isFrontMatter?: boolean; // true if this section represents YAML/TOML front matter
 	frontMatter?: FrontMatter; // parsed front matter data (only present when isFrontMatter is true)
 };

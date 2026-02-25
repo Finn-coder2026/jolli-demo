@@ -54,6 +54,7 @@ vi.mock("../tenant/TenantRegistryClient", () => ({
 		listAllActiveOrgs: vi.fn(),
 		getTenantOrgByInstallationId: vi.fn(),
 		createInstallationMapping: vi.fn(),
+		ensureInstallationMapping: vi.fn(),
 		deleteInstallationMapping: vi.fn(),
 	}),
 }));
@@ -436,6 +437,7 @@ describe("MigrateSchemas", () => {
 				getTenantByDomain: vi.fn(),
 				getTenantDatabaseConfig: vi.fn().mockResolvedValue(mockDbConfig),
 				listTenants: vi.fn(),
+				listTenantsWithDefaultOrg: vi.fn(),
 				listAllActiveTenants: vi.fn(),
 				getOrg: vi.fn(),
 				getOrgBySlug: vi.fn(),
@@ -444,6 +446,7 @@ describe("MigrateSchemas", () => {
 				listAllActiveOrgs: vi.fn(),
 				getTenantOrgByInstallationId: vi.fn(),
 				createInstallationMapping: vi.fn(),
+				ensureInstallationMapping: vi.fn(),
 				deleteInstallationMapping: vi.fn(),
 				close: vi.fn(),
 			};
@@ -675,6 +678,7 @@ describe("MigrateSchemas", () => {
 				getTenantByDomain: vi.fn(),
 				getTenantDatabaseConfig: vi.fn().mockResolvedValue(mockDbConfig),
 				listTenants: vi.fn(),
+				listTenantsWithDefaultOrg: vi.fn(),
 				listAllActiveTenants: vi.fn().mockResolvedValue([mockTenant]),
 				getOrg: vi.fn(),
 				getOrgBySlug: vi.fn(),
@@ -683,6 +687,7 @@ describe("MigrateSchemas", () => {
 				listAllActiveOrgs: vi.fn().mockResolvedValue([mockOrg]),
 				getTenantOrgByInstallationId: vi.fn(),
 				createInstallationMapping: vi.fn(),
+				ensureInstallationMapping: vi.fn(),
 				deleteInstallationMapping: vi.fn(),
 				close: vi.fn(),
 			};
@@ -1949,6 +1954,7 @@ describe("MigrateSchemas", () => {
 				listAllActiveOrgs: vi.fn().mockResolvedValue([]),
 				getTenantOrgByInstallationId: vi.fn(),
 				createInstallationMapping: vi.fn(),
+				ensureInstallationMapping: vi.fn(),
 				deleteInstallationMapping: vi.fn(),
 			};
 		}
@@ -2405,6 +2411,7 @@ describe("MigrateSchemas", () => {
 				listAllActiveOrgs: vi.fn().mockResolvedValue([]),
 				getTenantOrgByInstallationId: vi.fn(),
 				createInstallationMapping: vi.fn(),
+				ensureInstallationMapping: vi.fn(),
 				deleteInstallationMapping: vi.fn(),
 			};
 		}

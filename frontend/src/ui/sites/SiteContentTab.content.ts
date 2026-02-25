@@ -3,27 +3,14 @@ import { type Dictionary, t } from "intlayer";
 const siteContentTabContent = {
 	key: "site-content-tab",
 	content: {
-		title: t({
-			en: "Content",
-			es: "Contenido",
-		}),
-		// Sub-tabs
-		tabArticles: t({
+		// Articles section
+		articlesTitle: t({
 			en: "Articles",
 			es: "Artículos",
 		}),
-		tabNavigation: t({
-			en: "Navigation",
-			es: "Navegación",
-		}),
-		// Articles section
 		articlesDescription: t({
 			en: "Select which articles to include in your documentation site",
 			es: "Selecciona qué artículos incluir en tu sitio de documentación",
-		}),
-		includeAllArticles: t({
-			en: "Include All Articles",
-			es: "Incluir Todos los Artículos",
 		}),
 		includeAllDescription: t({
 			en: "Automatically include all published articles",
@@ -57,35 +44,14 @@ const siteContentTabContent = {
 			en: "Loading articles...",
 			es: "Cargando artículos...",
 		}),
-		// Navigation section
-		navigationDescription: t({
-			en: "Edit the sidebar navigation structure for your documentation",
-			es: "Edita la estructura de navegación del sidebar de tu documentación",
-		}),
-		editNavigation: t({
-			en: "Edit Navigation",
-			es: "Editar Navegación",
-		}),
-		navigationFile: t({
-			en: "Navigation File",
-			es: "Archivo de Navegación",
-		}),
-		noNavigationFile: t({
-			en: "No navigation file found. Create one to customize your sidebar.",
-			es: "No se encontró archivo de navegación. Crea uno para personalizar tu sidebar.",
-		}),
-		createNavigationFile: t({
-			en: "Create Navigation File",
-			es: "Crear Archivo de Navegación",
-		}),
 		// Status messages
 		unsavedChanges: t({
 			en: "Unsaved changes",
 			es: "Cambios sin guardar",
 		}),
 		rebuildNote: t({
-			en: "Changes will be applied when you rebuild the site",
-			es: "Los cambios se aplicarán cuando reconstruyas el sitio",
+			en: "After saving, click Publish in the header to apply changes",
+			es: "Después de guardar, haz clic en Publicar en el encabezado para aplicar los cambios",
 		}),
 	},
 } satisfies Dictionary;

@@ -4,9 +4,14 @@ import { code2docusaurus_run_tool_def, code2docusaurusRunExecutor } from "./code
 import { docs2docusaurus_run_tool_def, docs2docusaurusRunExecutor } from "./docs2docusaurus_run";
 import { docusaurus2vercel_run_tool_def, docusaurus2vercelRunExecutor } from "./docusaurus2vercel_run";
 import { get_plan_tool_def, getPlanExecutor } from "./get_plan";
+import { git_changed_files_tool_def, gitChangedFilesExecutor } from "./git_changed_files";
 import { git_diff_tool_def, gitDiffExecutor } from "./git_diff";
 import { git_history_tool_def, gitHistoryExecutor } from "./git_history";
+import { git_log_tool_def, gitLogExecutor } from "./git_log";
+import { git_show_tool_def, gitShowExecutor } from "./git_show";
+import { git_status_tool_def, gitStatusExecutor } from "./git_status";
 import { github_checkout_tool_def, githubCheckoutExecutor } from "./github_checkout";
+import { grep_tool_def, grepExecutor } from "./grep";
 // Import all tool definitions and executors
 import { ls_tool_def, lsExecutor } from "./ls";
 import { markdown_sections_tool_def, markdownSectionsExecutor } from "./markdown_sections";
@@ -26,10 +31,15 @@ export const toolDefinitions: Array<ToolDef> = [
 	get_plan_tool_def,
 	ls_tool_def,
 	cat_tool_def,
+	grep_tool_def,
 	web_search_tool_def,
 	web_extract_tool_def,
 	write_file_tool_def,
 	write_file_stream_tool_def,
+	git_status_tool_def,
+	git_log_tool_def,
+	git_show_tool_def,
+	git_changed_files_tool_def,
 	git_history_tool_def,
 	git_diff_tool_def,
 ];
@@ -43,9 +53,14 @@ export const architectureToolDefinitions: Array<ToolDef> = [...toolDefinitions, 
 export const e2bToolDefinitions: Array<ToolDef> = [
 	ls_tool_def,
 	cat_tool_def,
+	grep_tool_def,
 	github_checkout_tool_def,
+	git_status_tool_def,
 	git_diff_tool_def,
 	git_history_tool_def,
+	git_log_tool_def,
+	git_show_tool_def,
+	git_changed_files_tool_def,
 	code2docusaurus_run_tool_def,
 	docs2docusaurus_run_tool_def,
 	docusaurus2vercel_run_tool_def,
@@ -60,6 +75,7 @@ export const e2bToolDefinitions: Array<ToolDef> = [
 export const localToolExecutors: Record<string, ToolExecutor> = {
 	ls: lsExecutor,
 	cat: catExecutor,
+	grep: grepExecutor,
 	web_search: webSearchExecutor,
 	web_extract: webExtractExecutor,
 	write_file: writeFileExecutor,
@@ -67,6 +83,10 @@ export const localToolExecutors: Record<string, ToolExecutor> = {
 	write_file_stream: writeFileStreamExecutor,
 	set_plan: setPlanExecutor,
 	get_plan: getPlanExecutor,
+	git_status: gitStatusExecutor,
+	git_log: gitLogExecutor,
+	git_show: gitShowExecutor,
+	git_changed_files: gitChangedFilesExecutor,
 	git_history: gitHistoryExecutor,
 	git_diff: gitDiffExecutor,
 	markdown_sections: markdownSectionsExecutor,
@@ -77,9 +97,14 @@ export const localToolExecutors: Record<string, ToolExecutor> = {
 export const e2bToolExecutors: Record<string, ToolExecutor> = {
 	ls: lsExecutor, // Will use E2B implementation when e2bsandbox is present
 	cat: catExecutor, // Will use E2B implementation when e2bsandbox is present
+	grep: grepExecutor,
 	github_checkout: githubCheckoutExecutor,
+	git_status: gitStatusExecutor,
 	git_diff: gitDiffExecutor, // Will use E2B implementation when e2bsandbox is present
 	git_history: gitHistoryExecutor, // Will use E2B implementation when e2bsandbox is present
+	git_log: gitLogExecutor,
+	git_show: gitShowExecutor,
+	git_changed_files: gitChangedFilesExecutor,
 	code2docusaurus_run: code2docusaurusRunExecutor,
 	docs2docusaurus_run: docs2docusaurusRunExecutor,
 	docusaurus2vercel_run: docusaurus2vercelRunExecutor,
@@ -96,6 +121,8 @@ export {
 	lsExecutor,
 	cat_tool_def,
 	catExecutor,
+	grep_tool_def,
+	grepExecutor,
 	web_search_tool_def,
 	webSearchExecutor,
 	web_extract_tool_def,
@@ -110,10 +137,18 @@ export {
 	setPlanExecutor,
 	get_plan_tool_def,
 	getPlanExecutor,
+	git_status_tool_def,
+	gitStatusExecutor,
 	git_diff_tool_def,
 	gitDiffExecutor,
 	git_history_tool_def,
 	gitHistoryExecutor,
+	git_log_tool_def,
+	gitLogExecutor,
+	git_show_tool_def,
+	gitShowExecutor,
+	git_changed_files_tool_def,
+	gitChangedFilesExecutor,
 	github_checkout_tool_def,
 	githubCheckoutExecutor,
 	markdown_sections_tool_def,

@@ -1,4 +1,5 @@
 import type { DocDao } from "../dao/DocDao";
+import { getTenantContext } from "../tenant/TenantContext";
 import type { JobDefinition } from "../types/JobTypes";
 import { getLog } from "../util/Logger";
 import type { JobScheduler } from "./JobScheduler";
@@ -126,9 +127,22 @@ function migrateJrnContent(content: string): { content: string; modified: boolea
 /**
  * Create demo/test jobs for dashboard widget testing.
  * Job definitions are always registered; access is controlled by DevToolsRouter.
- * @param docDao Optional DocDao for jobs that need to access documents
+ * @param defaultDocDao Optional default DocDao for jobs that need to access documents.
+ *                      In multi-tenant mode, handlers will use getTenantContext() to get
+ *                      the tenant-specific database.
  */
-export function createDemoJobs(docDao?: DocDao): DemoJobs {
+export function createDemoJobs(defaultDocDao?: DocDao): DemoJobs {
+	/**
+	 * Get the DocDao to use - prefers tenant context, falls back to default.
+	 * This enables multi-tenant support while maintaining backward compatibility.
+	 */
+	function getDocDao(): DocDao | undefined {
+		const tenantContext = getTenantContext();
+		if (tenantContext?.database?.docDao) {
+			return tenantContext.database.docDao;
+		}
+		return defaultDocDao;
+	}
 	/**
 	 * Get all demo job definitions.
 	 * These are always registered; access is controlled by DevToolsRouter's
@@ -344,6 +358,7 @@ export function createDemoJobs(docDao?: DocDao): DemoJobs {
 			schema: z.object({}),
 			statsSchema: migrateJrnsStatsSchema,
 			handler: async (_params, context) => {
+				const docDao = getDocDao();
 				if (!docDao) {
 					context.log("error", { message: "DocDao not available" }, "error");
 					return;
@@ -444,8 +459,9 @@ export function createDemoJobs(docDao?: DocDao): DemoJobs {
 			articlesLinkDefinition,
 			slowProcessingDefinition,
 			runEnd2EndFlowDefinition,
-			// Only add migrate JRNs job if docDao is available
-			...(docDao ? [migrateJrnsDefinition] : []),
+			// Only add migrate JRNs job if defaultDocDao is available (in multi-tenant mode,
+			// the actual docDao will be resolved from tenant context at runtime)
+			...(defaultDocDao ? [migrateJrnsDefinition] : []),
 		] as Array<JobDefinition>;
 
 		return definitions;

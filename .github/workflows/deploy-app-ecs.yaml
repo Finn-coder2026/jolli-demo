@@ -1,0 +1,176 @@
+name: Deploy App to ECS
+
+on:
+    workflow_dispatch:
+        inputs:
+            environment:
+                description: 'Environment to deploy to'
+                required: true
+                type: choice
+                options:
+                    - dev
+                    - preview
+                    - prod
+            branch:
+                description: 'Branch being deployed (for display)'
+                required: false
+                type: string
+            sha:
+                description: 'Commit SHA to deploy'
+                required: false
+                type: string
+
+env:
+    AWS_REGION: us-west-2
+    ECR_REPOSITORY: jolli-app
+
+jobs:
+    deploy:
+        permissions:
+            contents: read
+            id-token: write
+        runs-on: ubuntu-24.04
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+              with:
+                  lfs: true
+                  ref: ${{ inputs.sha || github.sha }}
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v5
+              with:
+                  node-version-file: .nvmrc
+
+            - name: Display deployment info
+              id: env
+              run: |
+                  echo "environment=${{ inputs.environment }}" >> $GITHUB_OUTPUT
+                  echo "sha=${{ inputs.sha || github.sha }}" >> $GITHUB_OUTPUT
+                  echo "::notice::Deploying branch: ${{ inputs.branch || 'manual' }}"
+                  echo "::notice::Environment: ${{ inputs.environment }}"
+                  echo "::notice::Commit: ${{ inputs.sha || github.sha }}"
+
+            - name: Configure AWS credentials
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  aws-region: ${{ env.AWS_REGION }}
+                  role-session-name: jolli-app-deploy
+                  role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+
+            - name: Login to Amazon ECR
+              id: login-ecr
+              uses: aws-actions/amazon-ecr-login@v2
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Check for infrastructure changes
+              id: cdk-diff
+              env:
+                  ENVIRONMENT: ${{ steps.env.outputs.environment }}
+              run: |
+                  cd deploy/app-cdk
+                  npm ci
+                  # Exit code 1 = changes detected, 0 = no changes
+                  if npx cdk diff JolliAppStack-$ENVIRONMENT --fail 2>&1; then
+                    echo "has_changes=false" >> $GITHUB_OUTPUT
+                    echo "::notice::No infrastructure changes detected, skipping CDK deploy"
+                  else
+                    echo "has_changes=true" >> $GITHUB_OUTPUT
+                    echo "::notice::Infrastructure changes detected, will deploy CDK stack"
+                  fi
+
+            - name: Deploy CDK infrastructure
+              if: steps.cdk-diff.outputs.has_changes == 'true'
+              env:
+                  ENVIRONMENT: ${{ steps.env.outputs.environment }}
+              run: |
+                  cd deploy/app-cdk
+                  npx cdk deploy JolliAppStack-$ENVIRONMENT --require-approval never
+
+            - name: Build frontend
+              run: npm run package --workspace=jolli-frontend
+
+            - name: Generate runtime dependencies
+              run: node scripts/generate-runtime-deps.js
+
+            - name: Build backend bundle
+              run: node build-app.js
+              working-directory: backend
+
+            - name: Build and push Docker image
+              env:
+                  ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+                  # Prefix SHA with "sha-" so ECR lifecycle rules can distinguish
+                  # commit-tagged images from environment tags (dev, preview, prod)
+                  IMAGE_TAG: sha-${{ steps.env.outputs.sha }}
+                  ENVIRONMENT: ${{ steps.env.outputs.environment }}
+                  GIT_COMMIT_SHA: ${{ steps.env.outputs.sha }}
+              run: |
+                  # Build the Docker image with commit SHA as build arg
+                  docker build \
+                    --platform linux/amd64 \
+                    -f Dockerfile.app \
+                    --build-arg GIT_COMMIT_SHA=$GIT_COMMIT_SHA \
+                    -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+                    -t $ECR_REGISTRY/$ECR_REPOSITORY:$ENVIRONMENT \
+                    -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
+                    .
+
+                  # Push all tags
+                  docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+                  docker push $ECR_REGISTRY/$ECR_REPOSITORY:$ENVIRONMENT
+                  docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+            - name: Deploy to ECS
+              env:
+                  ENVIRONMENT: ${{ steps.env.outputs.environment }}
+              run: |
+                  # Force new deployment of the ECS service
+                  aws ecs update-service \
+                    --cluster jolli-app-$ENVIRONMENT \
+                    --service jolli-app-$ENVIRONMENT \
+                    --force-new-deployment \
+                    --region $AWS_REGION
+
+            - name: Wait for deployment
+              id: wait-deployment
+              env:
+                  ENVIRONMENT: ${{ steps.env.outputs.environment }}
+              run: |
+                  echo "Waiting for ECS service to stabilize..."
+                  # Wait for up to 10 minutes for the service to stabilize
+                  if aws ecs wait services-stable \
+                    --cluster jolli-app-$ENVIRONMENT \
+                    --services jolli-app-$ENVIRONMENT \
+                    --region $AWS_REGION; then
+                    echo "Deployment complete!"
+                  else
+                    echo "::error::Deployment failed to stabilize within timeout"
+                    # Get deployment status for debugging
+                    aws ecs describe-services \
+                      --cluster jolli-app-$ENVIRONMENT \
+                      --services jolli-app-$ENVIRONMENT \
+                      --region $AWS_REGION \
+                      --query 'services[0].deployments' \
+                      --output table
+                    exit 1
+                  fi
+
+            - name: Rollback on failure
+              if: failure() && steps.wait-deployment.outcome == 'failure'
+              env:
+                  ENVIRONMENT: ${{ steps.env.outputs.environment }}
+              run: |
+                  echo "::warning::Deployment failed, ECS circuit breaker will handle rollback automatically"
+                  # The ECS service has circuit breaker enabled with rollback: true
+                  # so it will automatically rollback to the previous stable deployment
+                  # Log the current deployments for visibility
+                  echo "Current deployments:"
+                  aws ecs describe-services \
+                    --cluster jolli-app-$ENVIRONMENT \
+                    --services jolli-app-$ENVIRONMENT \
+                    --region $AWS_REGION \
+                    --query 'services[0].{desiredCount:desiredCount,runningCount:runningCount,deployments:deployments[*].{status:status,desiredCount:desiredCount,runningCount:runningCount,rolloutState:rolloutState}}' \
+                    --output yaml

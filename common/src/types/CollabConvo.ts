@@ -1,7 +1,7 @@
 /**
  * Types of artifacts that can have collaborative conversations
  */
-export type ArtifactType = "doc_draft";
+export type ArtifactType = "doc_draft" | "agent_hub" | "cli_workspace";
 
 export type CollabMessageRole = "user" | "assistant" | "system" | "assistant_tool_use" | "assistant_tool_uses" | "tool";
 
@@ -43,6 +43,10 @@ export interface CollabConvo {
 	 * The ID of the artifact
 	 */
 	readonly artifactId: number;
+	/**
+	 * Optional title for the conversation (used by agent_hub)
+	 */
+	readonly title?: string;
 	/**
 	 * The conversation messages
 	 */

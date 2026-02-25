@@ -31,6 +31,13 @@ export function defineDatabaseProviders(sequelize: Sequelize): ModelDef<Database
 		timestamps: true,
 		underscored: true,
 		tableName: "database_providers",
+		indexes: [
+			{
+				fields: ["slug"],
+				name: "database_providers_slug_key",
+				unique: true,
+			},
+		],
 	});
 }
 
@@ -47,7 +54,7 @@ const schema = {
 	slug: {
 		type: DataTypes.STRING(50),
 		allowNull: false,
-		unique: true,
+		// unique: true removed - now defined in indexes above
 		validate: {
 			is: /^[a-z0-9_]+$/,
 		},

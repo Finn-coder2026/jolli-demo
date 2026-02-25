@@ -1,3 +1,6 @@
+---
+jrn: MKKIR50S7741AFYX
+---
 # JRN (Jolli Resource Name) Specification
 
 ## Motivation

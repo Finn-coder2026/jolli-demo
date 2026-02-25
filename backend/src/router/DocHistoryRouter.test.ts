@@ -379,9 +379,10 @@ describe("DocHistoryRouter", () => {
 			// Verify content was restored from historical snapshot
 			expect(capturedDoc?.content).toBe("# Historical Content");
 			expect(capturedDoc?.contentType).toBe("text/markdown");
-			expect(capturedDoc?.source).toEqual({ type: "historical" });
-			expect(capturedDoc?.sourceMetadata).toEqual({ old: true });
-			// Verify contentMetadata is from historical doc with referVersion added
+			// source and sourceMetadata should keep current doc values (not restored from history)
+			expect(capturedDoc?.source).toBeUndefined();
+			expect(capturedDoc?.sourceMetadata).toBeUndefined();
+			// Verify contentMetadata keeps current fields, only title and referVersion updated
 			expect(capturedDoc?.contentMetadata).toEqual({ title: "Historical Doc", referVersion: 2 });
 		});
 

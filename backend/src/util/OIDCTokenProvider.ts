@@ -4,7 +4,7 @@ const log = getLog(import.meta);
 
 /**
  * Interface for OIDC token providers.
- * Implement this interface to support different cloud platforms (Vercel, Cloudflare, etc.)
+ * Implement this interface to support different cloud platforms.
  */
 export interface OIDCTokenProvider {
 	/**
@@ -32,59 +32,6 @@ export interface OIDCTokenProvider {
 }
 
 /**
- * Vercel OIDC token provider.
- * Extracts the token from the x-vercel-oidc-token request header.
- */
-export class VercelOIDCTokenProvider implements OIDCTokenProvider {
-	readonly name = "Vercel";
-	private currentToken: string | undefined;
-
-	isAvailable(): boolean {
-		return process.env.VERCEL === "1";
-	}
-
-	getToken(): string | undefined {
-		// First try the stored token from request header
-		if (this.currentToken) {
-			log.debug("Using Vercel OIDC token from request header");
-			return this.currentToken;
-		}
-
-		// Fall back to environment variable (legacy or alternative injection method)
-		const envToken = process.env.VERCEL_OIDC_TOKEN;
-		if (envToken) {
-			log.debug("Found VERCEL_OIDC_TOKEN in environment");
-			return envToken;
-		}
-
-		log.debug("Vercel OIDC token not available");
-		return;
-	}
-
-	extractFromRequest(headers: Record<string, string | Array<string> | undefined> | undefined): void {
-		if (!headers) {
-			return;
-		}
-		const token = headers["x-vercel-oidc-token"];
-		if (Array.isArray(token)) {
-			this.currentToken = token[0];
-		} else {
-			this.currentToken = token;
-		}
-		if (this.currentToken) {
-			log.debug("Stored Vercel OIDC token from request header");
-		}
-	}
-
-	/**
-	 * Clears the stored token. Useful for testing.
-	 */
-	clearToken(): void {
-		this.currentToken = undefined;
-	}
-}
-
-/**
  * No-op OIDC token provider for environments without OIDC support.
  */
 export class NoOpOIDCTokenProvider implements OIDCTokenProvider {
@@ -105,9 +52,9 @@ export class NoOpOIDCTokenProvider implements OIDCTokenProvider {
 
 /**
  * Global OIDC token provider instance.
- * Defaults to Vercel provider but can be replaced for other platforms.
+ * Defaults to NoOp provider. Set a custom provider if OIDC is needed.
  */
-let currentProvider: OIDCTokenProvider = new VercelOIDCTokenProvider();
+let currentProvider: OIDCTokenProvider = new NoOpOIDCTokenProvider();
 
 /**
  * Gets the current OIDC token provider.
@@ -118,7 +65,6 @@ export function getOIDCTokenProvider(): OIDCTokenProvider {
 
 /**
  * Sets a custom OIDC token provider.
- * Use this to support different platforms (Cloudflare, Railway, etc.)
  */
 export function setOIDCTokenProvider(provider: OIDCTokenProvider): void {
 	currentProvider = provider;
@@ -126,9 +72,9 @@ export function setOIDCTokenProvider(provider: OIDCTokenProvider): void {
 }
 
 /**
- * Resets to the default Vercel provider.
+ * Resets to the default NoOp provider.
  * Primarily for testing.
  */
 export function resetOIDCTokenProvider(): void {
-	currentProvider = new VercelOIDCTokenProvider();
+	currentProvider = new NoOpOIDCTokenProvider();
 }

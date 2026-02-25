@@ -9,7 +9,7 @@ export const CONFIG_PROVIDER_MODULE = Symbol("ConfigProvider");
  * Interface for configuration providers.
  *
  * Configuration providers load environment variables from different sources
- * (AWS Parameter Store, Vercel Environment, local .env files, etc.).
+ * (AWS Parameter Store, local .env files, etc.).
  *
  * Providers are used in a chain where lower priority providers load first,
  * and higher priority providers can override values.
@@ -26,15 +26,13 @@ export interface ConfigProvider {
 	 *
 	 * Recommended values:
 	 * - 1: AWS Parameter Store (highest priority for prod/preview)
-	 * - 2: Vercel Environment (fallback)
-	 * - 3: Local .env files (lowest priority, for development)
+	 * - 2: Local .env files (lowest priority, for development)
 	 */
 	readonly priority: number;
 
 	/**
 	 * Check if this provider is available and should be used.
-	 * For example, AWS provider checks if PSTORE_ENV is set,
-	 * Vercel provider checks if VERCEL=1.
+	 * For example, AWS provider checks if PSTORE_ENV is set.
 	 */
 	isAvailable(): boolean;
 

@@ -37,3 +37,8 @@ RUN set -eux; \
   ln -sf /opt/jolli/bin/tools/code2docusaurus/dist/index.js /usr/local/bin/code2docusaurus; \
   ln -sf /opt/jolli/bin/tools/docusaurus2vercel/dist/index.js /usr/local/bin/docusaurus2vercel; \
   ln -sf /opt/jolli/bin/tools/code2openapi/dist/index.js /usr/local/bin/code2openapi
+
+# Install Jolli CLI binary
+COPY dist/bin/jolli /opt/jolli/bin/jolli
+RUN chmod +x /opt/jolli/bin/jolli && \
+    ln -sf /opt/jolli/bin/jolli /usr/local/bin/jolli

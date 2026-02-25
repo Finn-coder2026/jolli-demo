@@ -311,6 +311,40 @@ describe("BootstrapUtil", () => {
 			expect(mockQuery).toHaveBeenCalledWith('ALTER USER "tenant_user" WITH NOSUPERUSER');
 		});
 
+		it("should include ownerUser in request body when provided", async () => {
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: vi.fn().mockResolvedValue({ success: true }),
+			});
+			vi.stubGlobal("fetch", mockFetch);
+
+			const { bootstrapDatabaseWithSuperuser } = await import("./BootstrapUtil");
+
+			const ownerUser = { id: 123, email: "owner@example.com", name: "Test Owner" };
+			await bootstrapDatabaseWithSuperuser({
+				...baseOptions,
+				providerType: "neon", // Use neon to skip superuser logic
+				ownerUser,
+			});
+
+			// Should include ownerUser in request body
+			expect(mockFetch).toHaveBeenCalledWith("http://localhost:3000/api/admin/bootstrap", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"X-Bootstrap-Tenant": "test-tenant",
+					"X-Bootstrap-Org": "test-org",
+					"X-Bootstrap-Timestamp": "1234567890",
+					"X-Bootstrap-Signature": "mock-signature",
+				},
+				body: JSON.stringify({
+					tenantId: "tenant-123",
+					orgId: "org-456",
+					ownerUser: { id: 123, email: "owner@example.com", name: "Test Owner" },
+				}),
+			});
+		});
+
 		it("should include Vercel bypass header when VERCEL_BYPASS_SECRET is set", async () => {
 			// Reset modules to pick up new mock
 			vi.resetModules();

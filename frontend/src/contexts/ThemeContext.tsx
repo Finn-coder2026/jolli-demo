@@ -1,43 +1,41 @@
 import { usePreference } from "../hooks/usePreference";
-import { PREFERENCES, usePreferencesService } from "./PreferencesContext";
+import { PREFERENCES } from "./PreferencesContext";
 import { createContext, type ReactElement, type ReactNode, useContext, useEffect, useMemo, useState } from "react";
+
+export type ThemeMode = "system" | "light" | "dark";
 
 interface ThemeContextType {
 	isDarkMode: boolean;
-	toggleTheme: () => void;
+	themeMode: ThemeMode;
+	setThemeMode: (mode: ThemeMode) => void;
 }
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
 /**
- * Provides theme context with dark mode toggle.
+ * Provides theme context with system, light, and dark mode support.
  *
  * Uses the preferences service for tenant-aware theme persistence.
- * Falls back to system preference when no saved theme exists.
+ * When theme is "system", follows the system preference.
  */
 export function ThemeProvider({ children }: { children: ReactNode }): ReactElement {
-	const [theme, setTheme] = usePreference(PREFERENCES.theme);
+	const [themeMode, setThemeMode] = usePreference(PREFERENCES.theme);
+	const [systemPrefersDark, setSystemPrefersDark] = useState(
+		window.matchMedia("(prefers-color-scheme: dark)").matches,
+	);
 
-	// Check system preference for initial value if no saved theme
-	const [hasCheckedSystem, setHasCheckedSystem] = useState(false);
-	const service = usePreferencesService();
-
+	// Listen for system theme changes
 	useEffect(() => {
-		// Only check system preference once on mount
-		if (!hasCheckedSystem) {
-			setHasCheckedSystem(true);
-			const savedTheme = service.get(PREFERENCES.theme);
-			// If using default value (not explicitly saved), check system preference
-			if (savedTheme === PREFERENCES.theme.defaultValue) {
-				const systemPrefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-				if (systemPrefersDark) {
-					setTheme("dark");
-				}
-			}
+		const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+		function handleChange(e: MediaQueryListEvent) {
+			setSystemPrefersDark(e.matches);
 		}
-	}, [hasCheckedSystem, service, setTheme]);
+		mediaQuery.addEventListener("change", handleChange);
+		return () => mediaQuery.removeEventListener("change", handleChange);
+	}, []);
 
-	const isDarkMode = theme === "dark";
+	// Determine if dark mode should be active
+	const isDarkMode = themeMode === "dark" || (themeMode === "system" && systemPrefersDark);
 
 	// Apply dark class to document
 	useEffect(() => {
@@ -48,11 +46,7 @@ export function ThemeProvider({ children }: { children: ReactNode }): ReactEleme
 		}
 	}, [isDarkMode]);
 
-	function toggleTheme(): void {
-		setTheme(isDarkMode ? "light" : "dark");
-	}
-
-	const value = useMemo(() => ({ isDarkMode, toggleTheme }), [isDarkMode]);
+	const value = useMemo(() => ({ isDarkMode, themeMode, setThemeMode }), [isDarkMode, themeMode]);
 
 	return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
 }

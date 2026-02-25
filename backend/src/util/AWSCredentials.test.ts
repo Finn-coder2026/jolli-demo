@@ -42,37 +42,36 @@ describe("AWSCredentials", () => {
 	});
 
 	describe("createAWSCredentialsProvider", () => {
-		it("returns undefined when not on Vercel", async () => {
+		it("returns undefined when useOIDC is false", async () => {
 			const { createAWSCredentialsProvider } = await import("./AWSCredentials");
 			const result = createAWSCredentialsProvider({
 				roleArn: "arn:aws:iam::123456789012:role/TestRole",
-				isVercel: false,
+				useOIDC: false,
 			});
 			expect(result).toBeUndefined();
 		});
 
-		it("returns undefined when on Vercel but no roleArn", async () => {
+		it("returns undefined when useOIDC is true but no roleArn", async () => {
 			const { createAWSCredentialsProvider } = await import("./AWSCredentials");
 			const result = createAWSCredentialsProvider({
-				isVercel: true,
+				useOIDC: true,
 			});
 			expect(result).toBeUndefined();
 		});
 
-		it("returns undefined when roleArn provided but not on Vercel", async () => {
+		it("returns undefined when roleArn provided but useOIDC is not set", async () => {
 			const { createAWSCredentialsProvider } = await import("./AWSCredentials");
 			const result = createAWSCredentialsProvider({
 				roleArn: "arn:aws:iam::123456789012:role/TestRole",
-				isVercel: false,
 			});
 			expect(result).toBeUndefined();
 		});
 
-		it("returns credentials provider when on Vercel with roleArn", async () => {
+		it("returns credentials provider when useOIDC is true with roleArn", async () => {
 			const { createAWSCredentialsProvider } = await import("./AWSCredentials");
 			const result = createAWSCredentialsProvider({
 				roleArn: "arn:aws:iam::123456789012:role/TestRole",
-				isVercel: true,
+				useOIDC: true,
 				region: "us-west-2",
 			});
 			expect(result).toBeDefined();

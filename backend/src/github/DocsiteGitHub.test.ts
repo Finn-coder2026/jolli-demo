@@ -1307,6 +1307,94 @@ describe("createDocsiteGitHub", () => {
 				sha: null,
 			});
 		});
+
+		test("removes empty folders that only contain .gitkeep files", async () => {
+			// Simulate a folder with .gitkeep and an article that's being deleted
+			mockGetTree.mockResolvedValue({
+				data: {
+					tree: [
+						{ type: "blob", sha: "blob1", path: "content/guides/old-article.md" },
+						{ type: "blob", sha: "blob2", path: "content/guides/.gitkeep" },
+						{ type: "blob", sha: "blob3", path: "content/_meta.ts" },
+					],
+				},
+			});
+
+			// New files don't include the guides folder
+			const newFiles = [{ path: "content/_meta.ts", content: "export default { ... }" }];
+
+			const github = createDocsiteGitHub(mockOctokit);
+			await github.uploadDocusaurusProjectPreservingNonMdFiles("test-owner", "test-repo", newFiles);
+
+			const createTreeCall = mockCreateTree.mock.calls[0][0];
+			const deletionEntries = createTreeCall.tree.filter((entry: { sha: string | null }) => entry.sha === null);
+
+			// Should delete both the old article AND the .gitkeep (empty folder)
+			expect(deletionEntries).toHaveLength(2);
+			expect(deletionEntries.map((e: { path: string }) => e.path).sort()).toEqual([
+				"content/guides/.gitkeep",
+				"content/guides/old-article.md",
+			]);
+		});
+
+		test("preserves folders with content files alongside .gitkeep", async () => {
+			// Folder has both a real article and .gitkeep
+			mockGetTree.mockResolvedValue({
+				data: {
+					tree: [
+						{ type: "blob", sha: "blob1", path: "content/guides/article.md" },
+						{ type: "blob", sha: "blob2", path: "content/guides/.gitkeep" },
+						{ type: "blob", sha: "blob3", path: "content/_meta.ts" },
+					],
+				},
+			});
+
+			// Update the article (folder is not empty)
+			const newFiles = [
+				{ path: "content/guides/article.md", content: "# Updated" },
+				{ path: "content/_meta.ts", content: "export default { ... }" },
+			];
+
+			const github = createDocsiteGitHub(mockOctokit);
+			await github.uploadDocusaurusProjectPreservingNonMdFiles("test-owner", "test-repo", newFiles);
+
+			const createTreeCall = mockCreateTree.mock.calls[0][0];
+			const deletionEntries = createTreeCall.tree.filter((entry: { sha: string | null }) => entry.sha === null);
+
+			// Should NOT delete .gitkeep since folder has content
+			expect(deletionEntries).toHaveLength(0);
+		});
+
+		test("removes duplicate empty folders from slugification (Guides vs guides)", async () => {
+			// Simulate the case where "Guides" folder was created but content was moved to "guides"
+			mockGetTree.mockResolvedValue({
+				data: {
+					tree: [
+						{ type: "blob", sha: "blob1", path: "content/Guides/.gitkeep" }, // Empty original folder
+						{ type: "blob", sha: "blob2", path: "content/guides/article.md" }, // Slugified folder with content
+						{ type: "blob", sha: "blob3", path: "content/guides/_meta.ts" },
+						{ type: "blob", sha: "blob4", path: "content/_meta.ts" },
+					],
+				},
+			});
+
+			// New files use slugified folder names
+			const newFiles = [
+				{ path: "content/guides/article.md", content: "# Updated" },
+				{ path: "content/guides/_meta.ts", content: "export default { article: 'Article' }" },
+				{ path: "content/_meta.ts", content: "export default { guides: 'Guides' }" },
+			];
+
+			const github = createDocsiteGitHub(mockOctokit);
+			await github.uploadDocusaurusProjectPreservingNonMdFiles("test-owner", "test-repo", newFiles);
+
+			const createTreeCall = mockCreateTree.mock.calls[0][0];
+			const deletionEntries = createTreeCall.tree.filter((entry: { sha: string | null }) => entry.sha === null);
+
+			// Should delete the empty "Guides" folder's .gitkeep
+			expect(deletionEntries).toHaveLength(1);
+			expect(deletionEntries[0].path).toBe("content/Guides/.gitkeep");
+		});
 	});
 
 	describe("createFolder", () => {

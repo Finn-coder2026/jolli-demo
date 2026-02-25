@@ -20,6 +20,13 @@ export function defineTenantDomains(sequelize: Sequelize): ModelDef<TenantDomain
 		updatedAt: false,
 		underscored: true,
 		tableName: "tenant_domains",
+		indexes: [
+			{
+				fields: ["domain"],
+				name: "tenant_domains_domain_key",
+				unique: true,
+			},
+		],
 	});
 }
 
@@ -42,7 +49,7 @@ const schema = {
 	domain: {
 		type: DataTypes.STRING(255),
 		allowNull: false,
-		unique: true,
+		// unique: true removed - now defined in indexes above
 	},
 	isPrimary: {
 		type: DataTypes.BOOLEAN,

@@ -1,5 +1,6 @@
 import { ClientProvider } from "../contexts/ClientContext";
 import { OrgProvider, useOrg } from "../contexts/OrgContext";
+import { TenantProvider } from "../contexts/TenantContext";
 import { OrgSwitcher } from "./OrgSwitcher";
 import { fireEvent, render, screen, waitFor } from "@testing-library/preact";
 import type { CurrentOrgResponse, OrgSummary } from "jolli-common";
@@ -56,6 +57,7 @@ const mockCurrentOrgResponse: CurrentOrgResponse = {
 	tenant: mockTenant,
 	org: mockOrg,
 	availableOrgs: mockAvailableOrgs,
+	favoritesHash: "EMPTY",
 };
 
 const mockOrgClient = {
@@ -63,8 +65,31 @@ const mockOrgClient = {
 	listOrgs: vi.fn().mockResolvedValue({ orgs: mockAvailableOrgs }),
 };
 
+const mockSelectTenant = vi.fn().mockResolvedValue({
+	success: true,
+	url: "http://localhost:8034/?_t=123",
+});
+
+const mockAuthClient = {
+	selectTenant: mockSelectTenant,
+	getCliToken: vi.fn(),
+	setAuthToken: vi.fn(),
+	getSessionConfig: vi.fn(),
+};
+
+const mockTenantClient = {
+	listTenants: vi.fn().mockResolvedValue({
+		useTenantSwitcher: false,
+		currentTenantId: "tenant-123",
+		baseDomain: "jolli.app",
+		tenants: [],
+	}),
+};
+
 const mockClient = {
 	orgs: vi.fn(() => mockOrgClient),
+	auth: vi.fn(() => mockAuthClient),
+	tenants: vi.fn(() => mockTenantClient),
 };
 
 vi.mock("jolli-common", async () => {
@@ -75,20 +100,37 @@ vi.mock("jolli-common", async () => {
 	};
 });
 
-// Mock window.location.reload
-const mockReload = vi.fn();
+// Mock window.location
 const originalLocation = window.location;
+let mockLocationHref = "http://localhost:8034/";
 
 beforeEach(() => {
 	vi.clearAllMocks();
 	mockOrgClient.getCurrent.mockResolvedValue(mockCurrentOrgResponse);
-	sessionStorage.clear();
-
-	// Mock window.location
-	Object.defineProperty(window, "location", {
-		value: { ...originalLocation, reload: mockReload },
-		writable: true,
+	mockTenantClient.listTenants.mockResolvedValue({
+		useTenantSwitcher: false,
+		currentTenantId: "tenant-123",
+		baseDomain: "jolli.app",
+		tenants: [],
 	});
+	mockSelectTenant.mockResolvedValue({
+		success: true,
+		url: "http://localhost:8034/?_t=123",
+	});
+	sessionStorage.clear();
+	mockLocationHref = "http://localhost:8034/";
+
+	// Mock window.location with href setter
+	delete (window as unknown as { location: unknown }).location;
+	(window as unknown as { location: Partial<Location> }).location = {
+		...originalLocation,
+		get href() {
+			return mockLocationHref;
+		},
+		set href(value: string) {
+			mockLocationHref = value;
+		},
+	};
 });
 
 afterEach(() => {
@@ -96,13 +138,16 @@ afterEach(() => {
 	Object.defineProperty(window, "location", {
 		value: originalLocation,
 		writable: true,
+		configurable: true,
 	});
 });
 
 function renderWithProviders(ui: ReactElement): ReturnType<typeof render> {
 	return render(
-		<ClientProvider>
-			<OrgProvider>{ui}</OrgProvider>
+		<ClientProvider client={mockClient as unknown as import("jolli-common").Client}>
+			<TenantProvider>
+				<OrgProvider>{ui}</OrgProvider>
+			</TenantProvider>
 		</ClientProvider>,
 	);
 }
@@ -141,28 +186,62 @@ describe("OrgSwitcher", () => {
 	});
 
 	it("should switch org when clicking on a different org", async () => {
-		renderWithProviders(<OrgSwitcher />);
+		// Mock selectTenant to return same URL as current (triggers navigation with timestamp)
+		mockSelectTenant.mockResolvedValue({ success: true, url: "http://localhost:8034" });
 
-		await waitFor(() => {
-			expect(screen.getByTestId("org-switcher-trigger")).toBeDefined();
+		const hrefSpy = vi.fn();
+		Object.defineProperty(window.location, "href", {
+			set: hrefSpy,
+			get: () => "http://localhost:8034",
+			configurable: true,
 		});
 
-		fireEvent.click(screen.getByTestId("org-switcher-trigger"));
+		renderWithProviders(<OrgSwitcher />);
 
+		// Wait for both org context and tenant context to load
+		await waitFor(() => {
+			expect(screen.getByTestId("org-switcher-trigger")).toBeDefined();
+			expect(screen.getByText("Engineering")).toBeDefined();
+		});
+
+		// Wait a bit more to ensure tenant context has fully loaded
+		await waitFor(() => {
+			expect(mockTenantClient.listTenants).toHaveBeenCalled();
+		});
+
+		// Click trigger to open dropdown
+		const trigger = screen.getByTestId("org-switcher-trigger");
+		fireEvent.click(trigger);
+
+		// Wait for dropdown to appear
 		await waitFor(() => {
 			expect(screen.getByText("Marketing")).toBeDefined();
 		});
 
-		fireEvent.click(screen.getByText("Marketing"));
+		// Click Marketing
+		const marketing = screen.getByText("Marketing");
+		fireEvent.click(marketing);
 
 		// Should store selected org in session storage
-		expect(sessionStorage.getItem("selectedOrgSlug")).toBe("marketing");
+		await waitFor(() => {
+			expect(sessionStorage.getItem("selectedOrgSlug")).toBe("marketing");
+		});
 
-		// Should trigger page reload
-		expect(mockReload).toHaveBeenCalled();
+		// Should call selectTenant with tenant and new org
+		await waitFor(() => {
+			expect(mockSelectTenant).toHaveBeenCalledWith("tenant-123", "org-2");
+		});
+
+		// Should navigate with timestamp since URL is same
+		await waitFor(() => {
+			expect(hrefSpy).toHaveBeenCalled();
+			const calledUrl = hrefSpy.mock.calls[0][0];
+			expect(calledUrl).toContain("http://localhost:8034");
+			expect(calledUrl).toContain("_t="); // Should have timestamp parameter
+		});
 	});
 
-	it("should not reload when clicking on the current org", async () => {
+	it("should not switch when clicking on the current org", async () => {
 		renderWithProviders(<OrgSwitcher />);
 
 		await waitFor(() => {
@@ -184,8 +263,12 @@ describe("OrgSwitcher", () => {
 		// Click the one that's not in the trigger
 		fireEvent.click(engineeringItems[engineeringItems.length > 1 ? 1 : 0]);
 
-		// Should not reload for current org
-		// The reload may or may not be called depending on implementation, but sessionStorage should not be set
+		// Wait a bit to ensure no async operations occur
+		await new Promise(resolve => setTimeout(resolve, 50));
+
+		// Should not call selectTenant for current org
+		expect(mockSelectTenant).not.toHaveBeenCalled();
+		// Should not set session storage
 		expect(sessionStorage.getItem("selectedOrgSlug")).toBeNull();
 	});
 
@@ -308,6 +391,163 @@ describe("OrgSwitcher", () => {
 		// After loading completes
 		await waitFor(() => {
 			expect(isLoadingValue).toBe(false);
+		});
+	});
+
+	it("should not switch org when no current tenant is available", async () => {
+		// Mock the tenant context to return no current tenant
+		mockTenantClient.listTenants.mockResolvedValue({
+			useTenantSwitcher: false,
+			currentTenantId: null, // No current tenant
+			baseDomain: "jolli.app",
+			tenants: [],
+		});
+
+		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {
+			// Intentionally suppress console.error for this test
+		});
+
+		renderWithProviders(<OrgSwitcher />);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("org-switcher-trigger")).toBeDefined();
+		});
+
+		// Wait for tenant context to fully load
+		await waitFor(() => {
+			expect(mockTenantClient.listTenants).toHaveBeenCalled();
+		});
+
+		fireEvent.click(screen.getByTestId("org-switcher-trigger"));
+
+		await waitFor(() => {
+			expect(screen.getByText("Marketing")).toBeDefined();
+		});
+
+		// Click on Marketing to try switching
+		fireEvent.click(screen.getByText("Marketing"));
+
+		// Wait a bit for the async operations
+		await new Promise(resolve => setTimeout(resolve, 50));
+
+		// Should log an error and NOT call selectTenant
+		expect(consoleErrorSpy).toHaveBeenCalledWith("Cannot switch org: no current tenant");
+		expect(mockSelectTenant).not.toHaveBeenCalled();
+
+		consoleErrorSpy.mockRestore();
+	});
+
+	it("should navigate to different URL when result URL differs from current", async () => {
+		// Mock selectTenant to return a different URL
+		mockSelectTenant.mockResolvedValue({
+			success: true,
+			url: "http://different-domain.com/dashboard",
+		});
+
+		const hrefSpy = vi.fn();
+		Object.defineProperty(window.location, "href", {
+			set: hrefSpy,
+			get: () => "http://localhost:8034/current-page",
+			configurable: true,
+		});
+
+		renderWithProviders(<OrgSwitcher />);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("org-switcher-trigger")).toBeDefined();
+		});
+
+		// Wait for tenant context to fully load
+		await waitFor(() => {
+			expect(mockTenantClient.listTenants).toHaveBeenCalled();
+		});
+
+		fireEvent.click(screen.getByTestId("org-switcher-trigger"));
+
+		await waitFor(() => {
+			expect(screen.getByText("Marketing")).toBeDefined();
+		});
+
+		fireEvent.click(screen.getByText("Marketing"));
+
+		// Should navigate directly to the different URL without timestamp
+		await waitFor(() => {
+			expect(hrefSpy).toHaveBeenCalledWith("http://different-domain.com/dashboard");
+		});
+	});
+
+	it("should handle selectTenant error gracefully", async () => {
+		mockSelectTenant.mockRejectedValue(new Error("Network error"));
+
+		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {
+			// Intentionally suppress console.error for this test
+		});
+
+		renderWithProviders(<OrgSwitcher />);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("org-switcher-trigger")).toBeDefined();
+		});
+
+		// Wait for tenant context to fully load
+		await waitFor(() => {
+			expect(mockTenantClient.listTenants).toHaveBeenCalled();
+		});
+
+		fireEvent.click(screen.getByTestId("org-switcher-trigger"));
+
+		await waitFor(() => {
+			expect(screen.getByText("Marketing")).toBeDefined();
+		});
+
+		fireEvent.click(screen.getByText("Marketing"));
+
+		// Should log the error
+		await waitFor(() => {
+			expect(consoleErrorSpy).toHaveBeenCalledWith("Failed to switch org:", expect.any(Error));
+		});
+
+		consoleErrorSpy.mockRestore();
+	});
+
+	it("should append timestamp with & when URL already has query params", async () => {
+		// Mock selectTenant to return same URL base but with query params
+		mockSelectTenant.mockResolvedValue({
+			success: true,
+			url: "http://localhost:8034?existing=param",
+		});
+
+		const hrefSpy = vi.fn();
+		Object.defineProperty(window.location, "href", {
+			set: hrefSpy,
+			get: () => "http://localhost:8034",
+			configurable: true,
+		});
+
+		renderWithProviders(<OrgSwitcher />);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("org-switcher-trigger")).toBeDefined();
+		});
+
+		// Wait for tenant context to fully load
+		await waitFor(() => {
+			expect(mockTenantClient.listTenants).toHaveBeenCalled();
+		});
+
+		fireEvent.click(screen.getByTestId("org-switcher-trigger"));
+
+		await waitFor(() => {
+			expect(screen.getByText("Marketing")).toBeDefined();
+		});
+
+		fireEvent.click(screen.getByText("Marketing"));
+
+		// Should navigate with & since URL already has query params
+		await waitFor(() => {
+			expect(hrefSpy).toHaveBeenCalled();
+			const calledUrl = hrefSpy.mock.calls[0][0];
+			expect(calledUrl).toContain("http://localhost:8034?existing=param&_t=");
 		});
 	});
 });

@@ -7,6 +7,13 @@ import pg from "pg";
 const { Client } = pg;
 const log = getLog(import.meta.url);
 
+/** Owner user information to create in tenant database */
+export interface OwnerUserInfo {
+	id: number;
+	email: string;
+	name: string;
+}
+
 interface BootstrapOptions {
 	tenantId: string;
 	orgId: string;
@@ -14,6 +21,8 @@ interface BootstrapOptions {
 	providerType: ProviderType;
 	/** Credentials for the tenant database (needed for Neon providers) */
 	credentials?: DatabaseCredentials;
+	/** Owner user to create in tenant database after bootstrap */
+	ownerUser?: OwnerUserInfo;
 }
 
 /**
@@ -27,13 +36,13 @@ interface BootstrapOptions {
  * @param options - Bootstrap options including tenant info and provider type
  */
 export async function bootstrapDatabaseWithSuperuser(options: BootstrapOptions): Promise<void> {
-	const { tenantId, orgId, username, providerType } = options;
+	const { tenantId, orgId, username, providerType, ownerUser } = options;
 
 	// For Neon providers, pgvector is already available without superuser
 	// Just call the bootstrap endpoint directly
 	if (providerType === "neon") {
 		log.info("Neon provider detected, skipping superuser grant (pgvector is built-in)");
-		await callBootstrapEndpoint(tenantId, orgId);
+		await callBootstrapEndpoint(tenantId, orgId, ownerUser);
 		return;
 	}
 
@@ -48,7 +57,7 @@ export async function bootstrapDatabaseWithSuperuser(options: BootstrapOptions):
 		await adminClient.query(`ALTER USER ${quoteIdent(username)} WITH SUPERUSER`);
 
 		try {
-			await callBootstrapEndpoint(tenantId, orgId);
+			await callBootstrapEndpoint(tenantId, orgId, ownerUser);
 		} finally {
 			// ALWAYS revoke superuser, even if bootstrap fails
 			log.info("Revoking superuser privileges from %s", username);
@@ -62,7 +71,7 @@ export async function bootstrapDatabaseWithSuperuser(options: BootstrapOptions):
 /**
  * Call the backend bootstrap endpoint with HMAC authentication.
  */
-async function callBootstrapEndpoint(tenantId: string, orgId: string): Promise<void> {
+async function callBootstrapEndpoint(tenantId: string, orgId: string, ownerUser?: OwnerUserInfo): Promise<void> {
 	log.info("Calling backend bootstrap endpoint for tenant %s, org %s", tenantId, orgId);
 
 	const authHeaders = createBootstrapAuthHeaders(tenantId, orgId, env.BOOTSTRAP_SECRET as string);
@@ -78,12 +87,18 @@ async function callBootstrapEndpoint(tenantId: string, orgId: string): Promise<v
 		headers["x-vercel-protection-bypass"] = env.VERCEL_BYPASS_SECRET;
 	}
 
+	// Build request body with optional ownerUser
+	const body: { tenantId: string; orgId: string; ownerUser?: OwnerUserInfo } = { tenantId, orgId };
+	if (ownerUser) {
+		body.ownerUser = ownerUser;
+	}
+
 	let response: Response;
 	try {
 		response = await fetch(`${env.BACKEND_INTERNAL_URL}/api/admin/bootstrap`, {
 			method: "POST",
 			headers,
-			body: JSON.stringify({ tenantId, orgId }),
+			body: JSON.stringify(body),
 		});
 	} catch (fetchError) {
 		// Network error - backend not reachable

@@ -11,6 +11,7 @@ import type { Integration } from "../model/Integration";
 import { getTenantContext } from "../tenant/TenantContext";
 import type { GithubAppRouterOptions } from "../types/GithubTypes";
 import {
+	cleanupOrphanedGitHubAppInstallations,
 	createGitHubAppJWT,
 	fetchInstallationRepositories,
 	findInstallationInGithubApp,
@@ -19,6 +20,7 @@ import {
 	getInstallations,
 	getRepositoriesForInstallation,
 	syncAllInstallationsForApp,
+	uninstallGitHubApp,
 	upsertInstallationContainer,
 } from "../util/GithubAppUtil";
 import { cleanupOrphanedGitHubIntegrations } from "../util/IntegrationUtil";
@@ -71,9 +73,22 @@ function handleJolliAppRedirect():
 export function createGitHubAppRouter(
 	githubInstallationDaoProvider: DaoProvider<GitHubInstallationDao>,
 	integrationsManager: IntegrationsManager,
-	_options: GithubAppRouterOptions,
+	options: GithubAppRouterOptions,
 ): Router {
 	const router = express.Router();
+
+	/**
+	 * Get the GitHub installation DAO with tenant context enforcement.
+	 * In multi-tenant mode, throws if no tenant context is available,
+	 * preventing fallback to the global DAO which could leak data across tenants.
+	 */
+	function requireTenantGitHubInstallationDao(): GitHubInstallationDao {
+		const context = getTenantContext();
+		if (getConfig().MULTI_TENANT_ENABLED && !context) {
+			throw new Error("Tenant context required for GitHub operations");
+		}
+		return githubInstallationDaoProvider.getDao(context);
+	}
 
 	/**
 	 * Get the installation URL for an integration that needs access
@@ -143,6 +158,14 @@ export function createGitHubAppRouter(
 		try {
 			const config = getConfig();
 
+			// Clean up orphaned GitHub App installations before redirecting
+			try {
+				const dao = requireTenantGitHubInstallationDao();
+				await cleanupOrphanedGitHubAppInstallations(dao, options.registryClient);
+			} catch (error) {
+				log.warn(error, "Failed to cleanup orphaned installations before redirect — continuing");
+			}
+
 			// Multi-tenant mode: delegate to connect provider
 			if (config.MULTI_TENANT_ENABLED) {
 				const tenantContext = getTenantContext();
@@ -203,8 +226,14 @@ export function createGitHubAppRouter(
 			return res.redirect(`${getConfig().ORIGIN}/?error=use_connect_gateway`);
 		}
 
+		// Block this single-tenant callback path in multi-tenant mode
+		if (getConfig().MULTI_TENANT_ENABLED) {
+			log.warn("GitHub callback hit single-tenant path in multi-tenant mode");
+			return res.redirect(`${getConfig().ORIGIN}/?error=use_connect_gateway`);
+		}
+
 		// Single-tenant mode: existing logic unchanged
-		const githubInstallationDao = githubInstallationDaoProvider.getDao(getTenantContext());
+		const githubInstallationDao = requireTenantGitHubInstallationDao();
 
 		// Extract the customer's origin from state parameter (for multi-tenant support)
 		// If not provided, fall back to the current origin from config
@@ -283,7 +312,7 @@ export function createGitHubAppRouter(
 	 */
 	router.get("/summary", async (_req, res) => {
 		try {
-			const githubInstallationDao = githubInstallationDaoProvider.getDao(getTenantContext());
+			const githubInstallationDao = requireTenantGitHubInstallationDao();
 			// Clean up orphaned integrations before calculating summary
 			const allInstallations = await githubInstallationDao.listInstallations();
 			const allIntegrations = await integrationsManager.listIntegrations();
@@ -370,7 +399,7 @@ export function createGitHubAppRouter(
 	 */
 	router.get("/installations", async (_req, res) => {
 		try {
-			const githubInstallationDao = githubInstallationDaoProvider.getDao(getTenantContext());
+			const githubInstallationDao = requireTenantGitHubInstallationDao();
 			// Fetch all installations from database - single call!
 			const installations = await githubInstallationDao.listInstallations();
 			const integrations = await integrationsManager.listIntegrations();
@@ -429,7 +458,7 @@ export function createGitHubAppRouter(
 	 */
 	router.post("/installations/sync", async (_req, res) => {
 		try {
-			const githubInstallationDao = githubInstallationDaoProvider.getDao(getTenantContext());
+			const githubInstallationDao = requireTenantGitHubInstallationDao();
 			const app = getCoreJolliGithubApp();
 			try {
 				await syncAllInstallationsForApp(app, githubInstallationDao);
@@ -490,7 +519,7 @@ export function createGitHubAppRouter(
 	 */
 	router.get("/installations/:installationId/repos", async (req, res) => {
 		try {
-			const githubInstallationDao = githubInstallationDaoProvider.getDao(getTenantContext());
+			const githubInstallationDao = requireTenantGitHubInstallationDao();
 			const installationId = Number.parseInt(req.params.installationId);
 			if (Number.isNaN(installationId)) {
 				res.status(400).json({ error: "Invalid installation ID" });
@@ -596,7 +625,7 @@ export function createGitHubAppRouter(
 	 */
 	router.delete("/installations/:id", async (req, res) => {
 		try {
-			const githubInstallationDao = githubInstallationDaoProvider.getDao(getTenantContext());
+			const githubInstallationDao = requireTenantGitHubInstallationDao();
 			const installationDbId = Number.parseInt(req.params.id);
 			if (Number.isNaN(installationDbId)) {
 				res.status(400).json({ error: "Invalid installation ID" });
@@ -633,6 +662,30 @@ export function createGitHubAppRouter(
 
 			// Delete the installation
 			await githubInstallationDao.deleteInstallation(installationDbId);
+
+			// Uninstall the GitHub App from GitHub's side to prevent orphaned installations
+			try {
+				await uninstallGitHubApp(installation.installationId);
+			} catch (error) {
+				// Log but don't fail — local deletion already succeeded
+				log.warn(
+					{ error, installationId: installation.installationId },
+					"Failed to uninstall GitHub App from GitHub after local deletion",
+				);
+			}
+
+			// Remove installation mapping from the registry (multi-tenant cleanup)
+			if (options.registryClient) {
+				try {
+					await options.registryClient.deleteInstallationMapping(installation.installationId);
+				} catch (error) {
+					// Log but don't fail — the local installation is already deleted
+					log.error(
+						{ error, installationId: installation.installationId },
+						"Failed to remove installation mapping",
+					);
+				}
+			}
 
 			log.info(
 				{
@@ -695,6 +748,18 @@ export function createGitHubAppRouter(
 
 				if (!foundInstallation) {
 					res.status(404).json({ error: "Repository not found in any GitHub App installation" });
+					return;
+				}
+
+				// Validate that the installation belongs to the current tenant
+				const githubInstallationDao = requireTenantGitHubInstallationDao();
+				const localInstallation = await githubInstallationDao.lookupByInstallationId(
+					foundInstallation.installationId,
+				);
+				if (!localInstallation) {
+					res.status(403).json({
+						error: "This GitHub installation is not connected to your organization",
+					});
 					return;
 				}
 

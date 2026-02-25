@@ -8,6 +8,7 @@ import type { GitHubInstallationDao } from "../dao/GitHubInstallationDao";
 import type { IntegrationDao } from "../dao/IntegrationDao";
 import type { JobDao } from "../dao/JobDao";
 import type { SiteDao } from "../dao/SiteDao";
+import type { SpaceDao } from "../dao/SpaceDao";
 import type { SyncArticleDao } from "../dao/SyncArticleDao";
 import type { JobScheduler } from "../jobs/JobScheduler.js";
 import type { MultiTenantJobSchedulerManager } from "../jobs/MultiTenantJobSchedulerManager.js";
@@ -38,6 +39,7 @@ describe("DevToolsRouter", () => {
 	let mockIntegrationDao: IntegrationDao;
 	let mockGitHubInstallationDao: GitHubInstallationDao;
 	let mockSyncArticleDao: SyncArticleDao;
+	let mockSpaceDao: SpaceDao;
 	let mockTokenUtil: TokenUtil<UserInfo>;
 	const origin = "http://localhost:8034";
 
@@ -96,6 +98,10 @@ describe("DevToolsRouter", () => {
 			deleteAllSyncArticles: vi.fn().mockResolvedValue(undefined),
 		} as unknown as SyncArticleDao;
 
+		mockSpaceDao = {
+			deleteAllSpaces: vi.fn().mockResolvedValue(undefined),
+		} as unknown as SpaceDao;
+
 		mockTokenUtil = {
 			getUserInfo: vi.fn().mockReturnValue({ id: 1, email: "test@example.com" }),
 			decodePayload: vi.fn().mockReturnValue({ userId: 1, email: "test@example.com" }),
@@ -118,6 +124,7 @@ describe("DevToolsRouter", () => {
 				integrationDaoProvider: mockDaoProvider(mockIntegrationDao),
 				gitHubInstallationDaoProvider: mockDaoProvider(mockGitHubInstallationDao),
 				syncArticleDaoProvider: mockDaoProvider(mockSyncArticleDao),
+				spaceDaoProvider: mockDaoProvider(mockSpaceDao),
 				tokenUtil: mockTokenUtil,
 			}),
 		);
@@ -691,6 +698,7 @@ describe("DevToolsRouter", () => {
 					integrationDaoProvider: mockDaoProvider(mockIntegrationDao),
 					gitHubInstallationDaoProvider: mockDaoProvider(mockGitHubInstallationDao),
 					syncArticleDaoProvider: mockDaoProvider(mockSyncArticleDao),
+					spaceDaoProvider: mockDaoProvider(mockSpaceDao),
 					tokenUtil: mockTokenUtil,
 				}),
 			);
@@ -739,6 +747,7 @@ describe("DevToolsRouter", () => {
 					integrationDaoProvider: mockDaoProvider(mockIntegrationDao),
 					gitHubInstallationDaoProvider: mockDaoProvider(mockGitHubInstallationDao),
 					syncArticleDaoProvider: mockDaoProvider(mockSyncArticleDao),
+					spaceDaoProvider: mockDaoProvider(mockSpaceDao),
 					tokenUtil: mockTokenUtil,
 				}),
 			);
@@ -875,6 +884,35 @@ describe("DevToolsRouter", () => {
 			expect(response.body.message).toBe("All GitHub integrations and installations cleared successfully");
 			expect(mockIntegrationDao.removeAllGitHubIntegrations).toHaveBeenCalled();
 			expect(mockGitHubInstallationDao.deleteAllInstallations).toHaveBeenCalled();
+		});
+
+		it("should clear sync data successfully", async () => {
+			vi.mocked(getConfig).mockReturnValue({
+				USE_DEVELOPER_TOOLS: true,
+			} as ReturnType<typeof getConfig>);
+
+			const response = await request(app).post("/dev-tools/clear-data").send({ dataType: "sync" });
+
+			expect(response.status).toBe(200);
+			expect(response.body.success).toBe(true);
+			expect(response.body.message).toBe("All sync data cleared successfully");
+			expect(mockSyncArticleDao.deleteAllSyncArticles).toHaveBeenCalled();
+		});
+
+		it("should clear spaces and their content successfully", async () => {
+			vi.mocked(getConfig).mockReturnValue({
+				USE_DEVELOPER_TOOLS: true,
+			} as ReturnType<typeof getConfig>);
+
+			const response = await request(app).post("/dev-tools/clear-data").send({ dataType: "spaces" });
+
+			expect(response.status).toBe(200);
+			expect(response.body.success).toBe(true);
+			expect(response.body.message).toBe("All spaces and their content cleared successfully");
+			expect(mockCollabConvoDao.deleteAllCollabConvos).toHaveBeenCalled();
+			expect(mockDocDraftDao.deleteAllDocDrafts).toHaveBeenCalled();
+			expect(mockDocDao.deleteAllDocs).toHaveBeenCalled();
+			expect(mockSpaceDao.deleteAllSpaces).toHaveBeenCalled();
 		});
 
 		it("should handle errors gracefully", async () => {

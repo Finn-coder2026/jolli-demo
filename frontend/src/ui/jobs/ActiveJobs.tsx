@@ -123,7 +123,7 @@ export function ActiveJobs(): ReactElement {
 	}
 
 	return (
-		<div className="bg-card rounded-lg p-6 border h-full overflow-auto">
+		<div className="bg-card rounded-lg p-6 border h-full overflow-auto scrollbar-thin">
 			<div className="mb-6">
 				<div className="flex items-center gap-2 text-sm text-muted-foreground mb-4">
 					<button

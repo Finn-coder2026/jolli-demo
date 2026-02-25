@@ -82,11 +82,16 @@ export type Site = Omit<Docsite, "id" | "createdAt" | "updatedAt">;
 export const TABLE_NAME_DOCSITES = "docsites";
 
 export function defineDocsites(sequelize: Sequelize): ModelDef<Docsite> {
+	const existing = sequelize.models?.docsites;
+	if (existing) {
+		return existing as ModelDef<Docsite>;
+	}
 	return sequelize.define(TABLE_NAME_DOCSITES, schema, { timestamps: true, indexes });
 }
 
 const indexes = [
 	{
+		name: "docsites_name_key",
 		unique: true,
 		fields: ["name"],
 	},
@@ -123,11 +128,6 @@ const schema = {
 		type: DataTypes.INTEGER,
 		field: "user_id",
 		allowNull: true,
-		references: {
-			model: "users",
-			key: "id",
-		},
-		onDelete: "SET NULL",
 	},
 	visibility: {
 		type: DataTypes.STRING,

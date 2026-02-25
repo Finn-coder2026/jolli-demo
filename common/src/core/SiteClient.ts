@@ -1,3 +1,5 @@
+import type { DocType } from "../types/Doc";
+import type { FileTreeNode } from "../util/FileTreeUtils";
 import type { ClientAuth } from "./Client";
 
 const BASE_PATH = "/api/sites";
@@ -37,6 +39,228 @@ export interface JwtAuthConfigUpdate {
 	loginUrl?: string;
 }
 
+export interface ExternalLink {
+	label: string;
+	url: string;
+}
+
+/**
+ * Header navigation item - direct link (url) OR dropdown (items), mutually exclusive.
+ */
+export interface HeaderNavItem {
+	label: string;
+	url?: string;
+	/** Sub-items for dropdown (max 8) */
+	items?: Array<ExternalLink>;
+}
+
+export interface HeaderLinksConfig {
+	/** Max 6 top-level items */
+	items: Array<HeaderNavItem>;
+}
+
+export interface FooterColumn {
+	title: string;
+	links: Array<ExternalLink>;
+}
+
+export interface SocialLinks {
+	github?: string;
+	twitter?: string;
+	discord?: string;
+	linkedin?: string;
+	youtube?: string;
+}
+
+export interface FooterConfig {
+	/** Copyright text (e.g., "2026 Acme Inc.") */
+	copyright?: string;
+	/** Footer columns with links (max 4 columns) */
+	columns?: Array<FooterColumn>;
+	/** Social media icon links */
+	socialLinks?: SocialLinks;
+}
+
+/**
+ * Font family options for site typography
+ */
+export type FontFamily = "inter" | "space-grotesk" | "ibm-plex" | "source-sans";
+
+/**
+ * Font configuration - single source of truth for font URLs and CSS values.
+ * Used by both frontend (preview) and nextra-generator (site generation).
+ */
+export interface FontConfig {
+	/** Google Fonts CSS URL */
+	url: string;
+	/** CSS font-family value for the font */
+	cssFamily: string;
+	/** Display name of the font for UI */
+	displayName: string;
+}
+
+/**
+ * Font configuration mapping from FontFamily to font details.
+ */
+export const FONT_CONFIG: Record<FontFamily, FontConfig> = {
+	inter: {
+		url: "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap",
+		cssFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+		displayName: "Inter",
+	},
+	"space-grotesk": {
+		url: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap",
+		cssFamily: "'Space Grotesk', -apple-system, sans-serif",
+		displayName: "Space Grotesk",
+	},
+	"ibm-plex": {
+		url: "https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap",
+		cssFamily: "'IBM Plex Sans', -apple-system, sans-serif",
+		displayName: "IBM Plex Sans",
+	},
+	"source-sans": {
+		url: "https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&display=swap",
+		cssFamily: "'Source Sans 3', -apple-system, sans-serif",
+		displayName: "Source Sans 3",
+	},
+};
+
+/**
+ * Code syntax highlighting theme options
+ */
+export type CodeTheme = "github" | "dracula" | "one-dark" | "nord";
+
+/**
+ * Border radius options for UI elements
+ */
+export type BorderRadius = "sharp" | "subtle" | "rounded" | "pill";
+
+/**
+ * Spacing density options
+ */
+export type SpacingDensity = "compact" | "comfortable" | "airy";
+
+/**
+ * Navigation mode options
+ * - sidebar: Traditional sidebar navigation only (default)
+ * - tabs: Folder tabs at top, sidebar for pages within
+ */
+export type NavigationMode = "sidebar" | "tabs";
+
+/**
+ * Overall page container max-width
+ * - compact: 90rem (1440px) - Nextra default
+ * - standard: 100rem (1600px)
+ * - wide: 100% (no max-width constraint)
+ */
+export type PageWidth = "compact" | "standard" | "wide";
+
+/**
+ * Article content area max-width for readability
+ * - compact: 45rem (720px) - tight reading width
+ * - standard: 55rem (880px) - optimal line length
+ * - wide: 70rem (1120px) - loose reading width
+ */
+export type ContentWidth = "compact" | "standard" | "wide";
+
+/**
+ * Left sidebar navigation panel width
+ * - compact: 14rem (224px)
+ * - standard: 16rem (256px) - Nextra default
+ * - wide: 20rem (320px)
+ */
+export type SidebarWidth = "compact" | "standard" | "wide";
+
+/**
+ * Right table-of-contents panel width
+ * - compact: 14rem (224px)
+ * - standard: 16rem (256px) - Nextra default
+ * - wide: 20rem (320px)
+ */
+export type TocWidth = "compact" | "standard" | "wide";
+
+/**
+ * Header navigation link alignment
+ * - left: Links appear immediately after the logo
+ * - right: Links are pushed to the right (before search/theme icons)
+ */
+export type HeaderAlignment = "left" | "right";
+
+/**
+ * Theme preset names
+ */
+export type ThemePreset = "minimal" | "vibrant" | "terminal" | "friendly" | "noir" | "custom";
+
+/** How the logo is displayed in the site header */
+export type LogoDisplay = "text" | "image" | "both";
+
+/** Site branding configuration */
+export interface SiteBranding {
+	// === Logo ===
+	/** Text logo (fallback if no logoUrl) */
+	logo?: string;
+	/** URL to hosted logo image */
+	logoUrl?: string;
+	/** URL to hosted favicon */
+	favicon?: string;
+	/** How the logo is displayed: text only, image only, or both */
+	logoDisplay?: LogoDisplay;
+
+	// === Colors ===
+	/** Primary accent color hue 0-360 (default: 212 blue) */
+	primaryHue?: number;
+
+	// === Theme ===
+	/** Initial theme for visitors */
+	defaultTheme?: "dark" | "light" | "system";
+
+	// === Header ===
+	/** External links in header (dropdown or individual links) */
+	headerLinks?: HeaderLinksConfig;
+
+	// === Footer ===
+	/** Footer configuration */
+	footer?: FooterConfig;
+
+	// === Layout ===
+	/** Hide right "On This Page" sidebar */
+	hideToc?: boolean;
+	/** Custom TOC heading */
+	tocTitle?: string;
+	/** Sidebar collapse depth 1-6 */
+	sidebarDefaultCollapseLevel?: number;
+	/** Navigation mode: sidebar, tabs, or dropdown */
+	navigationMode?: NavigationMode;
+	/** Overall page container max-width (default: "wide") */
+	pageWidth?: PageWidth;
+	/** Article content area max-width for readability (default: "standard") */
+	contentWidth?: ContentWidth;
+	/** Left sidebar navigation panel width (default: "standard") */
+	sidebarWidth?: SidebarWidth;
+	/** Right table-of-contents panel width (default: "standard") */
+	tocWidth?: TocWidth;
+	/** Header navigation link alignment (default: "right") */
+	headerAlignment?: HeaderAlignment;
+
+	// === Theme Preset ===
+	/** Theme preset (sets defaults for all theme properties) */
+	themePreset?: ThemePreset;
+
+	// === Typography ===
+	/** Font family for headings and body text */
+	fontFamily?: FontFamily;
+
+	// === Code Blocks ===
+	/** Syntax highlighting theme for code blocks */
+	codeTheme?: CodeTheme;
+
+	// === Appearance ===
+	/** Corner roundness for UI elements */
+	borderRadius?: BorderRadius;
+	/** Whitespace density between elements */
+	spacingDensity?: SpacingDensity;
+}
+
 /**
  * Site metadata
  */
@@ -68,6 +292,7 @@ export interface SiteMetadata {
 	allowedDomain?: string;
 	isPublished?: boolean; // For external sites: whether site has been published to production
 	generatedArticleJrns?: Array<string>; // JRNs of articles included in last generation (for change detection)
+	generatedArticleTitles?: Record<string, string>; // Map of JRN -> title at last generation (for deleted article slug derivation)
 	generatedJwtAuthEnabled?: boolean; // Whether JWT auth was enabled at last generation (for change detection)
 	selectedArticleJrns?: Array<string>; // JRNs of articles selected for this site (undefined = all articles)
 	// Config file hashes for detecting manual edits (stored after successful build)
@@ -81,6 +306,12 @@ export interface SiteMetadata {
 	customDomains?: Array<CustomDomainInfo>; // Custom domains attached to this site
 	// JWT authentication
 	jwtAuth?: JwtAuthConfig; // JWT authentication configuration
+	// Site branding
+	branding?: SiteBranding; // Site branding/customization configuration
+	generatedBranding?: SiteBranding; // Branding at last generation (for change detection)
+	// Site structure
+	useSpaceFolderStructure?: boolean; // When true, site navigation mirrors the space folder structure
+	generatedUseSpaceFolderStructure?: boolean; // Whether folder structure was enabled at last generation (for change detection)
 }
 
 /**
@@ -185,14 +416,8 @@ export interface SiteWithUpdate extends Site {
 	changedArticles?: Array<ChangedArticle>;
 	changedConfigFiles?: Array<ChangedConfigFile>;
 	authChange?: AuthChange; // Present when auth settings differ from last build
-}
-
-/**
- * JWT auth configuration for site creation
- */
-export interface CreateSiteJwtAuth {
-	enabled: boolean;
-	mode?: JwtAuthMode; // Required if enabled is true
+	brandingChanged?: boolean; // True when branding differs from last build
+	folderStructureChanged?: boolean; // True when folder structure setting differs from last build
 }
 
 /**
@@ -215,13 +440,7 @@ export interface CreateSiteRequest {
 	selectedArticleJrns?: Array<string>; // JRNs of articles to include (undefined = all articles)
 	subdomain?: string; // Custom subdomain for jolli.site domain (auto-generated from name if not provided)
 	jwtAuth?: CreateSiteJwtAuth; // JWT authentication configuration
-}
-
-/**
- * Update site articles request
- */
-export interface UpdateSiteArticlesRequest {
-	selectedArticleJrns: Array<string> | null; // null = all articles, array = specific selection
+	useSpaceFolderStructure?: boolean; // When true, site navigation mirrors the space folder structure
 }
 
 /**
@@ -246,16 +465,19 @@ export interface ChangedArticle {
 	changeType: ArticleChangeType;
 	/** Why this change occurred - content update or selection change */
 	changeReason?: ChangeReason;
+	/** Whether this is a document or folder (undefined for deleted items with no DB record) */
+	docType?: DocType;
 }
 
 /**
- * Update check result
+ * Lightweight site info returned by the sites-for-article endpoint.
+ * Used by the article sites badge to show which sites include an article.
  */
-export interface UpdateCheckResult {
-	needsUpdate: boolean;
-	lastGeneratedAt: string | undefined;
-	latestArticleUpdate: string;
-	changedArticles: Array<ChangedArticle>;
+export interface ArticleSiteInfo {
+	readonly id: number;
+	readonly name: string;
+	readonly displayName: string;
+	readonly visibility: "internal" | "external";
 }
 
 export interface SiteClient {
@@ -275,30 +497,6 @@ export interface SiteClient {
 	 * Regenerates/updates an existing docsite
 	 */
 	regenerateSite(id: number): Promise<Site>;
-	/**
-	 * Updates a single file in the repository
-	 */
-	updateRepositoryFile(id: number, filePath: string, content: string): Promise<void>;
-	/**
-	 * Checks if a docsite needs updating
-	 */
-	checkUpdateStatus(id: number): Promise<UpdateCheckResult>;
-	/**
-	 * Toggles protection on/off for a docsite
-	 */
-	toggleProtection(id: number): Promise<Site>;
-	/**
-	 * Refreshes protection status from Vercel
-	 */
-	refreshProtectionStatus(id: number): Promise<Site>;
-	/**
-	 * Publishes an external docsite (removes protection)
-	 */
-	publishSite(id: number): Promise<Site>;
-	/**
-	 * Unpublishes an external docsite (adds protection)
-	 */
-	unpublishSite(id: number): Promise<Site>;
 	/**
 	 * Deletes a site
 	 */
@@ -327,32 +525,6 @@ export interface SiteClient {
 	 * @returns The formatted code
 	 */
 	formatCode(content: string, filePath: string): Promise<{ formatted: string }>;
-	/**
-	 * Creates a folder in the site repository
-	 * @param id Site ID
-	 * @param path Folder path (e.g., "content/guides")
-	 */
-	createFolder(id: number, path: string): Promise<{ success: boolean; path: string }>;
-	/**
-	 * Deletes a folder from the site repository
-	 * @param id Site ID
-	 * @param path Folder path (e.g., "content/guides")
-	 */
-	deleteFolder(id: number, path: string): Promise<{ success: boolean }>;
-	/**
-	 * Renames a folder in the site repository
-	 * @param id Site ID
-	 * @param path Current folder path (e.g., "content/guides")
-	 * @param newName New name for the folder (just the name, not full path)
-	 */
-	renameFolder(id: number, path: string, newName: string): Promise<{ success: boolean; newPath: string }>;
-	/**
-	 * Moves a file to a different folder in the site repository
-	 * @param id Site ID
-	 * @param filePath Current file path (e.g., "content/intro.mdx")
-	 * @param destination Destination folder path (e.g., "content/guides")
-	 */
-	moveFile(id: number, filePath: string, destination: string): Promise<{ success: boolean; newPath: string }>;
 	/**
 	 * Lists contents of a folder in the site repository
 	 * @param id Site ID
@@ -410,6 +582,18 @@ export interface SiteClient {
 	 */
 	updateJwtAuthConfig(id: number, config: JwtAuthConfigUpdate): Promise<Site>;
 	/**
+	 * Updates branding configuration for a site
+	 * @param id Site ID
+	 * @param branding Branding configuration
+	 */
+	updateBranding(id: number, branding: SiteBranding): Promise<Site>;
+	/**
+	 * Updates whether the site uses space folder structure for navigation
+	 * @param id Site ID
+	 * @param useSpaceFolderStructure Whether to use space folder structure
+	 */
+	updateFolderStructure(id: number, useSpaceFolderStructure: boolean): Promise<Site>;
+	/**
 	 * Gets the repository file tree for a site (proxied through backend for private repos)
 	 * @param id Site ID
 	 * @param branch Branch name (defaults to "main")
@@ -440,6 +624,25 @@ export interface SiteClient {
 		content?: string;
 		encoding?: string;
 	}>;
+	/**
+	 * Syncs the entire file tree to GitHub in a single atomic commit.
+	 * Replaces the batch operations approach with a simpler tree-based sync.
+	 * @param id Site ID
+	 * @param tree Complete file tree structure
+	 * @param commitMessage Optional commit message
+	 */
+	syncTree(
+		id: number,
+		tree: Array<FileTreeNode>,
+		commitMessage?: string,
+	): Promise<{ success: boolean; commitSha: string }>;
+	/**
+	 * Gets all sites that include a given article.
+	 * Used by the article sites badge.
+	 * @param articleJrn - JRN of the article
+	 * @returns Sites that include this article
+	 */
+	getSitesForArticle(articleJrn: string): Promise<Array<ArticleSiteInfo>>;
 }
 
 export function createSiteClient(baseUrl: string, auth: ClientAuth): SiteClient {
@@ -451,21 +654,11 @@ export function createSiteClient(baseUrl: string, auth: ClientAuth): SiteClient 
 		getSite,
 		createSite,
 		regenerateSite,
-		updateRepositoryFile,
-		checkUpdateStatus,
-		toggleProtection,
-		refreshProtectionStatus,
-		publishSite,
-		unpublishSite,
 		deleteSite,
 		updateSiteArticles,
 		cancelBuild,
 		getChangedConfigFiles,
 		formatCode,
-		createFolder,
-		deleteFolder,
-		renameFolder,
-		moveFile,
 		listFolderContents,
 		checkSubdomainAvailability,
 		addCustomDomain,
@@ -474,8 +667,12 @@ export function createSiteClient(baseUrl: string, auth: ClientAuth): SiteClient 
 		verifyCustomDomain,
 		refreshDomainStatuses,
 		updateJwtAuthConfig,
+		updateBranding,
+		updateFolderStructure,
 		getRepositoryTree,
 		getFileContent,
+		syncTree,
+		getSitesForArticle,
 	};
 
 	async function listSites(): Promise<Array<SiteWithUpdate>> {
@@ -521,73 +718,6 @@ export function createSiteClient(baseUrl: string, auth: ClientAuth): SiteClient 
 
 		if (!response.ok) {
 			throw new Error(`Failed to regenerate site: ${response.statusText}`);
-		}
-
-		return (await response.json()) as Site;
-	}
-
-	async function updateRepositoryFile(id: number, filePath: string, content: string): Promise<void> {
-		const response = await fetch(`${basePath}/${id}/repository-file`, createRequest("PUT", { filePath, content }));
-		auth.checkUnauthorized?.(response);
-
-		if (!response.ok) {
-			const errorData = (await response.json().catch(() => ({ error: response.statusText }))) as {
-				error?: string;
-			};
-			throw new Error(errorData.error || `Failed to update repository file: ${response.statusText}`);
-		}
-	}
-
-	async function checkUpdateStatus(id: number): Promise<UpdateCheckResult> {
-		const response = await fetch(`${basePath}/${id}/check-update`, createRequest("GET"));
-		auth.checkUnauthorized?.(response);
-
-		if (!response.ok) {
-			throw new Error(`Failed to check update status: ${response.statusText}`);
-		}
-
-		return (await response.json()) as UpdateCheckResult;
-	}
-
-	async function toggleProtection(id: number): Promise<Site> {
-		const response = await fetch(`${basePath}/${id}/toggle-protection`, createRequest("POST"));
-		auth.checkUnauthorized?.(response);
-
-		if (!response.ok) {
-			throw new Error(`Failed to toggle protection: ${response.statusText}`);
-		}
-
-		return (await response.json()) as Site;
-	}
-
-	async function refreshProtectionStatus(id: number): Promise<Site> {
-		const response = await fetch(`${basePath}/${id}/refresh-protection`, createRequest("POST"));
-		auth.checkUnauthorized?.(response);
-
-		if (!response.ok) {
-			throw new Error(`Failed to refresh protection status: ${response.statusText}`);
-		}
-
-		return (await response.json()) as Site;
-	}
-
-	async function publishSite(id: number): Promise<Site> {
-		const response = await fetch(`${basePath}/${id}/publish`, createRequest("POST"));
-		auth.checkUnauthorized?.(response);
-
-		if (!response.ok) {
-			throw new Error(`Failed to publish site: ${response.statusText}`);
-		}
-
-		return (await response.json()) as Site;
-	}
-
-	async function unpublishSite(id: number): Promise<Site> {
-		const response = await fetch(`${basePath}/${id}/unpublish`, createRequest("POST"));
-		auth.checkUnauthorized?.(response);
-
-		if (!response.ok) {
-			throw new Error(`Failed to unpublish site: ${response.statusText}`);
 		}
 
 		return (await response.json()) as Site;
@@ -648,74 +778,6 @@ export function createSiteClient(baseUrl: string, auth: ClientAuth): SiteClient 
 		}
 
 		return (await response.json()) as { formatted: string };
-	}
-
-	async function createFolder(id: number, path: string): Promise<{ success: boolean; path: string }> {
-		const response = await fetch(`${basePath}/${id}/folders`, createRequest("POST", { path }));
-		auth.checkUnauthorized?.(response);
-
-		if (!response.ok) {
-			const errorData = (await response.json().catch(() => ({ error: response.statusText }))) as {
-				error?: string;
-			};
-			throw new Error(errorData.error || `Failed to create folder: ${response.statusText}`);
-		}
-
-		return (await response.json()) as { success: boolean; path: string };
-	}
-
-	async function deleteFolder(id: number, path: string): Promise<{ success: boolean }> {
-		const encodedPath = encodeURIComponent(path);
-		const response = await fetch(`${basePath}/${id}/folders?path=${encodedPath}`, createRequest("DELETE"));
-		auth.checkUnauthorized?.(response);
-
-		if (!response.ok) {
-			const errorData = (await response.json().catch(() => ({ error: response.statusText }))) as {
-				error?: string;
-			};
-			throw new Error(errorData.error || `Failed to delete folder: ${response.statusText}`);
-		}
-
-		return (await response.json()) as { success: boolean };
-	}
-
-	async function renameFolder(
-		id: number,
-		path: string,
-		newName: string,
-	): Promise<{ success: boolean; newPath: string }> {
-		const response = await fetch(`${basePath}/${id}/folders/rename`, createRequest("PUT", { path, newName }));
-		auth.checkUnauthorized?.(response);
-
-		if (!response.ok) {
-			const errorData = (await response.json().catch(() => ({ error: response.statusText }))) as {
-				error?: string;
-			};
-			throw new Error(errorData.error || `Failed to rename folder: ${response.statusText}`);
-		}
-
-		return (await response.json()) as { success: boolean; newPath: string };
-	}
-
-	async function moveFile(
-		id: number,
-		filePath: string,
-		destination: string,
-	): Promise<{ success: boolean; newPath: string }> {
-		const response = await fetch(
-			`${basePath}/${id}/files/move`,
-			createRequest("PUT", { path: filePath, destination }),
-		);
-		auth.checkUnauthorized?.(response);
-
-		if (!response.ok) {
-			const errorData = (await response.json().catch(() => ({ error: response.statusText }))) as {
-				error?: string;
-			};
-			throw new Error(errorData.error || `Failed to move file: ${response.statusText}`);
-		}
-
-		return (await response.json()) as { success: boolean; newPath: string };
 	}
 
 	async function listFolderContents(id: number, path: string): Promise<{ files: Array<string> }> {
@@ -849,6 +911,37 @@ export function createSiteClient(baseUrl: string, auth: ClientAuth): SiteClient 
 		return (await response.json()) as Site;
 	}
 
+	async function updateBranding(id: number, branding: SiteBranding): Promise<Site> {
+		const response = await fetch(`${basePath}/${id}/branding`, createRequest("PUT", branding));
+		auth.checkUnauthorized?.(response);
+
+		if (!response.ok) {
+			const errorData = (await response.json().catch(() => ({ error: response.statusText }))) as {
+				error?: string;
+			};
+			throw new Error(errorData.error || `Failed to update branding: ${response.statusText}`);
+		}
+
+		return (await response.json()) as Site;
+	}
+
+	async function updateFolderStructure(id: number, useSpaceFolderStructure: boolean): Promise<Site> {
+		const response = await fetch(
+			`${basePath}/${id}/folder-structure`,
+			createRequest("PUT", { useSpaceFolderStructure }),
+		);
+		auth.checkUnauthorized?.(response);
+
+		if (!response.ok) {
+			const errorData = (await response.json().catch(() => ({ error: response.statusText }))) as {
+				error?: string;
+			};
+			throw new Error(errorData.error || `Failed to update folder structure: ${response.statusText}`);
+		}
+
+		return (await response.json()) as Site;
+	}
+
 	async function getRepositoryTree(
 		id: number,
 		branch = "main",
@@ -910,5 +1003,38 @@ export function createSiteClient(baseUrl: string, auth: ClientAuth): SiteClient 
 			content?: string;
 			encoding?: string;
 		};
+	}
+
+	async function syncTree(
+		id: number,
+		tree: Array<FileTreeNode>,
+		commitMessage?: string,
+	): Promise<{ success: boolean; commitSha: string }> {
+		const response = await fetch(
+			`${basePath}/${id}/repository/sync`,
+			createRequest("POST", { tree, commitMessage }),
+		);
+		auth.checkUnauthorized?.(response);
+
+		if (!response.ok) {
+			const errorData = (await response.json().catch(() => ({ error: response.statusText }))) as {
+				error?: string;
+			};
+			throw new Error(errorData.error || `Failed to sync tree: ${response.statusText}`);
+		}
+
+		return (await response.json()) as { success: boolean; commitSha: string };
+	}
+
+	async function getSitesForArticle(articleJrn: string): Promise<Array<ArticleSiteInfo>> {
+		const response = await fetch(`${basePath}/for-article/${encodeURIComponent(articleJrn)}`, createRequest("GET"));
+		auth.checkUnauthorized?.(response);
+
+		if (!response.ok) {
+			throw new Error(`Failed to get sites for article: ${response.statusText}`);
+		}
+
+		const data = (await response.json()) as { sites: Array<ArticleSiteInfo> };
+		return data.sites;
 	}
 }

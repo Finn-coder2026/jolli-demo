@@ -1,92 +1,98 @@
 @import "tailwindcss";
 
 @theme {
-	--color-background: hsl(0 0% 96.08%);
-	--color-foreground: hsl(0 0% 15%);
+	--font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+	--color-background: hsl(0 0% 98%);
+	--color-foreground: hsl(0 0% 25%);
 	--color-card: hsl(0 0% 100%);
-	--color-card-foreground: hsl(0 0% 15%);
+	--color-card-foreground: hsl(0 0% 25%);
 	--color-popover: hsl(0 0% 100%);
-	--color-popover-foreground: hsl(0 0% 15%);
+	--color-popover-foreground: hsl(0 0% 25%);
 	--color-primary: hsl(222.2 47.4% 11.2%);
 	--color-primary-foreground: hsl(210 40% 98%);
-	--color-secondary: hsl(0 0% 96%);
-	--color-secondary-foreground: hsl(0 0% 15%);
-	--color-muted: hsl(0 0% 96%);
+	--color-secondary: hsl(0 0% 94%);
+	--color-secondary-foreground: hsl(0 0% 25%);
+	--color-muted: hsl(0 0% 94%);
 	--color-muted-foreground: hsl(0 0% 45%);
-	--color-accent: hsl(0 0% 96%);
-	--color-accent-foreground: hsl(0 0% 15%);
+	--color-accent: hsl(0 0% 94%);
+	--color-accent-foreground: hsl(0 0% 10%);
 	--color-destructive: hsl(0 84.2% 60.2%);
 	--color-destructive-foreground: hsl(210 40% 98%);
-	--color-border: hsl(0 0% 91%);
-	--color-input: hsl(0 0% 91%);
+	--color-border: hsl(0 0% 88%);
+	--color-input: hsl(0 0% 94%);
 	--color-ring: hsl(222.2 84% 4.9%);
 	--radius: 0.375rem;
-	--sidebar-bg: hsl(0 0% 100%);
-	--sidebar-text: #1f2937;
-	--sidebar-text-secondary: #6b7280;
-	--sidebar-selected-bg: #dbeafe;
-	--sidebar-selected-text: #1e40af;
-	--sidebar-hover-bg: hsl(0 0% 96%);
-	--sidebar-border: hsl(0 0% 91%);
+	--color-sidebar: hsl(0 0% 94%);
+	--color-sidebar-foreground: hsl(0 0% 35%);
+	--color-sidebar-accent: hsl(0 0% 88%);
+	--color-sidebar-accent-foreground: hsl(0 0% 10%);
+	--color-sidebar-border: hsl(0 0% 88%);
+	/* Legacy sidebar vars — derived from the primary --color-sidebar-* tokens.
+	   Used by CSS modules (SidebarItem.module.css, TreeItem.module.css) and the legacy sidebar. */
+	--sidebar-bg: var(--color-sidebar);
+	--sidebar-text: var(--color-sidebar-foreground);
+	--sidebar-text-secondary: hsl(0 0% 45%);
+	--sidebar-selected-bg: var(--color-sidebar-accent);
+	--sidebar-selected-text: var(--color-sidebar-accent-foreground);
+	--sidebar-hover-bg: var(--color-sidebar-accent);
+	--sidebar-border: var(--color-sidebar-border);
 	--input-focus-border: #1677ff;
 }
 
 .dark {
-	--color-background: hsl(0 0% 0%);
-	--color-foreground: hsl(0 0% 85%);
-	--color-card: hsl(0 0% 7.84%);
-	--color-card-foreground: hsl(0 0% 85%);
-	--color-popover: hsl(0 0% 7.84%);
-	--color-popover-foreground: hsl(0 0% 85%);
+	--color-background: hsl(0 0% 8%);
+	--color-foreground: hsl(0 0% 75%);
+	--color-card: hsl(0 0% 2%);
+	--color-card-foreground: hsl(0 0% 75%);
+	--color-popover: hsl(0 0% 2%);
+	--color-popover-foreground: hsl(0 0% 75%);
 	--color-primary: hsl(210 40% 98%);
 	--color-primary-foreground: hsl(222.2 47.4% 11.2%);
-	--color-secondary: hsl(0 0% 14%);
-	--color-secondary-foreground: hsl(0 0% 85%);
-	--color-muted: hsl(0 0% 14%);
-	--color-muted-foreground: hsl(0 0% 65%);
-	--color-accent: hsl(0 0% 14%);
-	--color-accent-foreground: hsl(0 0% 85%);
+	--color-secondary: hsl(0 0% 5%);
+	--color-secondary-foreground: hsl(0 0% 75%);
+	--color-muted: hsl(0 0% 5%);
+	--color-muted-foreground: hsl(0 0% 50%);
+	--color-accent: hsl(0 0% 10%);
+	--color-accent-foreground: hsl(0 0% 95%);
 	--color-destructive: hsl(0 62.8% 30.6%);
 	--color-destructive-foreground: hsl(210 40% 98%);
-	--color-border: hsl(0 0% 20%);
-	--color-input: hsl(0 0% 20%);
+	--color-border: hsl(0 0% 18%);
+	--color-input: hsl(0 0% 5%);
 	--color-ring: hsl(212.7 26.8% 83.9%);
-	--sidebar-bg: hsl(0 0% 7.84%);
-	--sidebar-text: #e8e8e8;
-	--sidebar-text-secondary: #9ca3af;
-	--sidebar-selected-bg: #1e3a8a;
-	--sidebar-selected-text: #93c5fd;
-	--sidebar-hover-bg: hsl(0 0% 14%);
-	--sidebar-border: hsl(0 0% 20%);
+	--color-sidebar: hsl(0 0% 2%);
+	--color-sidebar-foreground: hsl(0 0% 70%);
+	--color-sidebar-accent: hsl(0 0% 8%);
+	--color-sidebar-accent-foreground: hsl(0 0% 95%);
+	--color-sidebar-border: hsl(0 0% 18%);
+	--sidebar-bg: var(--color-sidebar);
+	--sidebar-text: var(--color-sidebar-foreground);
+	--sidebar-text-secondary: hsl(0 0% 50%);
+	--sidebar-selected-bg: var(--color-sidebar-accent);
+	--sidebar-selected-text: var(--color-sidebar-accent-foreground);
+	--sidebar-hover-bg: var(--color-sidebar-accent);
+	--sidebar-border: var(--color-sidebar-border);
 	--input-focus-border: #1668dc;
 }
 
 * {
 	border-color: var(--color-border);
-	font-family:
-		-apple-system,
-		BlinkMacSystemFont,
-		Segoe UI,
-		Roboto,
-		Helvetica Neue,
-		Arial,
-		Noto Sans,
-		sans-serif,
-		Apple Color Emoji,
-		Segoe UI Emoji,
-		Segoe UI Symbol,
-		Noto Color Emoji;
 	/* Scrollbar styling for light mode - Firefox */
 	scrollbar-color: rgba(155, 155, 155, 0.7) rgba(50, 50, 50, 0.2);
 	scrollbar-width: auto;
+}
+
+html {
+	font-size: 100%;
 }
 
 body {
 	background-color: var(--color-background);
 	color: var(--color-foreground);
 	font-family:
-		-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif,
-		"Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+		system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+		"Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
 }
 
 button {
@@ -177,4 +183,135 @@ button {
 
 .scrollbar-hide::-webkit-scrollbar {
 	display: none; /* Chrome, Safari, Opera */
+}
+
+/* Utility class for thin, subtle scrollbars (sidebar, panels) */
+.scrollbar-thin {
+	scrollbar-color: rgba(155, 155, 155, 0.3) transparent;
+	scrollbar-width: thin; /* Firefox */
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+	height: 6px;
+	width: 6px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+	background-color: rgba(155, 155, 155, 0.3);
+	border-radius: 3px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+	background-color: rgba(155, 155, 155, 0.5);
+}
+
+.dark .scrollbar-thin {
+	scrollbar-color: rgba(100, 100, 100, 0.3) transparent;
+}
+
+.dark .scrollbar-thin::-webkit-scrollbar-thumb {
+	background-color: rgba(100, 100, 100, 0.3);
+}
+
+.dark .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+	background-color: rgba(100, 100, 100, 0.5);
+}
+
+/* diff2html dark mode overrides */
+.dark .d2h-wrapper {
+	--d2h-bg-color: hsl(0 0% 8%);
+	--d2h-border-color: hsl(0 0% 18%);
+}
+
+.dark .d2h-file-wrapper {
+	border-color: hsl(0 0% 18%);
+}
+
+.dark .d2h-diff-table {
+	background-color: hsl(0 0% 8%);
+}
+
+.dark .d2h-code-line,
+.dark .d2h-code-side-line {
+	background-color: hsl(0 0% 8%);
+	color: hsl(0 0% 85%);
+}
+
+.dark .d2h-code-line-ctn {
+	color: hsl(0 0% 85%);
+}
+
+/* Line numbers in dark mode */
+.dark .d2h-code-linenumber {
+	background-color: hsl(0 0% 10%);
+	border-color: hsl(0 0% 18%);
+	color: hsl(0 0% 50%);
+}
+
+/* Added lines (green) in dark mode */
+.dark .d2h-ins {
+	background-color: rgba(46, 160, 67, 0.15);
+	border-color: rgba(46, 160, 67, 0.4);
+}
+
+.dark .d2h-ins .d2h-code-line-ctn {
+	background-color: rgba(46, 160, 67, 0.15);
+}
+
+.dark .d2h-code-line-ctn.d2h-ins {
+	background-color: rgba(46, 160, 67, 0.15);
+}
+
+.dark .d2h-ins.d2h-change {
+	background-color: rgba(46, 160, 67, 0.25);
+}
+
+/* Removed lines (red) in dark mode */
+.dark .d2h-del {
+	background-color: rgba(248, 81, 73, 0.15);
+	border-color: rgba(248, 81, 73, 0.4);
+}
+
+.dark .d2h-del .d2h-code-line-ctn {
+	background-color: rgba(248, 81, 73, 0.15);
+}
+
+.dark .d2h-code-line-ctn.d2h-del {
+	background-color: rgba(248, 81, 73, 0.15);
+}
+
+.dark .d2h-del.d2h-change {
+	background-color: rgba(248, 81, 73, 0.25);
+}
+
+/* Inline change highlighting in dark mode */
+.dark .d2h-ins .d2h-code-line-ctn ins {
+	background-color: rgba(46, 160, 67, 0.4);
+	text-decoration: none;
+}
+
+.dark .d2h-del .d2h-code-line-ctn del {
+	background-color: rgba(248, 81, 73, 0.4);
+	text-decoration: none;
+}
+
+/* File header and info in dark mode */
+.dark .d2h-file-header {
+	background-color: hsl(0 0% 10%);
+	border-color: hsl(0 0% 18%);
+}
+
+.dark .d2h-file-stats {
+	color: hsl(0 0% 70%);
+}
+
+/* Empty placeholder in dark mode */
+.dark .d2h-emptyplaceholder,
+.dark .d2h-code-side-emptyplaceholder {
+	background-color: hsl(0 0% 10%);
+	border-color: hsl(0 0% 18%);
 }

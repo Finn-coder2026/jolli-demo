@@ -3,18 +3,48 @@ import { useRedirect } from "../../../contexts/RouterContext";
 import type { BaseIntegrationFlowProps } from "../types";
 import type { AvailableGitHubInstallation } from "jolli-common";
 import type { ReactElement } from "react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useIntlayer } from "react-intlayer";
 
-type FlowState = "loading" | "selecting" | "connecting" | "redirecting" | "error";
+type FlowState = "loading" | "selecting" | "connecting" | "redirecting" | "waiting_for_install" | "error";
 
-export function GitHubIntegrationFlow({ onComplete }: BaseIntegrationFlowProps): ReactElement {
+/** Polling interval for checking if installation completed in a new window (ms) */
+const INSTALL_POLL_INTERVAL = 3000;
+
+export function GitHubIntegrationFlow({
+	onComplete,
+	onCancel,
+	openInNewWindow,
+}: BaseIntegrationFlowProps): ReactElement {
 	const content = useIntlayer("github-integration-flow");
 	const redirect = useRedirect();
 	const client = useClient();
 	const [error, setError] = useState<string | undefined>();
 	const [flowState, setFlowState] = useState<FlowState>("loading");
 	const [availableInstallations, setAvailableInstallations] = useState<Array<AvailableGitHubInstallation>>([]);
+	const popupRef = useRef<Window | null>(null);
+	const initialInstallCountRef = useRef<number>(0);
+
+	/** Cancel handler — falls back to onComplete when onCancel is not provided. */
+	const handleCancel = useCallback(() => {
+		(onCancel ?? onComplete)();
+	}, [onCancel, onComplete]);
+
+	/**
+	 * Open a URL — either in a new window or via redirect, depending on the prop.
+	 * Returns true if opened in a new window.
+	 */
+	const openUrl = useCallback(
+		(url: string): boolean => {
+			if (openInNewWindow) {
+				popupRef.current = window.open(url, "_blank");
+				return true;
+			}
+			redirect(url);
+			return false;
+		},
+		[openInNewWindow, redirect],
+	);
 
 	useEffect(() => {
 		// First check if there are available installations to connect
@@ -26,6 +56,9 @@ export function GitHubIntegrationFlow({ onComplete }: BaseIntegrationFlowProps):
 				// Try to list available installations
 				const response = await client.github().listAvailableInstallations();
 				const notConnected = response.installations.filter(i => !i.alreadyConnectedToCurrentOrg);
+
+				// Remember the current count so we can detect new installations
+				initialInstallCountRef.current = response.installations.length;
 
 				if (notConnected.length > 0) {
 					// There are installations available to connect - show selection UI
@@ -54,7 +87,10 @@ export function GitHubIntegrationFlow({ onComplete }: BaseIntegrationFlowProps):
 				}
 
 				if (response.redirectUrl) {
-					redirect(response.redirectUrl);
+					const openedInNewWindow = openUrl(response.redirectUrl);
+					if (openedInNewWindow) {
+						setFlowState("waiting_for_install");
+					}
 				} else {
 					setError(content.failedInstallationUrl.value);
 					setFlowState("error");
@@ -66,7 +102,33 @@ export function GitHubIntegrationFlow({ onComplete }: BaseIntegrationFlowProps):
 		}
 
 		checkAvailableInstallations().then();
-	}, [client, redirect]);
+	}, [client, openUrl, content.failedInstallationUrl.value, content.failedSetup.value]);
+
+	// Poll for new installations while waiting for the new-window install to complete
+	useEffect(() => {
+		if (flowState !== "waiting_for_install") {
+			return;
+		}
+
+		const interval = setInterval(async () => {
+			try {
+				const response = await client.github().listAvailableInstallations();
+				// Detect a new installation by comparing count
+				if (response.installations.length > initialInstallCountRef.current) {
+					clearInterval(interval);
+					// Close the popup if it's still open
+					if (popupRef.current && !popupRef.current.closed) {
+						popupRef.current.close();
+					}
+					onComplete();
+				}
+			} catch {
+				// Silently ignore polling errors
+			}
+		}, INSTALL_POLL_INTERVAL);
+
+		return () => clearInterval(interval);
+	}, [flowState, client, onComplete]);
 
 	async function handleConnectExisting(installation: AvailableGitHubInstallation) {
 		setFlowState("connecting");
@@ -75,10 +137,24 @@ export function GitHubIntegrationFlow({ onComplete }: BaseIntegrationFlowProps):
 		try {
 			const response = await client.github().connectExistingInstallation(installation.installationId);
 
-			if (response.success && response.redirectUrl) {
-				redirect(response.redirectUrl);
+			if (response.success) {
+				if (openInNewWindow) {
+					// During onboarding: the API call already created the integration,
+					// no need to open a new tab to the integrations page.
+					onComplete();
+				} else if (response.redirectUrl) {
+					// Normal flow: redirect to the integrations page to see the result.
+					openUrl(response.redirectUrl);
+				} else {
+					setError(content.failedSetup.value);
+					setFlowState("error");
+				}
 			} else {
-				setError(response.error || content.failedSetup.value);
+				setError(
+					response.error === "installation_not_available"
+						? content.installationNotAvailable.value
+						: response.error || content.failedSetup.value,
+				);
 				setFlowState("error");
 			}
 		} catch (err) {
@@ -101,7 +177,10 @@ export function GitHubIntegrationFlow({ onComplete }: BaseIntegrationFlowProps):
 			}
 
 			if (response.redirectUrl) {
-				redirect(response.redirectUrl);
+				const openedInNewWindow = openUrl(response.redirectUrl);
+				if (openedInNewWindow) {
+					setFlowState("waiting_for_install");
+				}
 			} else {
 				setError(content.failedInstallationUrl.value);
 				setFlowState("error");
@@ -160,7 +239,7 @@ export function GitHubIntegrationFlow({ onComplete }: BaseIntegrationFlowProps):
 
 				<button
 					type="button"
-					onClick={() => onComplete()}
+					onClick={handleCancel}
 					className="mt-4 text-sm text-muted-foreground hover:text-foreground"
 				>
 					{content.goBack}
@@ -187,6 +266,24 @@ export function GitHubIntegrationFlow({ onComplete }: BaseIntegrationFlowProps):
 		);
 	}
 
+	// Waiting for installation to complete in the new window
+	if (flowState === "waiting_for_install") {
+		return (
+			<div className="flex flex-col items-center justify-center min-h-[400px] p-6">
+				<div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full mx-auto mb-4" />
+				<p className="text-muted-foreground text-center mb-2">{content.waitingForInstall}</p>
+				<p className="text-sm text-muted-foreground text-center mb-6">{content.waitingForInstallHint}</p>
+				<button
+					type="button"
+					onClick={handleCancel}
+					className="text-sm text-muted-foreground hover:text-foreground"
+				>
+					{content.goBack}
+				</button>
+			</div>
+		);
+	}
+
 	// Error state
 	return (
 		<div className="flex flex-col items-center justify-center min-h-[400px]">
@@ -194,7 +291,7 @@ export function GitHubIntegrationFlow({ onComplete }: BaseIntegrationFlowProps):
 				<p className="text-destructive mb-4">{error}</p>
 				<button
 					type="button"
-					onClick={() => onComplete()}
+					onClick={handleCancel}
 					className="px-4 py-2 bg-primary text-primary-foreground rounded hover:bg-primary/90"
 				>
 					{content.goBack}

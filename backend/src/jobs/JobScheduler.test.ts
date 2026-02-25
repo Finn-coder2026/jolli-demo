@@ -1,4 +1,5 @@
 import type { JobDao } from "../dao/JobDao.js";
+import type { TenantOrgContext } from "../tenant/TenantContext.js";
 import type { JobContext, JobDefinition } from "../types/JobTypes";
 import { createJobScheduler } from "./JobScheduler.js";
 import { describe, expect, it, vi } from "vitest";
@@ -72,6 +73,9 @@ vi.mock("pg-boss", () => {
 			}
 			cancel() {
 				return Promise.resolve();
+			}
+			on() {
+				// Mock error event handler - does nothing in tests
 			}
 		},
 	};
@@ -2429,6 +2433,196 @@ describe("JobScheduler", () => {
 				"Failed to queue job %s from event",
 				"queue-fail-job",
 			);
+		});
+	});
+
+	describe("tenant context support", () => {
+		it("should execute job handler within tenant context when provided", async () => {
+			// Import the actual getTenantContext to verify it returns our context
+			const { getTenantContext } = await import("../tenant/TenantContext.js");
+
+			const mockDao: JobDao = {
+				...mockJobDao,
+				updateJobStatus: vi.fn().mockResolvedValue(undefined),
+				appendLog: vi.fn().mockResolvedValue(undefined),
+			};
+
+			// Create a mock tenant context
+			const mockTenantOrgContext = {
+				tenant: { id: "tenant-1", slug: "test-tenant" },
+				org: { id: "org-1", slug: "test-org", schemaName: "org_test" },
+				schemaName: "org_test",
+				database: { docDao: { someMethod: vi.fn() } },
+			} as unknown as TenantOrgContext;
+
+			const scheduler = createJobScheduler({
+				jobDao: mockDao,
+				tenantOrgContext: mockTenantOrgContext,
+			});
+
+			// Track the context observed inside the handler
+			let capturedTenantContext: ReturnType<typeof getTenantContext> | undefined;
+
+			const testJob: JobDefinition<{ foo: string }> = {
+				name: "tenant-context-job",
+				description: "Job to test tenant context",
+				schema: z.object({ foo: z.string() }),
+				handler: () => {
+					// Capture the tenant context from inside the handler
+					capturedTenantContext = getTenantContext();
+					return Promise.resolve();
+				},
+			};
+
+			scheduler.registerJob(testJob);
+			await scheduler.start();
+
+			// Get the work handler and execute it
+			const workHandler = workHandlers.get("tenant-context-job");
+			expect(workHandler).toBeDefined();
+
+			if (workHandler) {
+				await workHandler([{ id: "tenant-job-1", data: { foo: "bar" } }]);
+			}
+
+			// Verify the handler ran with the tenant context
+			expect(capturedTenantContext).toBeDefined();
+			expect(capturedTenantContext?.tenant.id).toBe("tenant-1");
+			expect(capturedTenantContext?.org.id).toBe("org-1");
+			expect(capturedTenantContext?.schemaName).toBe("org_test");
+		});
+
+		it("should execute job handler without tenant context when not provided", async () => {
+			const { getTenantContext } = await import("../tenant/TenantContext.js");
+
+			const mockDao: JobDao = {
+				...mockJobDao,
+				updateJobStatus: vi.fn().mockResolvedValue(undefined),
+				appendLog: vi.fn().mockResolvedValue(undefined),
+			};
+
+			// Create scheduler WITHOUT tenant context
+			const scheduler = createJobScheduler({
+				jobDao: mockDao,
+			});
+
+			let capturedTenantContext: ReturnType<typeof getTenantContext> | undefined;
+
+			const testJob: JobDefinition<{ foo: string }> = {
+				name: "no-tenant-context-job",
+				description: "Job to test no tenant context",
+				schema: z.object({ foo: z.string() }),
+				handler: () => {
+					capturedTenantContext = getTenantContext();
+					return Promise.resolve();
+				},
+			};
+
+			scheduler.registerJob(testJob);
+			await scheduler.start();
+
+			const workHandler = workHandlers.get("no-tenant-context-job");
+			expect(workHandler).toBeDefined();
+
+			if (workHandler) {
+				await workHandler([{ id: "no-tenant-job-1", data: { foo: "bar" } }]);
+			}
+
+			// Verify no tenant context was set (should be undefined)
+			expect(capturedTenantContext).toBeUndefined();
+		});
+
+		it("should run event trigger handlers within tenant context when provided", async () => {
+			const { getTenantContext } = await import("../tenant/TenantContext.js");
+
+			const mockDao: JobDao = {
+				...mockJobDao,
+				createJobExecution: vi.fn().mockResolvedValue(undefined),
+			};
+
+			const mockTenantOrgContext = {
+				tenant: { id: "tenant-evt", slug: "evt-tenant" },
+				org: { id: "org-evt", slug: "evt-org", schemaName: "org_evt" },
+				schemaName: "org_evt",
+				database: { docDao: { someMethod: vi.fn() } },
+			} as unknown as TenantOrgContext;
+
+			const scheduler = createJobScheduler({
+				jobDao: mockDao,
+				tenantOrgContext: mockTenantOrgContext,
+			});
+
+			// Track context observed inside shouldTriggerEvent
+			let capturedContext: ReturnType<typeof getTenantContext> | undefined;
+
+			const testJob: JobDefinition = {
+				name: "tenant-event-trigger-job",
+				description: "Event job testing tenant context in event handlers",
+				schema: z.object({ msg: z.string() }),
+				handler: () => Promise.resolve(),
+				triggerEvents: ["tenant-ctx-event"],
+				shouldTriggerEvent: () => {
+					capturedContext = getTenantContext();
+					return Promise.resolve(true);
+				},
+			};
+
+			scheduler.registerJob(testJob);
+			await scheduler.start();
+
+			// Emit the event — the handler should run within tenant context
+			const eventEmitter = scheduler.getEventEmitter();
+			eventEmitter.emit("tenant-ctx-event", { msg: "hello" });
+
+			await new Promise(resolve => setTimeout(resolve, 10));
+
+			// Verify shouldTriggerEvent ran with the tenant context
+			expect(capturedContext).toBeDefined();
+			expect(capturedContext?.tenant.id).toBe("tenant-evt");
+			expect(capturedContext?.org.id).toBe("org-evt");
+			// Verify the job was queued
+			expect(mockDao.createJobExecution).toHaveBeenCalled();
+		});
+
+		it("should run event trigger handlers without tenant context when not provided", async () => {
+			const { getTenantContext } = await import("../tenant/TenantContext.js");
+
+			const mockDao: JobDao = {
+				...mockJobDao,
+				createJobExecution: vi.fn().mockResolvedValue(undefined),
+			};
+
+			// Create scheduler WITHOUT tenant context
+			const scheduler = createJobScheduler({
+				jobDao: mockDao,
+			});
+
+			let capturedContext: ReturnType<typeof getTenantContext> | undefined;
+
+			const testJob: JobDefinition = {
+				name: "no-tenant-event-trigger-job",
+				description: "Event job testing no tenant context in event handlers",
+				schema: z.object({ msg: z.string() }),
+				handler: () => Promise.resolve(),
+				triggerEvents: ["no-tenant-ctx-event"],
+				shouldTriggerEvent: () => {
+					capturedContext = getTenantContext();
+					return Promise.resolve(true);
+				},
+			};
+
+			scheduler.registerJob(testJob);
+			await scheduler.start();
+
+			const eventEmitter = scheduler.getEventEmitter();
+			eventEmitter.emit("no-tenant-ctx-event", { msg: "hello" });
+
+			await new Promise(resolve => setTimeout(resolve, 10));
+
+			// Verify no tenant context was set
+			expect(capturedContext).toBeUndefined();
+			// Verify the job was still queued
+			expect(mockDao.createJobExecution).toHaveBeenCalled();
 		});
 	});
 });

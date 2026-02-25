@@ -13,73 +13,6 @@ describe("OIDCTokenProvider", () => {
 		vi.restoreAllMocks();
 	});
 
-	describe("VercelOIDCTokenProvider", () => {
-		it("isAvailable returns true when VERCEL=1", async () => {
-			process.env.VERCEL = "1";
-			const { VercelOIDCTokenProvider } = await import("./OIDCTokenProvider");
-			const provider = new VercelOIDCTokenProvider();
-			expect(provider.isAvailable()).toBe(true);
-		});
-
-		it("isAvailable returns false when VERCEL is not set", async () => {
-			delete process.env.VERCEL;
-			const { VercelOIDCTokenProvider } = await import("./OIDCTokenProvider");
-			const provider = new VercelOIDCTokenProvider();
-			expect(provider.isAvailable()).toBe(false);
-		});
-
-		it("extractFromRequest stores token from string header", async () => {
-			const { VercelOIDCTokenProvider } = await import("./OIDCTokenProvider");
-			const provider = new VercelOIDCTokenProvider();
-			provider.extractFromRequest({ "x-vercel-oidc-token": "token-123" });
-			expect(provider.getToken()).toBe("token-123");
-		});
-
-		it("extractFromRequest stores first token from array header", async () => {
-			const { VercelOIDCTokenProvider } = await import("./OIDCTokenProvider");
-			const provider = new VercelOIDCTokenProvider();
-			provider.extractFromRequest({ "x-vercel-oidc-token": ["first", "second"] });
-			expect(provider.getToken()).toBe("first");
-		});
-
-		it("extractFromRequest handles missing header", async () => {
-			const { VercelOIDCTokenProvider } = await import("./OIDCTokenProvider");
-			const provider = new VercelOIDCTokenProvider();
-			provider.extractFromRequest({ "other-header": "value" });
-			expect(provider.getToken()).toBeUndefined();
-		});
-
-		it("getToken falls back to VERCEL_OIDC_TOKEN env var", async () => {
-			process.env.VERCEL_OIDC_TOKEN = "env-token";
-			const { VercelOIDCTokenProvider } = await import("./OIDCTokenProvider");
-			const provider = new VercelOIDCTokenProvider();
-			expect(provider.getToken()).toBe("env-token");
-		});
-
-		it("getToken prefers stored token over env var", async () => {
-			process.env.VERCEL_OIDC_TOKEN = "env-token";
-			const { VercelOIDCTokenProvider } = await import("./OIDCTokenProvider");
-			const provider = new VercelOIDCTokenProvider();
-			provider.extractFromRequest({ "x-vercel-oidc-token": "header-token" });
-			expect(provider.getToken()).toBe("header-token");
-		});
-
-		it("clearToken removes stored token", async () => {
-			const { VercelOIDCTokenProvider } = await import("./OIDCTokenProvider");
-			const provider = new VercelOIDCTokenProvider();
-			provider.extractFromRequest({ "x-vercel-oidc-token": "token" });
-			expect(provider.getToken()).toBe("token");
-			provider.clearToken();
-			expect(provider.getToken()).toBeUndefined();
-		});
-
-		it("has correct name", async () => {
-			const { VercelOIDCTokenProvider } = await import("./OIDCTokenProvider");
-			const provider = new VercelOIDCTokenProvider();
-			expect(provider.name).toBe("Vercel");
-		});
-	});
-
 	describe("NoOpOIDCTokenProvider", () => {
 		it("isAvailable always returns false", async () => {
 			const { NoOpOIDCTokenProvider } = await import("./OIDCTokenProvider");
@@ -96,7 +29,7 @@ describe("OIDCTokenProvider", () => {
 		it("extractFromRequest is a no-op", async () => {
 			const { NoOpOIDCTokenProvider } = await import("./OIDCTokenProvider");
 			const provider = new NoOpOIDCTokenProvider();
-			provider.extractFromRequest({ "x-vercel-oidc-token": "token" });
+			provider.extractFromRequest({ "some-header": "token" });
 			expect(provider.getToken()).toBeUndefined();
 		});
 
@@ -108,11 +41,11 @@ describe("OIDCTokenProvider", () => {
 	});
 
 	describe("getOIDCTokenProvider and setOIDCTokenProvider", () => {
-		it("returns default Vercel provider", async () => {
+		it("returns default NoOp provider", async () => {
 			const { getOIDCTokenProvider, resetOIDCTokenProvider } = await import("./OIDCTokenProvider");
 			resetOIDCTokenProvider();
 			const provider = getOIDCTokenProvider();
-			expect(provider.name).toBe("Vercel");
+			expect(provider.name).toBe("NoOp");
 		});
 
 		it("can set custom provider", async () => {
@@ -125,13 +58,25 @@ describe("OIDCTokenProvider", () => {
 			resetOIDCTokenProvider();
 		});
 
-		it("resetOIDCTokenProvider restores Vercel provider", async () => {
+		it("resetOIDCTokenProvider restores NoOp provider", async () => {
 			const { getOIDCTokenProvider, setOIDCTokenProvider, NoOpOIDCTokenProvider, resetOIDCTokenProvider } =
 				await import("./OIDCTokenProvider");
+
 			setOIDCTokenProvider(new NoOpOIDCTokenProvider());
 			expect(getOIDCTokenProvider().name).toBe("NoOp");
+
+			// Set a custom provider to verify reset works
+			const customProvider = {
+				name: "Custom",
+				isAvailable: () => true,
+				getToken: () => "custom-token",
+				// biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op for test mock
+				extractFromRequest: () => {},
+			};
+			setOIDCTokenProvider(customProvider);
+			expect(getOIDCTokenProvider().name).toBe("Custom");
 			resetOIDCTokenProvider();
-			expect(getOIDCTokenProvider().name).toBe("Vercel");
+			expect(getOIDCTokenProvider().name).toBe("NoOp");
 		});
 	});
 });

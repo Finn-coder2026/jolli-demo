@@ -139,6 +139,60 @@ describe("ConfigProviderChain", () => {
 			// Empty provider shouldn't be in results
 			expect(result.providerResults).toHaveLength(0);
 		});
+
+		it("throws when a critical provider fails", async () => {
+			const criticalProvider: ConfigProvider = {
+				name: "aws-parameter-store",
+				priority: 1,
+				isAvailable: () => true,
+				load: vi.fn().mockRejectedValue(new Error("AWS connection failed")),
+			};
+			const fallbackProvider = createMockProvider("local-env", 2, true, { VAR: "value" });
+
+			const chain = new ConfigProviderChain([criticalProvider, fallbackProvider], {
+				applyToProcessEnv: false,
+				criticalProviders: ["aws-parameter-store"],
+			});
+
+			await expect(chain.load()).rejects.toThrow("AWS connection failed");
+		});
+
+		it("does not throw when a non-critical provider fails", async () => {
+			const failingProvider: ConfigProvider = {
+				name: "optional-provider",
+				priority: 1,
+				isAvailable: () => true,
+				load: vi.fn().mockRejectedValue(new Error("Provider failed")),
+			};
+			const workingProvider = createMockProvider("working", 2, true, { VAR: "value" });
+
+			const chain = new ConfigProviderChain([failingProvider, workingProvider], {
+				applyToProcessEnv: false,
+				criticalProviders: ["aws-parameter-store"],
+			});
+
+			const result = await chain.load();
+			expect(result.config).toEqual({ VAR: "value" });
+		});
+
+		it("does not throw when critical provider is not available", async () => {
+			const unavailableProvider: ConfigProvider = {
+				name: "aws-parameter-store",
+				priority: 1,
+				isAvailable: () => false,
+				load: vi.fn().mockRejectedValue(new Error("Should not be called")),
+			};
+			const workingProvider = createMockProvider("working", 2, true, { VAR: "value" });
+
+			const chain = new ConfigProviderChain([unavailableProvider, workingProvider], {
+				applyToProcessEnv: false,
+				criticalProviders: ["aws-parameter-store"],
+			});
+
+			const result = await chain.load();
+			expect(result.config).toEqual({ VAR: "value" });
+			expect(unavailableProvider.load).not.toHaveBeenCalled();
+		});
 	});
 
 	describe("getProviders", () => {

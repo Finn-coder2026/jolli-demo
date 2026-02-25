@@ -22,7 +22,7 @@ export interface OIDCCredentialsOptions {
 
 /**
  * Creates an AWS credentials provider using OIDC Web Identity federation.
- * Platform-agnostic - works with any OIDC token source (Vercel, Cloudflare, etc.)
+ * Platform-agnostic - works with any OIDC token source.
  *
  * @param options - Configuration for the OIDC credentials provider
  * @returns A credentials provider function that can be passed to AWS SDK clients
@@ -102,8 +102,8 @@ export function getOIDCToken(): string | undefined {
 export interface AWSCredentialsFactoryOptions {
 	/** IAM role ARN to assume via OIDC */
 	roleArn?: string;
-	/** Whether we are running in a Vercel environment */
-	isVercel?: boolean;
+	/** Whether to use OIDC for credential federation */
+	useOIDC?: boolean;
 	/** AWS region for STS calls */
 	region?: string;
 }
@@ -111,9 +111,9 @@ export interface AWSCredentialsFactoryOptions {
 /**
  * Factory function to create appropriate credentials provider based on environment.
  *
- * - On Vercel with OIDC: Creates an OIDC credentials provider
- * - Elsewhere: Returns undefined to use the default AWS credential chain
- *   (EC2 instance role, env vars, ~/.aws/credentials, etc.)
+ * - With useOIDC and roleArn: Creates an OIDC credentials provider
+ * - Otherwise: Returns undefined to use the default AWS credential chain
+ *   (EC2 instance role, ECS task role, env vars, ~/.aws/credentials, etc.)
  *
  * @param options - Configuration options
  * @returns Credentials provider or undefined for default chain
@@ -121,10 +121,10 @@ export interface AWSCredentialsFactoryOptions {
 export function createAWSCredentialsProvider(
 	options: AWSCredentialsFactoryOptions,
 ): Provider<AwsCredentialIdentity> | undefined {
-	const { roleArn, isVercel, region } = options;
+	const { roleArn, useOIDC, region } = options;
 
-	if (!isVercel || !roleArn) {
-		log.debug({ isVercel, hasRoleArn: Boolean(roleArn) }, "Using default AWS credential chain");
+	if (!useOIDC || !roleArn) {
+		log.debug({ useOIDC, hasRoleArn: Boolean(roleArn) }, "Using default AWS credential chain");
 		return;
 	}
 

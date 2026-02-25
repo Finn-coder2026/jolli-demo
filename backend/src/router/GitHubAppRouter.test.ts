@@ -17,7 +17,7 @@ import cookieParser from "cookie-parser";
 import express, { type Express } from "express";
 import type { UserInfo } from "jolli-common";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /** Helper to wrap a DAO in a mock provider */
 function mockDaoProvider<T>(dao: T): DaoProvider<T> {
@@ -51,7 +51,7 @@ describe("GitHubAppRouter", () => {
 		app.use(express.json());
 		app.use(cookieParser());
 		app.use((req, _res, next) => {
-			req.session = {};
+			req.session = {} as unknown as typeof req.session;
 			next();
 		});
 		app.use("/github", authHandler);
@@ -213,6 +213,39 @@ describe("GitHubAppRouter", () => {
 			expect(response.body.redirectUrl).toContain("https://github.com/apps/test-app/installations/new");
 			expect(response.body.redirectUrl).toContain("state=");
 		});
+
+		it("should call cleanupOrphanedGitHubAppInstallations before redirecting", async () => {
+			const cleanupSpy = vi
+				.spyOn(GithubAppUtil, "cleanupOrphanedGitHubAppInstallations")
+				.mockResolvedValue({ uninstalledCount: 0, failedCount: 0 });
+
+			const response = await request(app)
+				.post("/github/setup/redirect")
+				.send({})
+				.set("Cookie", `authToken=${authToken}`);
+
+			expect(response.status).toBe(200);
+			expect(cleanupSpy).toHaveBeenCalledWith(githubInstallationDao, undefined);
+			expect(response.body.redirectUrl).toContain("https://github.com/apps/test-app/installations/new");
+
+			cleanupSpy.mockRestore();
+		});
+
+		it("should still redirect when cleanup throws an error", async () => {
+			const cleanupSpy = vi
+				.spyOn(GithubAppUtil, "cleanupOrphanedGitHubAppInstallations")
+				.mockRejectedValue(new Error("Cleanup failed"));
+
+			const response = await request(app)
+				.post("/github/setup/redirect")
+				.send({})
+				.set("Cookie", `authToken=${authToken}`);
+
+			expect(response.status).toBe(200);
+			expect(response.body.redirectUrl).toContain("https://github.com/apps/test-app/installations/new");
+
+			cleanupSpy.mockRestore();
+		});
 	});
 
 	describe("GET /installation/callback (no auth)", () => {
@@ -226,7 +259,7 @@ describe("GitHubAppRouter", () => {
 			publicApp.use(express.json());
 			publicApp.use(cookieParser());
 			publicApp.use((req, _res, next) => {
-				req.session = {};
+				req.session = {} as unknown as typeof req.session;
 				next();
 			});
 			publicApp.use(
@@ -1328,6 +1361,18 @@ describe("GitHubAppRouter", () => {
 				{ full_name: "owner/repo", default_branch: "main" } as never,
 			]);
 
+			// Installation exists in the tenant's local DB
+			githubInstallationDao.lookupByInstallationId = vi.fn().mockResolvedValue({
+				id: 1,
+				name: "test-org",
+				installationId: 100,
+				appId: 12345,
+				repos: ["owner/repo"],
+				containerType: "org",
+				createdAt: new Date(),
+				updatedAt: new Date(),
+			});
+
 			const newIntegration = mockIntegration({
 				id: 1,
 				type: "github",
@@ -1393,6 +1438,18 @@ describe("GitHubAppRouter", () => {
 			vi.spyOn(GithubAppUtil, "getRepositoriesForInstallation").mockResolvedValue([
 				{ full_name: "owner/repo", default_branch: "main" } as never,
 			]);
+
+			// Installation exists in the tenant's local DB
+			githubInstallationDao.lookupByInstallationId = vi.fn().mockResolvedValue({
+				id: 1,
+				name: "test-org",
+				installationId: 100,
+				appId: 12345,
+				repos: ["owner/repo"],
+				containerType: "org",
+				createdAt: new Date(),
+				updatedAt: new Date(),
+			});
 
 			const newIntegration = mockIntegration({
 				id: 1,
@@ -1553,6 +1610,66 @@ describe("GitHubAppRouter", () => {
 			expect(response.body).toEqual({ error: "Failed to delete installation" });
 		});
 
+		it("should call uninstallGitHubApp after local deletion", async () => {
+			const uninstallSpy = vi.spyOn(GithubAppUtil, "uninstallGitHubApp").mockResolvedValue(true);
+
+			const installation = {
+				id: 1,
+				name: "test-org",
+				appId: 100,
+				installationId: 12345,
+				repos: [],
+				containerType: "org" as const,
+				createdAt: new Date(),
+				updatedAt: new Date(),
+			};
+
+			githubInstallationDao.listInstallations = vi.fn().mockResolvedValue([installation]);
+			integrationsManager.listIntegrations = vi.fn().mockResolvedValue([]);
+			githubInstallationDao.deleteInstallation = vi.fn().mockResolvedValue(undefined);
+
+			const response = await request(app)
+				.delete("/github/installations/1")
+				.set("Cookie", `authToken=${authToken}`);
+
+			expect(response.status).toBe(200);
+			expect(uninstallSpy).toHaveBeenCalledWith(12345);
+
+			uninstallSpy.mockRestore();
+		});
+
+		it("should still succeed when GitHub uninstall fails", async () => {
+			const uninstallSpy = vi
+				.spyOn(GithubAppUtil, "uninstallGitHubApp")
+				.mockRejectedValue(new Error("GitHub API error"));
+
+			const installation = {
+				id: 1,
+				name: "test-org",
+				appId: 100,
+				installationId: 12345,
+				repos: [],
+				containerType: "org" as const,
+				createdAt: new Date(),
+				updatedAt: new Date(),
+			};
+
+			githubInstallationDao.listInstallations = vi.fn().mockResolvedValue([installation]);
+			integrationsManager.listIntegrations = vi.fn().mockResolvedValue([]);
+			githubInstallationDao.deleteInstallation = vi.fn().mockResolvedValue(undefined);
+
+			const response = await request(app)
+				.delete("/github/installations/1")
+				.set("Cookie", `authToken=${authToken}`);
+
+			// Should still succeed — uninstall failure is logged but not propagated
+			expect(response.status).toBe(200);
+			expect(response.body).toEqual({ success: true, deletedIntegrations: 0 });
+			expect(uninstallSpy).toHaveBeenCalledWith(12345);
+
+			uninstallSpy.mockRestore();
+		});
+
 		it("should delete integrations matching owner prefix even without installationId", async () => {
 			const installation = {
 				id: 1,
@@ -1600,6 +1717,272 @@ describe("GitHubAppRouter", () => {
 			expect(integrationsManager.deleteIntegration).toHaveBeenCalledWith(integration2);
 			expect(integrationsManager.deleteIntegration).not.toHaveBeenCalledWith(integration3);
 			expect(githubInstallationDao.deleteInstallation).toHaveBeenCalledWith(1);
+		});
+
+		it("should clean up installation mapping in registry when registryClient is provided", async () => {
+			const mockRegistryClient = {
+				deleteInstallationMapping: vi.fn().mockResolvedValue(undefined),
+			};
+			const registryApp = express();
+			registryApp.use(express.json());
+			registryApp.use(cookieParser());
+			registryApp.use((req, _res, next) => {
+				req.session = {} as unknown as typeof req.session;
+				next();
+			});
+			registryApp.use("/github", createAuthHandler(tokenUtil));
+			registryApp.use(
+				"/github",
+				createGitHubAppRouter(mockDaoProvider(githubInstallationDao), integrationsManager, {
+					registryClient: mockRegistryClient as never,
+				}),
+			);
+
+			const installation = {
+				id: 1,
+				name: "test-org",
+				appId: 100,
+				installationId: 12345,
+				repos: [],
+				containerType: "org" as const,
+				createdAt: new Date(),
+				updatedAt: new Date(),
+			};
+
+			githubInstallationDao.listInstallations = vi.fn().mockResolvedValue([installation]);
+			integrationsManager.listIntegrations = vi.fn().mockResolvedValue([]);
+			githubInstallationDao.deleteInstallation = vi.fn().mockResolvedValue(undefined);
+
+			const response = await request(registryApp)
+				.delete("/github/installations/1")
+				.set("Cookie", `authToken=${authToken}`);
+
+			expect(response.status).toBe(200);
+			expect(mockRegistryClient.deleteInstallationMapping).toHaveBeenCalledWith(12345);
+		});
+
+		it("should succeed even if registry cleanup fails", async () => {
+			const mockRegistryClient = {
+				deleteInstallationMapping: vi.fn().mockRejectedValue(new Error("Registry error")),
+			};
+			const registryApp = express();
+			registryApp.use(express.json());
+			registryApp.use(cookieParser());
+			registryApp.use((req, _res, next) => {
+				req.session = {} as unknown as typeof req.session;
+				next();
+			});
+			registryApp.use("/github", createAuthHandler(tokenUtil));
+			registryApp.use(
+				"/github",
+				createGitHubAppRouter(mockDaoProvider(githubInstallationDao), integrationsManager, {
+					registryClient: mockRegistryClient as never,
+				}),
+			);
+
+			const installation = {
+				id: 1,
+				name: "test-org",
+				appId: 100,
+				installationId: 12345,
+				repos: [],
+				containerType: "org" as const,
+				createdAt: new Date(),
+				updatedAt: new Date(),
+			};
+
+			githubInstallationDao.listInstallations = vi.fn().mockResolvedValue([installation]);
+			integrationsManager.listIntegrations = vi.fn().mockResolvedValue([]);
+			githubInstallationDao.deleteInstallation = vi.fn().mockResolvedValue(undefined);
+
+			const response = await request(registryApp)
+				.delete("/github/installations/1")
+				.set("Cookie", `authToken=${authToken}`);
+
+			// Should still succeed — registry cleanup failure is logged but not propagated
+			expect(response.status).toBe(200);
+			expect(response.body).toEqual({ success: true, deletedIntegrations: 0 });
+			expect(mockRegistryClient.deleteInstallationMapping).toHaveBeenCalledWith(12345);
+		});
+	});
+
+	describe("multi-tenant security", () => {
+		afterEach(() => {
+			delete process.env.MULTI_TENANT_ENABLED;
+			resetConfig();
+		});
+
+		describe("POST /repos/:owner/:repo cross-tenant protection", () => {
+			it("should return 403 when the installation is not in the tenant's local DB", async () => {
+				integrationsManager.listIntegrations = vi.fn().mockResolvedValue([]);
+
+				vi.spyOn(GithubAppUtil, "createGitHubAppJWT").mockReturnValue("mock-jwt-token");
+				vi.spyOn(GithubAppUtil, "getInstallations").mockResolvedValue([
+					{ id: 100, account: { login: "other-org" } } as never,
+				]);
+				vi.spyOn(GithubAppUtil, "getRepositoriesForInstallation").mockResolvedValue([
+					{ full_name: "owner/repo", default_branch: "main" } as never,
+				]);
+
+				// Default mock lookupByInstallationId returns undefined,
+				// simulating that this installation belongs to another tenant
+				githubInstallationDao.lookupByInstallationId = vi.fn().mockResolvedValue(undefined);
+
+				const response = await request(app)
+					.post("/github/repos/owner/repo")
+					.set("Cookie", `authToken=${authToken}`)
+					.send({ branch: "main" });
+
+				expect(response.status).toBe(403);
+				expect(response.body).toEqual({
+					error: "This GitHub installation is not connected to your organization",
+				});
+			});
+
+			it("should allow enabling a repo when installation exists in tenant's local DB", async () => {
+				integrationsManager.listIntegrations = vi.fn().mockResolvedValue([]);
+
+				vi.spyOn(GithubAppUtil, "createGitHubAppJWT").mockReturnValue("mock-jwt-token");
+				vi.spyOn(GithubAppUtil, "getInstallations").mockResolvedValue([
+					{ id: 100, account: { login: "test-org" } } as never,
+				]);
+				vi.spyOn(GithubAppUtil, "getRepositoriesForInstallation").mockResolvedValue([
+					{ full_name: "owner/repo", default_branch: "main" } as never,
+				]);
+
+				// Installation exists in tenant's local DB
+				githubInstallationDao.lookupByInstallationId = vi.fn().mockResolvedValue({
+					id: 1,
+					name: "test-org",
+					installationId: 100,
+					appId: 12345,
+					repos: ["owner/repo"],
+					containerType: "org",
+					createdAt: new Date(),
+					updatedAt: new Date(),
+				});
+
+				const newIntegration = mockIntegration({
+					id: 1,
+					type: "github",
+					metadata: {
+						repo: "owner/repo",
+						branch: "main",
+						features: [],
+						githubAppId: 12345,
+						installationId: 100,
+					},
+				});
+				integrationsManager.createIntegration = vi.fn().mockResolvedValue(newIntegration);
+
+				const response = await request(app)
+					.post("/github/repos/owner/repo")
+					.set("Cookie", `authToken=${authToken}`)
+					.send({ branch: "main" });
+
+				expect(response.status).toBe(201);
+				expect(integrationsManager.createIntegration).toHaveBeenCalled();
+			});
+		});
+
+		describe("GET /installation/callback in multi-tenant mode", () => {
+			let publicApp: Express;
+
+			beforeEach(() => {
+				process.env.MULTI_TENANT_ENABLED = "true";
+				resetConfig();
+
+				const testIntegrationsManager = createMockIntegrationsManager();
+				const testGithubInstallationDao = mockGitHubInstallationDao();
+
+				publicApp = express();
+				publicApp.use(express.json());
+				publicApp.use(cookieParser());
+				publicApp.use((req, _res, next) => {
+					req.session = {} as unknown as typeof req.session;
+					next();
+				});
+				publicApp.use(
+					"/github",
+					createGitHubAppRouter(mockDaoProvider(testGithubInstallationDao), testIntegrationsManager, {}),
+				);
+			});
+
+			it("should redirect with error when callback is hit in multi-tenant mode", async () => {
+				const response = await request(publicApp)
+					.get("/github/installation/callback")
+					.query({ setup_action: "install", installation_id: "123" });
+
+				expect(response.status).toBe(302);
+				expect(response.header.location).toBe("http://localhost:3000/?error=use_connect_gateway");
+			});
+
+			it("should redirect with error even when state is present but not encrypted", async () => {
+				const response = await request(publicApp)
+					.get("/github/installation/callback")
+					.query({
+						setup_action: "install",
+						installation_id: "123",
+						state: encodeURIComponent("https://tenant.example.com"),
+					});
+
+				expect(response.status).toBe(302);
+				expect(response.header.location).toBe("http://localhost:3000/?error=use_connect_gateway");
+			});
+		});
+
+		describe("missing tenant context in multi-tenant mode", () => {
+			let multiTenantApp: Express;
+
+			beforeEach(() => {
+				process.env.MULTI_TENANT_ENABLED = "true";
+				resetConfig();
+
+				const testIntegrationsManager = createMockIntegrationsManager();
+				const testGithubInstallationDao = mockGitHubInstallationDao();
+
+				const authHandler = createAuthHandler(tokenUtil);
+
+				multiTenantApp = express();
+				multiTenantApp.use(express.json());
+				multiTenantApp.use(cookieParser());
+				multiTenantApp.use((req, _res, next) => {
+					req.session = {} as unknown as typeof req.session;
+					next();
+				});
+				multiTenantApp.use("/github", authHandler);
+				multiTenantApp.use(
+					"/github",
+					createGitHubAppRouter(mockDaoProvider(testGithubInstallationDao), testIntegrationsManager, {}),
+				);
+			});
+
+			it("should return 500 for GET /summary when tenant context is missing", async () => {
+				const response = await request(multiTenantApp)
+					.get("/github/summary")
+					.set("Cookie", `authToken=${authToken}`);
+
+				expect(response.status).toBe(500);
+				expect(response.body).toEqual({ error: "Failed to fetch summary" });
+			});
+
+			it("should return 500 for GET /installations when tenant context is missing", async () => {
+				const response = await request(multiTenantApp)
+					.get("/github/installations")
+					.set("Cookie", `authToken=${authToken}`);
+
+				expect(response.status).toBe(500);
+				expect(response.body).toEqual({ error: "Failed to fetch installations" });
+			});
+
+			it("should return 500 for POST /installations/sync when tenant context is missing", async () => {
+				const response = await request(multiTenantApp)
+					.post("/github/installations/sync")
+					.set("Cookie", `authToken=${authToken}`);
+
+				expect(response.status).toBe(500);
+				expect(response.body).toEqual({ error: "Failed to sync installations" });
+			});
 		});
 	});
 

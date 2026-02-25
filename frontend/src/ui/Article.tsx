@@ -2,12 +2,14 @@ import { MarkdownContent } from "../components/MarkdownContent";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
 import { TogglePill } from "../components/ui/TogglePill";
+import { SpaceImageProvider } from "../context/SpaceImageContext";
 import { useClient } from "../contexts/ClientContext";
 import { useNavigation } from "../contexts/NavigationContext";
+import { useLocation } from "../contexts/RouterContext";
 import { formatTimestamp } from "../util/DateTimeUtil";
 import { getLog } from "../util/Logger";
 import type { Doc, DocContentMetadata } from "jolli-common";
-import { ArrowLeft, Check, Code, Edit, ExternalLink, FileCode, FileText, FileUp, Play } from "lucide-react";
+import { Check, Code, Edit, ExternalLink, FileCode, FileText, FileUp, Play } from "lucide-react";
 
 /**
  * Returns a user-friendly label for the content type
@@ -88,6 +90,7 @@ export function Article({ jrn }: ArticleProps): ReactElement {
 	const content = useIntlayer("article");
 	const dateTimeContent = useIntlayer("date-time");
 	const { navigate, open } = useNavigation();
+	const location = useLocation();
 	const [doc, setDoc] = useState<Doc | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [viewMode, setViewMode] = useState<"rendered" | "raw">("rendered");
@@ -109,11 +112,7 @@ export function Article({ jrn }: ArticleProps): ReactElement {
 		}
 	}
 
-	function handleBack() {
-		navigate("/articles");
-	}
-
-	/* v8 ignore next 14 - async navigation handler tested indirectly */
+	/* v8 ignore next 17 - async navigation handler tested indirectly */
 	async function handleEditArticle() {
 		if (!doc) {
 			return;
@@ -123,7 +122,10 @@ export function Article({ jrn }: ArticleProps): ReactElement {
 			const draft = await client.docs().createDraftFromArticle(doc.jrn);
 			// Small delay to ensure draft is fully persisted before navigating
 			await new Promise(resolve => setTimeout(resolve, 100));
-			navigate(`/article-draft/${draft.id}`);
+			// Navigate with ?edit= query param to show inline editor without changing the path
+			const params = new URLSearchParams(location.search);
+			params.set("edit", String(draft.id));
+			navigate(`/articles?${params.toString()}`);
 		} catch (error) {
 			log.error(error, "Failed to create draft from article.");
 		}
@@ -191,11 +193,7 @@ export function Article({ jrn }: ArticleProps): ReactElement {
 	return (
 		<div className="bg-card rounded-lg border h-full overflow-hidden flex flex-col">
 			{/* Top bar */}
-			<div className="flex items-center justify-between p-6 border-b">
-				<Button variant="ghost" size="sm" onClick={handleBack} className="gap-2">
-					<ArrowLeft className="h-4 w-4" />
-					{content.backToArticles}
-				</Button>
+			<div className="flex items-center justify-end p-6 border-b">
 				<div className="flex gap-2">
 					{!metadata.isSourceDoc && (
 						<Button
@@ -216,7 +214,7 @@ export function Article({ jrn }: ArticleProps): ReactElement {
 				</div>
 			</div>
 
-			<div className="flex-1 overflow-y-auto">
+			<div className="flex-1 overflow-y-auto scrollbar-thin">
 				<div className="max-w-7xl mx-auto p-6">
 					<div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-6">
 						{/* Main content */}
@@ -326,7 +324,9 @@ export function Article({ jrn }: ArticleProps): ReactElement {
 											<code>{doc.content}</code>
 										</pre>
 									) : (
-										<MarkdownContent>{doc.content}</MarkdownContent>
+										<SpaceImageProvider spaceId={doc.spaceId ?? undefined}>
+											<MarkdownContent>{doc.content}</MarkdownContent>
+										</SpaceImageProvider>
 									)}
 								</div>
 							</div>

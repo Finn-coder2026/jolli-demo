@@ -1,6 +1,21 @@
 import { compile } from "@mdx-js/mdx";
 import type { OpenApiValidationError } from "jolli-common";
+import { sanitizeMdToMdx } from "jolli-common/server";
 import { parse as parseYaml } from "yaml";
+
+/**
+ * MDX compile format: 'md' (lenient) or 'mdx' (strict)
+ */
+type MdxFormat = "md" | "mdx";
+
+/**
+ * Derives MDX compile format from MIME content type.
+ * - 'text/mdx' → 'mdx' (strict parsing)
+ * - 'text/markdown' or undefined → 'md' (lenient parsing)
+ */
+export function getFormatFromContentType(contentType?: string): MdxFormat {
+	return contentType === "text/mdx" ? "mdx" : "md";
+}
 
 /**
  * Type for YAML parse errors with line position info
@@ -146,9 +161,15 @@ export function extractErrorPosition(error: unknown): { line?: number; column?: 
  *
  * @param content - The MDX content to validate
  * @param filePath - Optional file path for error messages
+ * @param contentType - MIME content type: 'text/mdx' for strict, 'text/markdown' or undefined for lenient
  * @returns Validation result with errors
  */
-export async function validateMdxContent(content: string, filePath?: string): Promise<MdxValidationResult> {
+export async function validateMdxContent(
+	content: string,
+	filePath?: string,
+	contentType?: string,
+): Promise<MdxValidationResult> {
+	const format = getFormatFromContentType(contentType);
 	const errors: Array<OpenApiValidationError> = [];
 
 	// Step 1: Validate frontmatter YAML
@@ -156,12 +177,15 @@ export async function validateMdxContent(content: string, filePath?: string): Pr
 	errors.push(...frontmatterErrors);
 
 	// Step 2: Validate MDX syntax by compiling
+	// Sanitize Markdown to MDX before validation (converts HTML comments, autolinks, etc.)
+	// This allows users to use familiar Markdown syntax that MDX doesn't support
+	const sanitizedContent = sanitizeMdToMdx(content);
 	try {
-		await compile(content, {
+		await compile(sanitizedContent, {
 			// Don't output anything, just validate
 			development: false,
-			// Use MDX format
-			format: "mdx",
+			// Use specified format: 'md' is lenient (curly braces as text), 'mdx' is strict
+			format,
 		});
 	} catch (e) {
 		const error = e as Error & VFileMessage;
@@ -191,11 +215,13 @@ export async function validateMdxContent(content: string, filePath?: string): Pr
  *
  * @param files - Map of file path to content
  * @param concurrency - Maximum concurrent validations (default: 10)
+ * @param contentType - MIME content type: 'text/mdx' for strict, 'text/markdown' or undefined for lenient
  * @returns Batch validation result
  */
 export async function validateMdxBatch(
 	files: Map<string, string>,
 	concurrency = 10,
+	contentType?: string,
 ): Promise<MdxBatchValidationResult> {
 	const results = new Map<string, MdxValidationResult>();
 	const entries = Array.from(files.entries());
@@ -206,7 +232,7 @@ export async function validateMdxBatch(
 
 		const chunkResults = await Promise.allSettled(
 			chunk.map(async ([path, content]) => {
-				const result = await validateMdxContent(content, path);
+				const result = await validateMdxContent(content, path, contentType);
 				return { path, result };
 			}),
 		);

@@ -15,11 +15,6 @@ import {
 	executeGetCurrentArticleTool,
 } from "../adapters/tools/GetCurrentArticleTool";
 import {
-	createGetLatestLinearTicketsToolDefinition,
-	executeGetLatestLinearTicketsTool,
-	type GetLatestLinearTicketsArgs,
-} from "../adapters/tools/GetLatestLinearTicketsTool";
-import {
 	createSyncUpArticleToolDefinition,
 	executeSyncUpArticleTool,
 	type SyncUpArticleArgs,
@@ -34,13 +29,16 @@ import {
 	type GithubIntegrationSchemaParams,
 	type IntegrationSchemaParams,
 } from "../schemas/IntegrationSchemas";
+import { getTenantContext } from "../tenant/TenantContext";
 import type { JobContext } from "../types/JobTypes";
+import { fetchGithubCompare } from "../util/GithubAppUtil";
 import { getAccessTokenForGithubRepoIntegration } from "../util/IntegrationUtil";
 import { getLog } from "../util/Logger";
+import { createSandboxServiceToken } from "../util/TokenUtil";
 import { jobDefinitionBuilder } from "./JobDefinitions";
 import type { JobScheduler } from "./JobScheduler";
 import { runWorkflowForJob } from "jolli-agent/workflows";
-import { type GithubRepoIntegrationMetadata, jrnParser } from "jolli-common";
+import { type GithubRepoIntegrationMetadata, jrnParser, jrnParserV3 } from "jolli-common";
 import { z } from "zod";
 
 const log = getLog(import.meta);
@@ -81,6 +79,44 @@ const RunJolliScriptSchema = z.object({
 
 type RunJolliScriptParams = z.infer<typeof RunJolliScriptSchema>;
 
+const AnalyzeSourceDocSchema = z.object({
+	docJrn: z.string(),
+	before: z.string(),
+	after: z.string(),
+	owner: z.string(),
+	repo: z.string(),
+	branch: z.string(),
+}) as z.ZodType<{
+	docJrn: string;
+	before: string;
+	after: string;
+	owner: string;
+	repo: string;
+	branch: string;
+}>;
+
+type AnalyzeSourceDocParams = z.infer<typeof AnalyzeSourceDocSchema>;
+
+const CliImpactSchema = z.object({
+	spaceId: z.number(),
+	sourceId: z.number().optional(),
+	integrationId: z.number(),
+	eventJrn: z.string(),
+	killSandbox: z.boolean().default(false),
+	afterSha: z.string().optional(),
+	cursorSha: z.string().optional(),
+}) as z.ZodType<{
+	spaceId: number;
+	sourceId?: number;
+	integrationId: number;
+	eventJrn: string;
+	killSandbox: boolean;
+	afterSha?: string;
+	cursorSha?: string;
+}>;
+
+type CliImpactParams = z.infer<typeof CliImpactSchema>;
+
 // Schema for the job stats
 const KnowledgeGraphStatsSchema = z.object({
 	sandboxId: z.string().optional(),
@@ -95,14 +131,151 @@ type KnowledgeGraphStats = z.infer<typeof KnowledgeGraphStatsSchema>;
 
 /**
  * Creates knowledge graph jobs
+ * @param defaultDb - The default database to use when no tenant context is available.
+ *                    In multi-tenant mode, handlers will use getTenantContext() to get
+ *                    the tenant-specific database.
  */
-export function createKnowledgeGraphJobs(db: Database, integrationsManager: IntegrationsManager): KnowledgeGraphJobs {
-	const { docDao, docDraftDao, docDraftSectionChangesDao, userDao } = db as Database & {
+export function createKnowledgeGraphJobs(
+	defaultDb: Database,
+	integrationsManager: IntegrationsManager,
+): KnowledgeGraphJobs {
+	// Type assertion for the DAOs we need
+	type TypedDatabase = Database & {
 		docDao: import("../dao/DocDao").DocDao;
 		docDraftDao: import("../dao/DocDraftDao").DocDraftDao;
 		docDraftSectionChangesDao: import("../dao/DocDraftSectionChangesDao").DocDraftSectionChangesDao;
-		userDao: import("../dao/UserDao").UserDao;
+		spaceDao: import("../dao/SpaceDao").SpaceDao;
+		activeUserDao: import("../dao/ActiveUserDao").ActiveUserDao;
 	};
+
+	/**
+	 * Get the database to use - prefers tenant context, falls back to default.
+	 * This enables multi-tenant support while maintaining backward compatibility.
+	 */
+	function getDatabase(): TypedDatabase {
+		const tenantContext = getTenantContext();
+		if (tenantContext?.database) {
+			return tenantContext.database as TypedDatabase;
+		}
+		return defaultDb as TypedDatabase;
+	}
+
+	// Helper functions to get DAOs from the current database
+	function getDocDao() {
+		return getDatabase().docDao;
+	}
+	function getDocDraftDao() {
+		return getDatabase().docDraftDao;
+	}
+	function getDocDraftSectionChangesDao() {
+		return getDatabase().docDraftSectionChangesDao;
+	}
+	function getActiveUserDao() {
+		return getDatabase().activeUserDao;
+	}
+	function getSpaceDao() {
+		return getDatabase().spaceDao;
+	}
+	function getSourceDao() {
+		return getDatabase().sourceDao;
+	}
+
+	/**
+	 * Resolve the space slug from the space or by parsing the docJrn, falling back to "global".
+	 */
+	function resolveSpaceSlug(spaceSlug: string | undefined, docJrn: string): string {
+		if (spaceSlug) {
+			return spaceSlug;
+		}
+		const parsedDocJrn = jrnParser.parse(docJrn);
+		if (parsedDocJrn.success && "spaceId" in parsedDocJrn.value) {
+			return parsedDocJrn.value.spaceId || "global";
+		}
+		return "global";
+	}
+
+	/**
+	 * Validate that a space has a valid owner and create a short-lived sandbox service token.
+	 * Throws if the space has no owner or the owner user is not found.
+	 */
+	async function resolveSandboxAuth(spaceSlug: string, ownerId: number | undefined): Promise<string> {
+		if (!ownerId) {
+			throw new Error(`Space "${spaceSlug}" has no owner. Cannot create sandbox token.`);
+		}
+		// Get owner user from active_users table
+		const ownerUser = await getActiveUserDao().findById(ownerId);
+		if (!ownerUser) {
+			throw new Error(`Owner (id=${ownerId}) for space "${spaceSlug}" not found. Cannot create sandbox token.`);
+		}
+		const tenantContext = getTenantContext();
+		return createSandboxServiceToken({
+			userId: ownerUser.id,
+			email: ownerUser.email,
+			name: ownerUser.name ?? ownerUser.email,
+			picture: ownerUser.image ?? undefined,
+			spaceSlug,
+			...(tenantContext ? { tenantId: tenantContext.tenant.id, orgId: tenantContext.org.id } : {}),
+			ttl: "30m",
+		});
+	}
+
+	/**
+	 * Resolve GitHub token and repo details from the first active GitHub integration.
+	 * Returns undefined values if no active integration is found.
+	 */
+	async function resolveGithubTokenFromIntegration(context: JobContext): Promise<{
+		githubToken: string | undefined;
+		githubOrg: string | undefined;
+		githubRepo: string | undefined;
+		githubBranch: string | undefined;
+	}> {
+		let githubToken: string | undefined;
+		let githubOrg: string | undefined;
+		let githubRepo: string | undefined;
+		let githubBranch: string | undefined;
+		try {
+			const integrations = await integrationsManager.listIntegrations();
+			context.log("found-integrations", {
+				count: integrations.length,
+				integrations: integrations.map(i => `${i.name} (type=${i.type}, status=${i.status})`).join(", "),
+			});
+
+			const activeGithubIntegration = integrations.find(i => i.type === "github" && i.status === "active");
+
+			if (activeGithubIntegration) {
+				const gh = await getAccessTokenForGithubRepoIntegration(activeGithubIntegration, true);
+
+				// Handle the case where gh might be undefined (e.g., in tests)
+				if (gh) {
+					githubToken = gh.accessToken;
+					githubOrg = gh.owner;
+					githubRepo = gh.repo;
+					// Get branch from metadata if available
+					const metadata = activeGithubIntegration.metadata as { branch?: string };
+					githubBranch = metadata?.branch || "main";
+				}
+
+				/* v8 ignore start - debug logging */
+				const tokenPreview = githubToken
+					? `${githubToken.substring(0, 8)}...${githubToken.substring(githubToken.length - 4)}`
+					: "undefined";
+				context.log("using-github-token", {
+					integration: activeGithubIntegration.name,
+					repo: githubOrg && githubRepo ? `${githubOrg}/${githubRepo}` : "unknown",
+					branch: githubBranch || "main",
+					tokenPreview,
+					tokenLength: githubToken?.length || 0,
+				});
+				/* v8 ignore stop */
+			} else {
+				context.log("no-github-integration");
+			}
+		} catch (error) {
+			context.log("github-token-error", { error: String(error) });
+			log.error(error, "Failed to get GitHub token from integration");
+		}
+		return { githubToken, githubOrg, githubRepo, githubBranch };
+	}
 
 	function getGithubUrl(integration: GithubIntegrationSchemaParams, context?: JobContext): string {
 		const repo = integration.metadata.repo;
@@ -271,10 +444,10 @@ export function createKnowledgeGraphJobs(db: Database, integrationsManager: Inte
 						const data = await fs.readFile(filename);
 						// Generate JRN using article() which normalizes: lowercase, spaces to hyphens
 						const jrn = jrnParser.article(rel);
-						const existing = await docDao.readDoc(jrn);
+						const existing = await getDocDao().readDoc(jrn);
 						const title = rel;
 						if (existing) {
-							await docDao.updateDoc({
+							await getDocDao().updateDoc({
 								...existing,
 								content: data,
 								contentType: "text/markdown",
@@ -293,7 +466,7 @@ export function createKnowledgeGraphJobs(db: Database, integrationsManager: Inte
 								.replace(/[/\\]/g, "-")
 								.replace(/\s+/g, "-");
 
-							await docDao.createDoc({
+							await getDocDao().createDoc({
 								jrn,
 								slug,
 								path: "",
@@ -306,7 +479,6 @@ export function createKnowledgeGraphJobs(db: Database, integrationsManager: Inte
 								spaceId: undefined,
 								parentId: undefined,
 								docType: "document",
-								sortOrder: 0,
 								createdBy: "knowledge-graph",
 							});
 						}
@@ -354,11 +526,11 @@ export function createKnowledgeGraphJobs(db: Database, integrationsManager: Inte
 						const data = await fs.readFile(filename);
 						// Generate JRN using article() which normalizes: lowercase, spaces to hyphens
 						const jrn = jrnParser.article(rel);
-						const existing = await docDao.readDoc(jrn);
+						const existing = await getDocDao().readDoc(jrn);
 						const title = rel;
 
 						if (existing) {
-							await docDao.updateDoc({
+							await getDocDao().updateDoc({
 								...existing,
 								content: data,
 								contentType: "text/markdown",
@@ -377,7 +549,7 @@ export function createKnowledgeGraphJobs(db: Database, integrationsManager: Inte
 								.replace(/[/\\]/g, "-")
 								.replace(/\s+/g, "-");
 
-							await docDao.createDoc({
+							await getDocDao().createDoc({
 								jrn,
 								slug,
 								path: "",
@@ -390,7 +562,6 @@ export function createKnowledgeGraphJobs(db: Database, integrationsManager: Inte
 								spaceId: undefined,
 								parentId: undefined,
 								docType: "document",
-								sortOrder: 0,
 								createdBy: "run-jolliscript",
 							});
 						}
@@ -422,7 +593,7 @@ export function createKnowledgeGraphJobs(db: Database, integrationsManager: Inte
 				// List all documents with the new JRN format (docs service, article type)
 				// Filter for articles in the global workspace
 				const jrnPrefix = "jrn:prod:global:docs:article/";
-				const docs = await docDao.listDocs({ startsWithJrn: "" });
+				const docs = await getDocDao().listDocs({ startsWithJrn: "" });
 
 				if (!docs || docs.length === 0) {
 					context.log("no-documents");
@@ -489,7 +660,7 @@ export function createKnowledgeGraphJobs(db: Database, integrationsManager: Inte
 
 		// If installationId is present, validate it has repos
 		if (hasInstallationId && githubIntegration.metadata.installationId) {
-			const installation = await db.githubInstallationDao.lookupByInstallationId(
+			const installation = await getDatabase().githubInstallationDao.lookupByInstallationId(
 				githubIntegration.metadata.installationId,
 			);
 			if (installation && (!installation.repos || installation.repos.length === 0)) {
@@ -509,6 +680,49 @@ export function createKnowledgeGraphJobs(db: Database, integrationsManager: Inte
 		context.log("token-obtained", { integrationId });
 
 		return { integration: githubIntegration, accessToken, githubUrl };
+	}
+
+	function parseGithubRepoFullName(repo: string): { org: string; repo: string } | undefined {
+		const [org, name] = repo.split("/", 2);
+		if (!org || !name) {
+			return;
+		}
+		return { org, repo: name };
+	}
+
+	function resolveCliImpactRepoDetails(
+		eventJrn: string,
+		integration: GithubIntegrationSchemaParams,
+	): { githubOrg: string; githubRepo: string; githubBranch: string; githubUrl: string } {
+		const metadataRepo = parseGithubRepoFullName(integration.metadata.repo || "");
+		if (!metadataRepo) {
+			throw new Error(`Invalid integration repository format: ${integration.metadata.repo || "<empty>"}`);
+		}
+
+		const parsedEventJrn = jrnParserV3.parse(eventJrn);
+		const parsedGithubSource =
+			parsedEventJrn.success &&
+			jrnParserV3.isSources(parsedEventJrn.value) &&
+			jrnParserV3.isGithubSource(parsedEventJrn.value)
+				? parsedEventJrn.value
+				: undefined;
+
+		if (
+			parsedGithubSource?.org &&
+			parsedGithubSource?.repo &&
+			(parsedGithubSource.org !== metadataRepo.org || parsedGithubSource.repo !== metadataRepo.repo)
+		) {
+			throw new Error(
+				`Event JRN repo ${parsedGithubSource.org}/${parsedGithubSource.repo} does not match integration repo ${metadataRepo.org}/${metadataRepo.repo}`,
+			);
+		}
+
+		const githubOrg = parsedGithubSource?.org || metadataRepo.org;
+		const githubRepo = parsedGithubSource?.repo || metadataRepo.repo;
+		const githubBranch = parsedGithubSource?.branch || integration.metadata.branch || "main";
+		const githubUrl = `https://github.com/${githubOrg}/${githubRepo}`;
+
+		return { githubOrg, githubRepo, githubBranch, githubUrl };
 	}
 
 	/**
@@ -774,6 +988,89 @@ export function createKnowledgeGraphJobs(db: Database, integrationsManager: Inte
 		}
 	}
 
+	async function cliImpactJobHandler(params: CliImpactParams, context: JobContext): Promise<void> {
+		const { spaceId, sourceId, integrationId, eventJrn, killSandbox = false, afterSha, cursorSha } = params;
+		context.log("starting", { spaceId, sourceId, integrationId, eventJrn, afterSha, cursorSha });
+
+		try {
+			await updateJobPhase(context, "initializing", 0, "");
+
+			const space = await getSpaceDao().getSpace(spaceId);
+			if (!space) {
+				throw new Error(`Space with ID ${spaceId} not found`);
+			}
+			if (!space.slug || space.slug.trim().length === 0) {
+				throw new Error(`Space ${spaceId} has no slug`);
+			}
+
+			const { integration, accessToken } = await setupGithubIntegration(context, integrationId);
+			const { githubOrg, githubRepo, githubBranch, githubUrl } = resolveCliImpactRepoDetails(
+				eventJrn,
+				integration,
+			);
+			let sourceName: string | undefined;
+			if (sourceId) {
+				const source = await getSourceDao().getSource(sourceId);
+				if (source?.name?.trim()) {
+					sourceName = source.name.trim();
+				}
+			}
+
+			await updateJobPhase(context, "preparing-workflow", 10, githubUrl);
+
+			const sandboxAuthToken = await resolveSandboxAuth(space.slug, space.ownerId);
+
+			const workflowConfig = getWorkflowConfig(accessToken);
+			workflowConfig.jolliAuthToken = sandboxAuthToken;
+			workflowConfig.jolliSpace = space.slug;
+
+			await updateJobPhase(context, "starting-sandbox", 20, githubUrl);
+
+			const { logger: customLogger, getSandboxId } = createSandboxCapturingLogger(context, githubUrl);
+			const result = await runWorkflowForJob(
+				"cli-impact",
+				workflowConfig,
+				{
+					githubOrg,
+					githubRepo,
+					githubBranch,
+					eventJrn,
+					sourceName,
+					killSandbox,
+					cursorSha,
+				},
+				customLogger,
+			);
+
+			await processWorkflowResult(context, result, getSandboxId(), githubUrl);
+
+			// Advance the source cursor after successful processing
+			if (sourceId && afterSha) {
+				try {
+					await getSourceDao().updateCursor(sourceId, {
+						value: afterSha,
+						updatedAt: new Date().toISOString(),
+					});
+					context.log("source-cursor-updated", { sourceId, afterSha });
+				} catch (cursorError) {
+					// Don't fail the job if cursor update fails — the impact analysis already succeeded
+					const errorMsg = cursorError instanceof Error ? cursorError.message : String(cursorError);
+					context.log("source-cursor-update-failed", { sourceId, afterSha, error: errorMsg });
+					log.error(
+						"Failed to update source cursor: sourceId=%d, afterSha=%s, error=%s",
+						sourceId,
+						afterSha,
+						errorMsg,
+					);
+				}
+			}
+
+			context.log("completed", { spaceId, integrationId, eventJrn });
+		} catch (error) {
+			handleJobError(context, error, "run cli-impact workflow", { integrationId });
+		}
+	}
+
 	/**
 	 * Extract job steps from document front matter
 	 */
@@ -804,15 +1101,15 @@ export function createKnowledgeGraphJobs(db: Database, integrationsManager: Inte
 	async function executeArticleTool(call: ToolCall, runState: RunState, articleId: string): Promise<string> {
 		switch (call.name) {
 			case "get_current_article":
-				return await executeGetCurrentArticleTool(undefined, articleId, docDraftDao, docDao);
+				return await executeGetCurrentArticleTool(undefined, articleId, getDocDraftDao(), getDocDao());
 			case "create_article":
 				return await executeCreateArticleTool(
 					undefined,
 					articleId,
 					call.arguments as { content: string },
-					docDraftDao,
+					getDocDraftDao(),
 					0, // System user ID for job-initiated edits
-					docDao,
+					getDocDao(),
 				);
 			case "edit_section":
 				log.info("Executing edit_section with suggestion mode for article %s", articleId);
@@ -820,11 +1117,11 @@ export function createKnowledgeGraphJobs(db: Database, integrationsManager: Inte
 					undefined,
 					articleId,
 					call.arguments as { sectionTitle: string; newContent: string },
-					docDraftDao,
+					getDocDraftDao(),
 					0, // System user ID for job-initiated edits (unused in article suggestion mode)
-					docDao,
-					docDraftSectionChangesDao, // Enable suggestion mode
-					userDao, // For looking up article owner
+					getDocDao(),
+					getDocDraftSectionChangesDao(), // Enable suggestion mode
+					getActiveUserDao(), // For looking up article owner
 				);
 			case "create_section":
 				log.info("Executing create_section with suggestion mode for article %s", articleId);
@@ -832,11 +1129,11 @@ export function createKnowledgeGraphJobs(db: Database, integrationsManager: Inte
 					undefined,
 					articleId,
 					call.arguments as { sectionTitle: string; content: string; insertAfter: string },
-					docDraftDao,
+					getDocDraftDao(),
 					0, // System user ID for job-initiated edits (unused in article suggestion mode)
-					docDao,
-					docDraftSectionChangesDao, // Enable suggestion mode
-					userDao, // For looking up article owner
+					getDocDao(),
+					getDocDraftSectionChangesDao(), // Enable suggestion mode
+					getActiveUserDao(), // For looking up article owner
 				);
 			case "delete_section":
 				log.info("Executing delete_section with suggestion mode for article %s", articleId);
@@ -844,19 +1141,15 @@ export function createKnowledgeGraphJobs(db: Database, integrationsManager: Inte
 					undefined,
 					articleId,
 					call.arguments as { sectionTitle: string },
-					docDraftDao,
+					getDocDraftDao(),
 					0, // System user ID for job-initiated edits (unused in article suggestion mode)
-					docDao,
-					docDraftSectionChangesDao, // Enable suggestion mode
-					userDao, // For looking up article owner
-				);
-			case "get_latest_linear_tickets":
-				return await executeGetLatestLinearTicketsTool(
-					call.arguments as GetLatestLinearTicketsArgs | undefined,
+					getDocDao(),
+					getDocDraftSectionChangesDao(), // Enable suggestion mode
+					getActiveUserDao(), // For looking up article owner
 				);
 			case "sync_up_article":
 				// sync_up_article reads a file from the E2B sandbox and saves it to the database
-				return await executeSyncUpArticleTool(call.arguments as SyncUpArticleArgs, runState, docDao);
+				return await executeSyncUpArticleTool(call.arguments as SyncUpArticleArgs, runState, getDocDao());
 			default:
 				return `Unknown article editing tool: ${call.name}`;
 		}
@@ -873,7 +1166,7 @@ export function createKnowledgeGraphJobs(db: Database, integrationsManager: Inte
 			await updateJobPhase(context, "initializing", 0, docJrn, { docJrn });
 			log.debug({ docJrn }, "Phase: initializing");
 
-			const doc = await docDao.readDoc(docJrn);
+			const doc = await getDocDao().readDoc(docJrn);
 			log.debug({ docJrn, docFound: !!doc, contentLength: doc?.content?.length }, "Doc lookup result");
 			if (!doc) {
 				context.log("doc-not-found", { docJrn });
@@ -886,57 +1179,34 @@ export function createKnowledgeGraphJobs(db: Database, integrationsManager: Inte
 
 			await updateJobPhase(context, "preparing-workflow", 10, docJrn, { docJrn });
 
-			// Get GitHub token and repo details from first active integration (similar to CollabConvoRouter)
-			let githubToken: string | undefined;
-			let githubOrg: string | undefined;
-			let githubRepo: string | undefined;
-			let githubBranch: string | undefined;
-			try {
-				const integrations = await integrationsManager.listIntegrations();
-				context.log("found-integrations", {
-					count: integrations.length,
-					integrations: integrations.map(i => `${i.name} (type=${i.type}, status=${i.status})`).join(", "),
-				});
+			// Resolve sandbox auth context (space + short-lived token for CLI auth inside E2B)
+			const space = doc.spaceId
+				? await getSpaceDao().getSpace(doc.spaceId)
+				: await getSpaceDao().getDefaultSpace();
+			const resolvedSandboxSpace = resolveSpaceSlug(space?.slug, docJrn);
+			const sandboxAuthToken = await resolveSandboxAuth(resolvedSandboxSpace, space?.ownerId);
+			log.debug(
+				{ docJrn, sandboxSpace: resolvedSandboxSpace, hasSandboxAuthToken: !!sandboxAuthToken },
+				"Resolved sandbox auth context",
+			);
 
-				const activeGithubIntegration = integrations.find(i => i.type === "github" && i.status === "active");
-
-				if (activeGithubIntegration) {
-					const gh = await getAccessTokenForGithubRepoIntegration(activeGithubIntegration, true);
-
-					// Handle the case where gh might be undefined (e.g., in tests)
-					if (gh) {
-						githubToken = gh.accessToken;
-						githubOrg = gh.owner;
-						githubRepo = gh.repo;
-						// Get branch from metadata if available
-						const metadata = activeGithubIntegration.metadata as { branch?: string };
-						githubBranch = metadata?.branch || "main";
-					}
-
-					/* v8 ignore start - debug logging */
-					const tokenPreview = githubToken
-						? `${githubToken.substring(0, 8)}...${githubToken.substring(githubToken.length - 4)}`
-						: "undefined";
-					context.log("using-github-token", {
-						integration: activeGithubIntegration.name,
-						repo: githubOrg && githubRepo ? `${githubOrg}/${githubRepo}` : "unknown",
-						branch: githubBranch || "main",
-						tokenPreview,
-						tokenLength: githubToken?.length || 0,
-					});
-					/* v8 ignore stop */
-				} else {
-					context.log("no-github-integration");
-				}
-			} catch (error) {
-				context.log("github-token-error", { error: String(error) });
-				log.error(error, "Failed to get GitHub token from integration");
-			}
+			// Get GitHub token and repo details from first active integration
+			const { githubToken, githubOrg, githubRepo, githubBranch } =
+				await resolveGithubTokenFromIntegration(context);
 
 			log.debug({ docJrn, hasGithubToken: !!githubToken }, "Getting workflow config");
 			const workflowConfig = getWorkflowConfig(githubToken);
+			workflowConfig.jolliAuthToken = sandboxAuthToken;
+			workflowConfig.jolliSpace = resolvedSandboxSpace;
 			log.debug(
-				{ docJrn, hasE2bApiKey: !!workflowConfig.e2bApiKey, hasAnthropicKey: !!workflowConfig.anthropicApiKey },
+				{
+					docJrn,
+					hasE2bApiKey: !!workflowConfig.e2bApiKey,
+					hasAnthropicKey: !!workflowConfig.anthropicApiKey,
+					hasSyncServerUrl: !!workflowConfig.syncServerUrl,
+					hasJolliAuthToken: !!workflowConfig.jolliAuthToken,
+					jolliSpace: workflowConfig.jolliSpace,
+				},
 				"Workflow config obtained",
 			);
 
@@ -970,7 +1240,6 @@ export function createKnowledgeGraphJobs(db: Database, integrationsManager: Inte
 				createEditSectionToolDefinition(undefined, articleId),
 				createCreateSectionToolDefinition(undefined, articleId),
 				createDeleteSectionToolDefinition(undefined, articleId),
-				createGetLatestLinearTicketsToolDefinition(),
 				createSyncUpArticleToolDefinition(),
 			];
 
@@ -1041,6 +1310,160 @@ export function createKnowledgeGraphJobs(db: Database, integrationsManager: Inte
 		}
 	}
 
+	/**
+	 * Builds the LLM prompt for analyzing whether a source doc needs updates based on a diff.
+	 */
+	function buildAnalysisPrompt(articleContent: string, diff: string, changedFiles: Array<string>): string {
+		return `You are a documentation reviewer. A code push just happened.
+
+Here is the current documentation article:
+<article>
+${articleContent}
+</article>
+
+Here are the code changes from the push:
+<diff>
+${diff}
+</diff>
+
+Changed files: ${changedFiles.join(", ")}
+
+Analyze whether this documentation article needs to be updated based on the code changes.
+If the article references or documents code that has changed, use the editing tools to suggest specific section-level changes.
+If no changes are needed, respond with "No documentation updates needed."
+
+Important: Only suggest changes that are clearly necessary based on the diff. Do not rewrite sections unnecessarily.`;
+	}
+
+	/**
+	 * Handler for the analyze-source-doc job.
+	 * Fetches the diff from GitHub, builds a prompt, and runs an LLM workflow
+	 * to suggest section-level changes to the article.
+	 */
+	async function analyzeSourceDocJobHandler(params: AnalyzeSourceDocParams, context: JobContext): Promise<void> {
+		const { docJrn, before, after, owner, repo, branch } = params;
+		context.log("starting", { docJrn, owner, repo, branch });
+		log.info({ docJrn, owner, repo, before, after }, "analyzeSourceDocJobHandler starting");
+
+		try {
+			await updateJobPhase(context, "initializing", 0, docJrn, { docJrn });
+
+			// Load the article
+			const doc = await getDocDao().readDoc(docJrn);
+			if (!doc) {
+				context.log("doc-not-found", { docJrn });
+				throw new Error(`Document ${docJrn} not found`);
+			}
+			if (!doc.content || doc.content.trim().length === 0) {
+				context.log("doc-no-content", { docJrn });
+				throw new Error(`Document ${docJrn} has no content to analyze`);
+			}
+
+			await updateJobPhase(context, "fetching-github-token", 10, docJrn, { docJrn });
+
+			// Get GitHub access token from the first active integration
+			let accessToken: string | undefined;
+			try {
+				const integrations = await integrationsManager.listIntegrations();
+				const activeGithubIntegration = integrations.find(i => i.type === "github" && i.status === "active");
+				if (activeGithubIntegration) {
+					const gh = await getAccessTokenForGithubRepoIntegration(activeGithubIntegration, true);
+					if (gh) {
+						accessToken = gh.accessToken;
+					}
+				}
+			} catch (error) {
+				context.log("github-token-error", { error: String(error) });
+				log.error(error, "Failed to get GitHub token for source doc analysis");
+			}
+
+			if (!accessToken) {
+				context.log("no-github-token", { docJrn });
+				throw new Error("No GitHub access token available for fetching the diff");
+			}
+
+			await updateJobPhase(context, "fetching-diff", 20, docJrn, { docJrn });
+
+			// Fetch the diff from GitHub compare API
+			const compareResult = await fetchGithubCompare(accessToken, owner, repo, before, after);
+			if (!compareResult) {
+				context.log("diff-fetch-failed", { docJrn, owner, repo, before, after });
+				throw new Error(`Failed to fetch diff for ${owner}/${repo} (${before}...${after})`);
+			}
+
+			log.info(
+				{ docJrn, diffLength: compareResult.diff.length, fileCount: compareResult.files.length },
+				"Fetched diff for source doc analysis: %d bytes, %d files",
+				compareResult.diff.length,
+				compareResult.files.length,
+			);
+			context.log("diff-fetched", {
+				docJrn,
+				diffLength: compareResult.diff.length,
+				fileCount: compareResult.files.length,
+			});
+
+			// If there are no changes, skip analysis
+			if (compareResult.diff.trim().length === 0) {
+				context.log("no-changes", { docJrn });
+				return;
+			}
+
+			await updateJobPhase(context, "analyzing", 40, docJrn, { docJrn });
+
+			// Build the analysis prompt
+			const changedFiles = compareResult.files.map(f => f.filename);
+			const prompt = buildAnalysisPrompt(doc.content, compareResult.diff, changedFiles);
+
+			// Set up article editing tools (same as runJolliScriptJobHandler)
+			const articleId = docJrn;
+			const articleEditingTools = [
+				createGetCurrentArticleToolDefinition(undefined, articleId),
+				createEditSectionToolDefinition(undefined, articleId),
+				createCreateSectionToolDefinition(undefined, articleId),
+				createDeleteSectionToolDefinition(undefined, articleId),
+			];
+
+			// Create tool executor for article editing tools
+			const articleToolExecutor = (call: ToolCall, runState: RunState): Promise<string> => {
+				context.log("executing-tool", { name: call.name });
+				return executeArticleTool(call, runState, articleId);
+			};
+
+			// Get workflow config
+			const workflowConfig = getWorkflowConfig(accessToken);
+
+			// Create logger
+			const { logger: customLogger, getSandboxId } = createSandboxCapturingLogger(context, docJrn, docJrn);
+
+			// Run the workflow with a single run_prompt step
+			const jobSteps = [{ name: "analyze-source-changes", run_prompt: prompt }];
+			const workflowArgs: Record<string, unknown> = {
+				markdownContent: doc.content,
+				filename: "analyze-source-doc.md",
+				killSandbox: true,
+				additionalTools: articleEditingTools,
+				additionalToolExecutor: articleToolExecutor,
+				jobSteps,
+			};
+
+			context.log("calling-workflow", { docJrn });
+			const result = await runWorkflowForJob("run-jolliscript", workflowConfig, workflowArgs, customLogger);
+			log.info({ docJrn, success: result.success, error: result.error }, "analyzeSourceDoc workflow returned");
+
+			/* v8 ignore start - workflow failure logging */
+			if (!result.success) {
+				context.log("workflow-failed", { docJrn, error: result.error });
+			}
+			/* v8 ignore stop */
+
+			await processWorkflowResult(context, result, getSandboxId(), docJrn, { docJrn });
+			context.log("completed", { docJrn });
+		} catch (error) {
+			handleJobError(context, error, "analyze-source-doc workflow", { docJrn });
+		}
+	}
+
 	function registerJobs(jobScheduler: JobScheduler): void {
 		// Register the process-integration job
 		const processIntegrationJob = jobDefinitionBuilder<ProcessIntegrationParams, KnowledgeGraphStats>()
@@ -1105,6 +1528,20 @@ export function createKnowledgeGraphJobs(db: Database, integrationsManager: Inte
 
 		jobScheduler.registerJob(runJolliScriptJob);
 
+		const cliImpactJob = jobDefinitionBuilder<CliImpactParams, KnowledgeGraphStats>()
+			.category("knowledge-graph")
+			.name("cli-impact")
+			.title("CLI Impact Analysis")
+			.description("Run CLI sync + impact workflow in E2B for a matching space source")
+			.schema(CliImpactSchema)
+			.statsSchema(KnowledgeGraphStatsSchema)
+			.showInDashboard()
+			.keepCardAfterCompletion()
+			.handler(cliImpactJobHandler)
+			.build();
+
+		jobScheduler.registerJob(cliImpactJob);
+
 		const gitPushEventJob = jobDefinitionBuilder<GithubPushSchemaParams>()
 			.category("knowledge-graph")
 			.name("git-push-event")
@@ -1117,6 +1554,21 @@ export function createKnowledgeGraphJobs(db: Database, integrationsManager: Inte
 			.build();
 
 		jobScheduler.registerJob(gitPushEventJob);
+
+		// Register the analyze-source-doc job (triggered by JRN adapter for non-jolliscript articles)
+		const analyzeSourceDocJob = jobDefinitionBuilder<AnalyzeSourceDocParams, KnowledgeGraphStats>()
+			.category("knowledge-graph")
+			.name("analyze-source-doc")
+			.title("Analyze Source Document Changes")
+			.description("Analyzes whether a source document needs updating based on a git push diff")
+			.schema(AnalyzeSourceDocSchema)
+			.statsSchema(KnowledgeGraphStatsSchema)
+			.showInDashboard()
+			.keepCardAfterCompletion()
+			.handler(analyzeSourceDocJobHandler)
+			.build();
+
+		jobScheduler.registerJob(analyzeSourceDocJob);
 
 		log.debug("Knowledge graph jobs registered");
 	}

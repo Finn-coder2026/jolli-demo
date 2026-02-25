@@ -6,6 +6,7 @@ export function mockIntegrationDao(partial?: Partial<IntegrationDao>): Integrati
 		createIntegration: async integration => mockIntegration(integration),
 		getIntegration: async () => void 0,
 		listIntegrations: async () => [],
+		countIntegrations: async () => 0,
 		updateIntegration: async () => void 0,
 		deleteIntegration: async () => void 0,
 		removeAllGitHubIntegrations: async () => void 0,

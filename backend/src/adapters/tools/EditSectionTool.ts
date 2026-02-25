@@ -1,9 +1,9 @@
 import { parseSections } from "../../../../tools/jolliagent/src/jolliscript/parser";
 import type { ToolDef } from "../../../../tools/jolliagent/src/Types";
+import type { ActiveUserDao } from "../../dao/ActiveUserDao";
 import type { DocDao } from "../../dao/DocDao";
 import type { DocDraftDao } from "../../dao/DocDraftDao";
 import type { DocDraftSectionChangesDao } from "../../dao/DocDraftSectionChangesDao";
-import type { UserDao } from "../../dao/UserDao";
 import type { Doc } from "../../model/Doc";
 import { createSectionPathService, type SectionIdMapping, type SectionWithId } from "../../services/SectionPathService";
 import { getLog } from "../../util/Logger";
@@ -23,7 +23,7 @@ async function createArticleEditSuggestion(
 	sections: Array<SectionWithId>,
 	docDraftDao: DocDraftDao,
 	docDraftSectionChangesDao: DocDraftSectionChangesDao,
-	userDao?: UserDao,
+	userDao?: ActiveUserDao,
 ): Promise<string | undefined> {
 	// Find the target section by title
 	const targetIndex = sections.findIndex(
@@ -48,8 +48,8 @@ async function createArticleEditSuggestion(
 			// article.updatedBy may be a numeric user ID (as string) or an email
 			const numericId = Number.parseInt(article.updatedBy, 10);
 			const owner = !Number.isNaN(numericId)
-				? await userDao.findUserById(numericId)
-				: await userDao.findUser(article.updatedBy);
+				? await userDao.findById(numericId)
+				: await userDao.findByEmail(article.updatedBy);
 			if (owner) {
 				ownerId = owner.id;
 				log.info("Found article owner %s (id: %d) for draft creation", article.updatedBy, ownerId);
@@ -160,7 +160,7 @@ export async function executeEditSectionTool(
 	userId: number,
 	docDao?: DocDao,
 	docDraftSectionChangesDao?: DocDraftSectionChangesDao,
-	userDao?: UserDao,
+	userDao?: ActiveUserDao,
 ): Promise<string> {
 	const { sectionTitle, newContent } = args;
 

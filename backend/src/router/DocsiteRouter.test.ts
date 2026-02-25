@@ -5,6 +5,7 @@ import { mockDocsiteDao } from "../dao/DocsiteDao.mock";
 import type { IntegrationDao } from "../dao/IntegrationDao";
 import { mockIntegrationDao } from "../dao/IntegrationDao.mock";
 import type { IntegrationsManager } from "../integrations/IntegrationsManager";
+import type { AuthenticatedRequest, PermissionMiddlewareFactory } from "../middleware/PermissionMiddleware";
 import type { Docsite, Site } from "../model/Docsite";
 import { createAuthHandler } from "../util/AuthHandler";
 import * as DocGenerationUtil from "../util/DocGenerationUtil";
@@ -12,7 +13,7 @@ import * as IntegrationUtil from "../util/IntegrationUtil";
 import { createTokenUtil } from "../util/TokenUtil";
 import { createDocsiteRouter } from "./DocsiteRouter";
 import cookieParser from "cookie-parser";
-import express, { type Express } from "express";
+import express, { type Express, type NextFunction, type Response } from "express";
 import type { UserInfo } from "jolli-common";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -70,10 +71,24 @@ describe("DocsiteRouter", () => {
 		app.use(cookieParser());
 		app.use(express.json());
 		const mockIntegrationsManager = {} as unknown as IntegrationsManager;
+		const mockPermissionMiddleware: PermissionMiddlewareFactory = {
+			requireAuth: vi.fn(() => (_req: AuthenticatedRequest, _res: Response, next: NextFunction) => next()),
+			requirePermission: vi.fn(() => (_req: AuthenticatedRequest, _res: Response, next: NextFunction) => next()),
+			requireAllPermissions: vi.fn(
+				() => (_req: AuthenticatedRequest, _res: Response, next: NextFunction) => next(),
+			),
+			requireRole: vi.fn(() => (_req: AuthenticatedRequest, _res: Response, next: NextFunction) => next()),
+			loadPermissions: vi.fn(() => (_req: AuthenticatedRequest, _res: Response, next: NextFunction) => next()),
+		};
 		app.use(
 			"/docsites",
 			createAuthHandler(tokenUtil),
-			createDocsiteRouter(mockDaoProvider(mockDao), mockDaoProvider(mockIntDao), mockIntegrationsManager),
+			createDocsiteRouter(
+				mockDaoProvider(mockDao),
+				mockDaoProvider(mockIntDao),
+				mockIntegrationsManager,
+				mockPermissionMiddleware,
+			),
 		);
 
 		authToken = tokenUtil.generateToken({
@@ -221,6 +236,26 @@ describe("DocsiteRouter", () => {
 			expect(mockDao.createDocsite).toHaveBeenCalledWith(newDocsite);
 		});
 
+		it("should create a docsite with null userId in audit log", async () => {
+			const newDocsite: Site = {
+				name: "orphan-docs",
+				displayName: "Orphan Documentation",
+				userId: undefined,
+				visibility: "internal",
+				status: "pending",
+				metadata: undefined,
+			};
+
+			vi.mocked(mockDao.createDocsite).mockResolvedValue({ ...mockDocsite, ...newDocsite, id: 2 });
+
+			const response = await request(app)
+				.post("/docsites")
+				.set("Cookie", [`authToken=${authToken}`])
+				.send(newDocsite);
+
+			expect(response.status).toBe(201);
+		});
+
 		it("should return 400 when name is missing", async () => {
 			const response = await request(app)
 				.post("/docsites")
@@ -287,6 +322,18 @@ describe("DocsiteRouter", () => {
 			});
 		});
 
+		it("should update a docsite with null userId in audit log", async () => {
+			const updatedDocsite = { ...mockDocsite, displayName: "Updated Docs", userId: undefined };
+			vi.mocked(mockDao.updateDocsite).mockResolvedValue(updatedDocsite);
+
+			const response = await request(app)
+				.put("/docsites/1")
+				.set("Cookie", [`authToken=${authToken}`])
+				.send(updatedDocsite);
+
+			expect(response.status).toBe(200);
+		});
+
 		it("should return 400 when id mismatch", async () => {
 			const response = await request(app)
 				.put("/docsites/1")
@@ -349,6 +396,17 @@ describe("DocsiteRouter", () => {
 
 			expect(response.status).toBe(204);
 			expect(mockDao.deleteDocsite).toHaveBeenCalledWith(1);
+		});
+
+		it("should delete a docsite with null userId in audit log", async () => {
+			vi.mocked(mockDao.getDocsite).mockResolvedValue({ ...mockDocsite, userId: undefined });
+			vi.mocked(mockDao.deleteDocsite).mockResolvedValue();
+
+			const response = await request(app)
+				.delete("/docsites/1")
+				.set("Cookie", [`authToken=${authToken}`]);
+
+			expect(response.status).toBe(204);
 		});
 
 		it("should return 400 for invalid id", async () => {

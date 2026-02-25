@@ -3,13 +3,30 @@
 	"tasks": [
 		{
 			"type": "npm",
-			"script": "compile",
-			"path": "extensions/vscode",
+			"script": "start",
+			"path": "frontend",
+			"label": "Start Frontend",
 			"group": "build",
+			"isBackground": true,
 			"presentation": {
-				"reveal": "silent"
+				"reveal": "always",
+				"panel": "dedicated"
 			},
-			"problemMatcher": "$tsc"
+			"problemMatcher": {
+				"owner": "vite",
+				"pattern": {
+					"regexp": "^ERROR\\(TypeScript\\)\\s+(.*)\\((\\d+),(\\d+)\\):\\s+(.*)$",
+					"file": 1,
+					"line": 2,
+					"column": 3,
+					"message": 4
+				},
+				"background": {
+					"activeOnStart": true,
+					"beginsPattern": "VITE.*ready in",
+					"endsPattern": "(Local|Network):.*"
+				}
+			}
 		}
 	]
 }

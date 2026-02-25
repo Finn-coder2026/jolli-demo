@@ -1,3 +1,5 @@
+import type { TenantRegistryClient } from "../tenant/TenantRegistryClient";
+
 export interface GitHubAppManifest {
 	name: string;
 	url: string;
@@ -41,7 +43,10 @@ export interface GitHubAppConversionResponse extends GithubAppResponse {
 }
 
 // Origin is now obtained from getConfig().ORIGIN to support multi-tenant mode
-export type GithubAppRouterOptions = Record<string, never>;
+export interface GithubAppRouterOptions {
+	/** Registry client for per-org installation mapping cleanup (optional, multi-tenant only) */
+	registryClient?: TenantRegistryClient;
+}
 
 // GitHub account (organization or user)
 export interface GitHubAccount {
@@ -60,6 +65,8 @@ export interface GitHubAppInstallation {
 	};
 	target_type?: "Organization" | "User";
 	target_id?: number;
+	/** ISO-8601 timestamp when the installation was created on GitHub */
+	created_at?: string;
 }
 
 // GitHub repository

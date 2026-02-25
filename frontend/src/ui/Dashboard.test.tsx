@@ -1,6 +1,7 @@
 import { ClientProvider } from "../contexts/ClientContext";
 import { DevToolsProvider } from "../contexts/DevToolsContext";
 import { NavigationProvider } from "../contexts/NavigationContext";
+import { PermissionProvider } from "../contexts/PermissionContext";
 import { RouterProvider } from "../contexts/RouterContext";
 import { Dashboard } from "./Dashboard";
 import { render, screen } from "@testing-library/preact";
@@ -35,9 +36,11 @@ describe("Dashboard", () => {
 			<ClientProvider>
 				<RouterProvider>
 					<DevToolsProvider>
-						<NavigationProvider pathname="/dashboard">
-							<Dashboard />
-						</NavigationProvider>
+						<PermissionProvider>
+							<NavigationProvider pathname="/dashboard">
+								<Dashboard />
+							</NavigationProvider>
+						</PermissionProvider>
 					</DevToolsProvider>
 				</RouterProvider>
 			</ClientProvider>,
@@ -51,9 +54,11 @@ describe("Dashboard", () => {
 			<ClientProvider>
 				<RouterProvider>
 					<DevToolsProvider>
-						<NavigationProvider pathname="/dashboard">
-							<Dashboard />
-						</NavigationProvider>
+						<PermissionProvider>
+							<NavigationProvider pathname="/dashboard">
+								<Dashboard />
+							</NavigationProvider>
+						</PermissionProvider>
 					</DevToolsProvider>
 				</RouterProvider>
 			</ClientProvider>,

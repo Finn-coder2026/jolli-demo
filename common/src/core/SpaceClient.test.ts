@@ -37,13 +37,18 @@ describe("SpaceClient", () => {
 		expect(client).toBeDefined();
 		expect(client.listSpaces).toBeDefined();
 		expect(client.getDefaultSpace).toBeDefined();
+		expect(client.getPersonalSpace).toBeDefined();
 		expect(client.getSpace).toBeDefined();
+		expect(client.getSpaceBySlug).toBeDefined();
 		expect(client.createSpace).toBeDefined();
 		expect(client.updateSpace).toBeDefined();
 		expect(client.deleteSpace).toBeDefined();
 		expect(client.getTreeContent).toBeDefined();
 		expect(client.getTrashContent).toBeDefined();
 		expect(client.hasTrash).toBeDefined();
+		expect(client.searchInSpace).toBeDefined();
+		expect(client.getPreferences).toBeDefined();
+		expect(client.updatePreferences).toBeDefined();
 	});
 
 	describe("listSpaces", () => {
@@ -131,16 +136,32 @@ describe("SpaceClient", () => {
 			expect(mockFetch).toHaveBeenCalledWith("http://localhost/api/spaces/default", expect.any(Object));
 		});
 
+		it("should return undefined when default space not found", async () => {
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: false,
+				status: 404,
+			});
+			global.fetch = mockFetch;
+
+			const client = createSpaceClient("http://localhost", createMockAuth());
+			const result = await client.getDefaultSpace();
+
+			expect(result).toBeUndefined();
+		});
+
 		it("should throw error when getDefaultSpace fails", async () => {
 			const mockFetch = vi.fn().mockResolvedValue({
 				ok: false,
-				statusText: "Not Found",
+				status: 500,
+				statusText: "Internal Server Error",
 			});
 			global.fetch = mockFetch;
 
 			const client = createSpaceClient("http://localhost", createMockAuth());
 
-			await expect(client.getDefaultSpace()).rejects.toThrow("Failed to get default space: Not Found");
+			await expect(client.getDefaultSpace()).rejects.toThrow(
+				"Failed to get default space: Internal Server Error",
+			);
 		});
 
 		it("should call checkUnauthorized", async () => {
@@ -153,6 +174,64 @@ describe("SpaceClient", () => {
 
 			const client = createSpaceClient("http://localhost", createMockAuth(checkUnauthorized));
 			await client.getDefaultSpace();
+
+			expect(checkUnauthorized).toHaveBeenCalled();
+		});
+	});
+
+	describe("getPersonalSpace", () => {
+		it("should fetch personal space", async () => {
+			const mockSpace = {
+				id: 5,
+				name: "Personal Space",
+				slug: "personal-space-abc123",
+				jrn: "jrn:/global:spaces:space/personal-space-abc123",
+				description: "Your personal space",
+				ownerId: 1,
+				isPersonal: true,
+				defaultSort: "default",
+				defaultFilters: {},
+				createdAt: "2024-01-01T00:00:00Z",
+				updatedAt: "2024-01-01T00:00:00Z",
+			};
+
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => mockSpace,
+			});
+			global.fetch = mockFetch;
+
+			const client = createSpaceClient("http://localhost", createMockAuth());
+			const result = await client.getPersonalSpace();
+
+			expect(result).toEqual(mockSpace);
+			expect(mockFetch).toHaveBeenCalledWith("http://localhost/api/spaces/personal", expect.any(Object));
+		});
+
+		it("should throw error when getPersonalSpace fails", async () => {
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: false,
+				statusText: "Internal Server Error",
+			});
+			global.fetch = mockFetch;
+
+			const client = createSpaceClient("http://localhost", createMockAuth());
+
+			await expect(client.getPersonalSpace()).rejects.toThrow(
+				"Failed to get personal space: Internal Server Error",
+			);
+		});
+
+		it("should call checkUnauthorized", async () => {
+			const checkUnauthorized = vi.fn();
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => ({}),
+			});
+			global.fetch = mockFetch;
+
+			const client = createSpaceClient("http://localhost", createMockAuth(checkUnauthorized));
+			await client.getPersonalSpace();
 
 			expect(checkUnauthorized).toHaveBeenCalled();
 		});
@@ -227,6 +306,77 @@ describe("SpaceClient", () => {
 		});
 	});
 
+	describe("getSpaceBySlug", () => {
+		it("should fetch space by slug", async () => {
+			const mockSpace = {
+				id: 2,
+				name: "My Space",
+				slug: "my-space",
+				jrn: "space:myspace",
+				description: "Test space",
+				ownerId: 1,
+				defaultSort: "default",
+				defaultFilters: {},
+				createdAt: "2024-01-01T00:00:00Z",
+				updatedAt: "2024-01-01T00:00:00Z",
+			};
+
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => mockSpace,
+			});
+			global.fetch = mockFetch;
+
+			const client = createSpaceClient("http://localhost", createMockAuth());
+			const result = await client.getSpaceBySlug("my-space");
+
+			expect(result).toEqual(mockSpace);
+			expect(mockFetch).toHaveBeenCalledWith("http://localhost/api/spaces/slug/my-space", expect.any(Object));
+		});
+
+		it("should return undefined when space not found", async () => {
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: false,
+				status: 404,
+			});
+			global.fetch = mockFetch;
+
+			const client = createSpaceClient("http://localhost", createMockAuth());
+			const result = await client.getSpaceBySlug("nonexistent");
+
+			expect(result).toBeUndefined();
+		});
+
+		it("should throw error when getSpaceBySlug fails with non-404 error", async () => {
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: false,
+				status: 500,
+				statusText: "Internal Server Error",
+			});
+			global.fetch = mockFetch;
+
+			const client = createSpaceClient("http://localhost", createMockAuth());
+
+			await expect(client.getSpaceBySlug("test")).rejects.toThrow(
+				"Failed to get space by slug: Internal Server Error",
+			);
+		});
+
+		it("should call checkUnauthorized", async () => {
+			const checkUnauthorized = vi.fn();
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => ({}),
+			});
+			global.fetch = mockFetch;
+
+			const client = createSpaceClient("http://localhost", createMockAuth(checkUnauthorized));
+			await client.getSpaceBySlug("test");
+
+			expect(checkUnauthorized).toHaveBeenCalled();
+		});
+	});
+
 	describe("createSpace", () => {
 		it("should create a new space", async () => {
 			const newSpace = {
@@ -279,11 +429,6 @@ describe("SpaceClient", () => {
 			await expect(
 				client.createSpace({
 					name: "Test",
-					slug: "test-space",
-					description: undefined,
-					ownerId: 1,
-					defaultSort: "default",
-					defaultFilters: {},
 				}),
 			).rejects.toThrow("Failed to create space: Bad Request");
 		});
@@ -299,11 +444,6 @@ describe("SpaceClient", () => {
 			const client = createSpaceClient("http://localhost", createMockAuth(checkUnauthorized));
 			await client.createSpace({
 				name: "Test",
-				slug: "test-space",
-				description: undefined,
-				ownerId: 1,
-				defaultSort: "default",
-				defaultFilters: {},
 			});
 
 			expect(checkUnauthorized).toHaveBeenCalled();
@@ -405,6 +545,21 @@ describe("SpaceClient", () => {
 			);
 		});
 
+		it("should delete a space with deleteContent=true", async () => {
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+			});
+			global.fetch = mockFetch;
+
+			const client = createSpaceClient("http://localhost", createMockAuth());
+			await client.deleteSpace(1, true);
+
+			expect(mockFetch).toHaveBeenCalledWith(
+				"http://localhost/api/spaces/1?deleteContent=true",
+				expect.objectContaining({ method: "DELETE" }),
+			);
+		});
+
 		it("should throw error when deleteSpace fails", async () => {
 			const mockFetch = vi.fn().mockResolvedValue({
 				ok: false,
@@ -426,6 +581,53 @@ describe("SpaceClient", () => {
 
 			const client = createSpaceClient("http://localhost", createMockAuth(checkUnauthorized));
 			await client.deleteSpace(1);
+
+			expect(checkUnauthorized).toHaveBeenCalled();
+		});
+	});
+
+	describe("migrateContent", () => {
+		it("should migrate content from one space to another", async () => {
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => ({ success: true }),
+			});
+			global.fetch = mockFetch;
+
+			const client = createSpaceClient("http://localhost", createMockAuth());
+			await client.migrateContent(1, 2);
+
+			expect(mockFetch).toHaveBeenCalledWith(
+				"http://localhost/api/spaces/1/migrate-content",
+				expect.objectContaining({
+					method: "POST",
+					body: JSON.stringify({ targetSpaceId: 2 }),
+				}),
+			);
+		});
+
+		it("should throw error when migrateContent fails", async () => {
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: false,
+				statusText: "Bad Request",
+			});
+			global.fetch = mockFetch;
+
+			const client = createSpaceClient("http://localhost", createMockAuth());
+
+			await expect(client.migrateContent(1, 2)).rejects.toThrow("Failed to migrate content: Bad Request");
+		});
+
+		it("should call checkUnauthorized", async () => {
+			const checkUnauthorized = vi.fn();
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => ({ success: true }),
+			});
+			global.fetch = mockFetch;
+
+			const client = createSpaceClient("http://localhost", createMockAuth(checkUnauthorized));
+			await client.migrateContent(1, 2);
 
 			expect(checkUnauthorized).toHaveBeenCalled();
 		});
@@ -594,6 +796,197 @@ describe("SpaceClient", () => {
 
 			const client = createSpaceClient("http://localhost", createMockAuth(checkUnauthorized));
 			await client.hasTrash(1);
+
+			expect(checkUnauthorized).toHaveBeenCalled();
+		});
+	});
+
+	describe("searchInSpace", () => {
+		it("should search for documents in a space", async () => {
+			const mockSearchResponse = {
+				results: [
+					{
+						doc: {
+							id: 1,
+							jrn: "doc:test",
+							content: "Test content",
+							contentType: "text/markdown",
+							spaceId: 1,
+						},
+						contentSnippet: "Test <b>content</b>",
+						matchType: "content",
+						relevance: 0.8,
+					},
+				],
+				total: 1,
+				limited: false,
+			};
+
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => mockSearchResponse,
+			});
+			global.fetch = mockFetch;
+
+			const client = createSpaceClient("http://localhost", createMockAuth());
+			const result = await client.searchInSpace(1, "test");
+
+			expect(result).toEqual(mockSearchResponse);
+			expect(mockFetch).toHaveBeenCalledWith(
+				"http://localhost/api/spaces/1/search",
+				expect.objectContaining({ method: "POST" }),
+			);
+		});
+
+		it("should throw error when searchInSpace fails", async () => {
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: false,
+				statusText: "Internal Server Error",
+			});
+			global.fetch = mockFetch;
+
+			const client = createSpaceClient("http://localhost", createMockAuth());
+
+			await expect(client.searchInSpace(1, "test")).rejects.toThrow(
+				"Failed to search in space: Internal Server Error",
+			);
+		});
+
+		it("should call checkUnauthorized", async () => {
+			const checkUnauthorized = vi.fn();
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => ({ results: [], total: 0, limited: false }),
+			});
+			global.fetch = mockFetch;
+
+			const client = createSpaceClient("http://localhost", createMockAuth(checkUnauthorized));
+			await client.searchInSpace(1, "test");
+
+			expect(checkUnauthorized).toHaveBeenCalled();
+		});
+	});
+
+	describe("getPreferences", () => {
+		it("should fetch user preferences for a space", async () => {
+			const mockPreferences = {
+				sort: "alphabetical_asc",
+				filters: { showDrafts: true },
+				expandedFolders: [1, 2, 3],
+			};
+
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => mockPreferences,
+			});
+			global.fetch = mockFetch;
+
+			const client = createSpaceClient("http://localhost", createMockAuth());
+			const result = await client.getPreferences(1);
+
+			expect(result).toEqual(mockPreferences);
+			expect(mockFetch).toHaveBeenCalledWith(
+				"http://localhost/api/spaces/1/preferences",
+				expect.objectContaining({ method: "GET" }),
+			);
+		});
+
+		it("should throw error when getPreferences fails", async () => {
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: false,
+				statusText: "Internal Server Error",
+			});
+			global.fetch = mockFetch;
+
+			const client = createSpaceClient("http://localhost", createMockAuth());
+
+			await expect(client.getPreferences(1)).rejects.toThrow("Failed to get preferences: Internal Server Error");
+		});
+
+		it("should call checkUnauthorized", async () => {
+			const checkUnauthorized = vi.fn();
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => ({ sort: null, filters: {}, expandedFolders: [] }),
+			});
+			global.fetch = mockFetch;
+
+			const client = createSpaceClient("http://localhost", createMockAuth(checkUnauthorized));
+			await client.getPreferences(1);
+
+			expect(checkUnauthorized).toHaveBeenCalled();
+		});
+	});
+
+	describe("updatePreferences", () => {
+		it("should update user preferences for a space", async () => {
+			const updates = { sort: "alphabetical_desc" as const };
+			const mockUpdatedPreferences = {
+				sort: "alphabetical_desc",
+				filters: {},
+				expandedFolders: [],
+			};
+
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => mockUpdatedPreferences,
+			});
+			global.fetch = mockFetch;
+
+			const client = createSpaceClient("http://localhost", createMockAuth());
+			const result = await client.updatePreferences(1, updates);
+
+			expect(result).toEqual(mockUpdatedPreferences);
+			expect(mockFetch).toHaveBeenCalledWith(
+				"http://localhost/api/spaces/1/preferences",
+				expect.objectContaining({ method: "PUT" }),
+			);
+		});
+
+		it("should update preferences with null sort to reset to default", async () => {
+			const updates = { sort: null };
+			const mockUpdatedPreferences = {
+				sort: null,
+				filters: {},
+				expandedFolders: [],
+			};
+
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => mockUpdatedPreferences,
+			});
+			global.fetch = mockFetch;
+
+			const client = createSpaceClient("http://localhost", createMockAuth());
+			const result = await client.updatePreferences(1, updates);
+
+			expect(result.sort).toBeNull();
+		});
+
+		it("should throw error when updatePreferences fails", async () => {
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: false,
+				statusText: "Bad Request",
+			});
+			global.fetch = mockFetch;
+
+			const client = createSpaceClient("http://localhost", createMockAuth());
+
+			await expect(client.updatePreferences(1, { sort: "alphabetical_asc" })).rejects.toThrow(
+				"Failed to update preferences: Bad Request",
+			);
+		});
+
+		it("should call checkUnauthorized", async () => {
+			const checkUnauthorized = vi.fn();
+			const mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => ({ sort: null, filters: {}, expandedFolders: [] }),
+			});
+			global.fetch = mockFetch;
+
+			const client = createSpaceClient("http://localhost", createMockAuth(checkUnauthorized));
+			await client.updatePreferences(1, { sort: "default" });
 
 			expect(checkUnauthorized).toHaveBeenCalled();
 		});

@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// Mock dotenv to prevent .env.local from overriding test env vars
+vi.mock("dotenv", () => ({
+	config: vi.fn(),
+}));
+
 // Mock the ParameterStoreLoader before importing Config
 vi.mock("./ParameterStoreLoader", () => {
 	const mockLoad = vi.fn();
@@ -225,6 +230,69 @@ describe("Config", () => {
 			expect(config.GITHUB_APPS_INFO?.app_id).toBe(123);
 		});
 
+		it("should mark AWS parameter store as critical in production when PSTORE_ENV is set", async () => {
+			vi.resetModules();
+			const originalNodeEnv = process.env.NODE_ENV;
+
+			process.env.NODE_ENV = "production";
+			process.env.PSTORE_ENV = "prod";
+			process.env.GITHUB_APPS_INFO = JSON.stringify({
+				app_id: 999,
+				slug: "test",
+				client_id: "test-client",
+				client_secret: "test-secret",
+				webhook_secret: "test-webhook",
+				private_key: "test-key",
+				name: "Test App",
+				html_url: "https://github.com/apps/test",
+			});
+
+			const chainCtor = vi.fn().mockImplementation(function (
+				this: {
+					load: () => Promise<{ config: Record<string, string>; providerResults: Array<unknown> }>;
+					getProviders: () => Array<unknown>;
+				},
+				providers: Array<unknown>,
+			) {
+				this.getProviders = () => providers;
+				this.load = () => Promise.resolve({ config: {}, providerResults: [] });
+			});
+
+			vi.doMock("./providers", () => ({
+				AWSParameterStoreProvider: vi.fn().mockImplementation(() => ({
+					name: "aws-parameter-store",
+					priority: 1,
+					isAvailable: () => true,
+					load: vi.fn().mockResolvedValue({}),
+					getLoader: () => null,
+				})),
+				LocalEnvProvider: vi.fn().mockImplementation(() => ({
+					name: "local-env",
+					priority: 3,
+					isAvailable: () => true,
+					load: vi.fn().mockResolvedValue({}),
+				})),
+				ConfigProviderChain: chainCtor,
+			}));
+
+			try {
+				const { initializeConfig } = await import("./Config");
+				await initializeConfig();
+
+				expect(chainCtor).toHaveBeenCalledWith(expect.any(Array), {
+					criticalProviders: ["aws-parameter-store"],
+				});
+			} finally {
+				if (originalNodeEnv === undefined) {
+					delete process.env.NODE_ENV;
+				} else {
+					process.env.NODE_ENV = originalNodeEnv;
+				}
+				vi.doUnmock("./providers");
+				vi.resetModules();
+			}
+		});
+
 		it("should reload config with updated parameter store values", async () => {
 			process.env.PSTORE_ENV = "prod";
 			process.env.GITHUB_APPS_INFO = JSON.stringify({
@@ -400,6 +468,11 @@ describe("Config", () => {
 				html_url: "https://github.com/apps/fallback",
 			});
 
+			// Mock withRetry to pass through immediately (avoids real retry delays in tests)
+			vi.doMock("../util/Retry", () => ({
+				withRetry: (operation: () => Promise<unknown>) => operation(),
+			}));
+
 			const { initializeConfig } = await import("./Config");
 			const { ParameterStoreLoader } = await import("./ParameterStoreLoader");
 
@@ -436,6 +509,11 @@ describe("Config", () => {
 				name: "Test App",
 				html_url: "https://github.com/apps/test",
 			});
+
+			// Mock withRetry to pass through immediately (avoids real retry delays in tests)
+			vi.doMock("../util/Retry", () => ({
+				withRetry: (operation: () => Promise<unknown>) => operation(),
+			}));
 
 			const { initializeConfig, reloadConfig, getConfig } = await import("./Config");
 			const { ParameterStoreLoader } = await import("./ParameterStoreLoader");
@@ -500,12 +578,6 @@ describe("Config", () => {
 					load: vi.fn().mockResolvedValue({}),
 					getLoader: () => null,
 				})),
-				VercelEnvProvider: vi.fn().mockImplementation(() => ({
-					name: "vercel-env",
-					priority: 2,
-					isAvailable: () => false,
-					load: vi.fn().mockResolvedValue({}),
-				})),
 				LocalEnvProvider: vi.fn().mockImplementation(() => ({
 					name: "local-env",
 					priority: 3,
@@ -569,12 +641,6 @@ describe("Config", () => {
 					isAvailable: () => false,
 					load: vi.fn().mockResolvedValue({}),
 					getLoader: () => null,
-				})),
-				VercelEnvProvider: vi.fn().mockImplementation(() => ({
-					name: "vercel-env",
-					priority: 2,
-					isAvailable: () => false,
-					load: vi.fn().mockResolvedValue({}),
 				})),
 				LocalEnvProvider: vi.fn().mockImplementation(() => ({
 					name: "local-env",
@@ -697,6 +763,169 @@ describe("Config", () => {
 
 			// Cleanup
 			delete process.env.TAVILY_API_KEY;
+		});
+
+		it("should derive syncServerUrl from JOLLI_PUBLIC_URL + '/api' when set", async () => {
+			process.env.E2B_API_KEY = "test-api-key";
+			process.env.E2B_TEMPLATE_ID = "test-template";
+			process.env.ANTHROPIC_API_KEY = "test-anthropic-key";
+			process.env.JOLLI_PUBLIC_URL = "https://public.jolli.example";
+
+			const { getWorkflowConfig, resetConfig } = await import("./Config");
+			resetConfig();
+
+			const config = getWorkflowConfig();
+			expect(config.syncServerUrl).toBe("https://public.jolli.example/api");
+
+			delete process.env.JOLLI_PUBLIC_URL;
+		});
+
+		it("should fallback syncServerUrl to ORIGIN + '/api' when JOLLI_PUBLIC_URL is not set", async () => {
+			const originalOrigin = process.env.ORIGIN;
+			process.env.E2B_API_KEY = "test-api-key";
+			process.env.E2B_TEMPLATE_ID = "test-template";
+			process.env.ANTHROPIC_API_KEY = "test-anthropic-key";
+			process.env.ORIGIN = "https://tenant.jolli.example";
+			delete process.env.JOLLI_PUBLIC_URL;
+
+			const { getWorkflowConfig, resetConfig } = await import("./Config");
+			resetConfig();
+
+			const config = getWorkflowConfig();
+			expect(config.syncServerUrl).toBe("https://tenant.jolli.example/api");
+
+			if (originalOrigin === undefined) {
+				delete process.env.ORIGIN;
+			} else {
+				process.env.ORIGIN = originalOrigin;
+			}
+		});
+
+		it("should derive syncServerUrl from tenant subdomain when JOLLI_PUBLIC_URL is not set and tenant context exists", async () => {
+			const originalOrigin = process.env.ORIGIN;
+			process.env.E2B_API_KEY = "test-api-key";
+			process.env.E2B_TEMPLATE_ID = "test-template";
+			process.env.ANTHROPIC_API_KEY = "test-anthropic-key";
+			process.env.ORIGIN = "http://localhost:8034";
+			process.env.BASE_DOMAIN = "jolli.app";
+			process.env.USE_GATEWAY = "true";
+			delete process.env.JOLLI_PUBLIC_URL;
+
+			vi.doMock("../tenant/TenantContext", () => ({
+				getTenantContext: vi.fn(() => ({
+					tenant: { slug: "acme", primaryDomain: null },
+					org: { slug: "default", schemaName: "org_default" },
+				})),
+			}));
+
+			const { getWorkflowConfig, resetConfig } = await import("./Config");
+			resetConfig();
+
+			const config = getWorkflowConfig();
+			expect(config.syncServerUrl).toBe("https://acme.jolli.app/api");
+
+			delete process.env.BASE_DOMAIN;
+			delete process.env.USE_GATEWAY;
+			if (originalOrigin === undefined) {
+				delete process.env.ORIGIN;
+			} else {
+				process.env.ORIGIN = originalOrigin;
+			}
+		});
+
+		it("should derive https syncServerUrl in production without USE_GATEWAY", async () => {
+			const originalOrigin = process.env.ORIGIN;
+			const originalNodeEnv = process.env.NODE_ENV;
+			const originalUseGateway = process.env.USE_GATEWAY;
+			delete process.env.USE_GATEWAY;
+			process.env.NODE_ENV = "production";
+			process.env.E2B_API_KEY = "test-api-key";
+			process.env.E2B_TEMPLATE_ID = "test-template";
+			process.env.ANTHROPIC_API_KEY = "test-anthropic-key";
+			process.env.ORIGIN = "http://localhost:8034";
+			process.env.BASE_DOMAIN = "jolli.app";
+			delete process.env.JOLLI_PUBLIC_URL;
+
+			vi.doMock("../tenant/TenantContext", () => ({
+				getTenantContext: vi.fn(() => ({
+					tenant: { slug: "acme", primaryDomain: null },
+					org: { slug: "default", schemaName: "org_default" },
+				})),
+			}));
+
+			const { getWorkflowConfig, resetConfig } = await import("./Config");
+			resetConfig();
+
+			const config = getWorkflowConfig();
+			expect(config.syncServerUrl).toBe("https://acme.jolli.app/api");
+
+			delete process.env.BASE_DOMAIN;
+			if (originalOrigin === undefined) {
+				delete process.env.ORIGIN;
+			} else {
+				process.env.ORIGIN = originalOrigin;
+			}
+			if (originalNodeEnv === undefined) {
+				delete process.env.NODE_ENV;
+			} else {
+				process.env.NODE_ENV = originalNodeEnv;
+			}
+			if (originalUseGateway === undefined) {
+				delete process.env.USE_GATEWAY;
+			} else {
+				process.env.USE_GATEWAY = originalUseGateway;
+			}
+		});
+
+		it("should prefer tenant primaryDomain over subdomain for syncServerUrl", async () => {
+			process.env.E2B_API_KEY = "test-api-key";
+			process.env.E2B_TEMPLATE_ID = "test-template";
+			process.env.ANTHROPIC_API_KEY = "test-anthropic-key";
+			process.env.BASE_DOMAIN = "jolli.app";
+			process.env.USE_GATEWAY = "true";
+			delete process.env.JOLLI_PUBLIC_URL;
+
+			vi.doMock("../tenant/TenantContext", () => ({
+				getTenantContext: vi.fn(() => ({
+					tenant: { slug: "acme", primaryDomain: "docs.acme.com" },
+					org: { slug: "default", schemaName: "org_default" },
+				})),
+			}));
+
+			const { getWorkflowConfig, resetConfig } = await import("./Config");
+			resetConfig();
+
+			const config = getWorkflowConfig();
+			expect(config.syncServerUrl).toBe("https://docs.acme.com/api");
+
+			delete process.env.BASE_DOMAIN;
+			delete process.env.USE_GATEWAY;
+		});
+
+		it("should prefer JOLLI_PUBLIC_URL over tenant subdomain for syncServerUrl", async () => {
+			process.env.E2B_API_KEY = "test-api-key";
+			process.env.E2B_TEMPLATE_ID = "test-template";
+			process.env.ANTHROPIC_API_KEY = "test-anthropic-key";
+			process.env.JOLLI_PUBLIC_URL = "https://override.example.com";
+			process.env.BASE_DOMAIN = "jolli.app";
+			process.env.USE_GATEWAY = "true";
+
+			vi.doMock("../tenant/TenantContext", () => ({
+				getTenantContext: vi.fn(() => ({
+					tenant: { slug: "acme", primaryDomain: null },
+					org: { slug: "default", schemaName: "org_default" },
+				})),
+			}));
+
+			const { getWorkflowConfig, resetConfig } = await import("./Config");
+			resetConfig();
+
+			const config = getWorkflowConfig();
+			expect(config.syncServerUrl).toBe("https://override.example.com/api");
+
+			delete process.env.JOLLI_PUBLIC_URL;
+			delete process.env.BASE_DOMAIN;
+			delete process.env.USE_GATEWAY;
 		});
 	});
 
@@ -899,6 +1128,50 @@ describe("Config", () => {
 
 			clearTenantConfigCache();
 			delete process.env.BASE_DOMAIN;
+		});
+
+		it("getGlobalConfig returns base config even inside tenant context", async () => {
+			const mockTenant = {
+				id: "tenant-global-cfg",
+				slug: "globalcfg",
+				displayName: "GlobalCfg Corp",
+				status: "active" as const,
+				deploymentType: "shared" as const,
+				databaseProviderId: "provider-1",
+				configs: {},
+				configsUpdatedAt: null,
+				featureFlags: {},
+				primaryDomain: null,
+				createdAt: new Date(),
+				updatedAt: new Date(),
+				provisionedAt: new Date(),
+			};
+
+			vi.doMock("../tenant/TenantContext", () => ({
+				getTenantContext: vi.fn(() => ({
+					tenant: mockTenant,
+					org: { id: "org-1", slug: "default" },
+					database: {},
+				})),
+			}));
+
+			process.env.BASE_DOMAIN = "jolli.app";
+			process.env.TENANT_TOKEN_MASTER_SECRET = "master-secret-global";
+
+			const { getConfig, getGlobalConfig, clearTenantConfigCache } = await import("./Config");
+
+			const tenantConfig = getConfig();
+			const globalConfig = getGlobalConfig();
+
+			// Tenant config has derived TOKEN_SECRET, global does not
+			expect(tenantConfig.TOKEN_SECRET).toHaveLength(64);
+			expect(tenantConfig.TOKEN_SECRET).toMatch(/^[a-f0-9]+$/);
+			expect(globalConfig.TOKEN_SECRET).toBe(process.env.TOKEN_SECRET);
+			expect(globalConfig.TOKEN_SECRET).not.toBe(tenantConfig.TOKEN_SECRET);
+
+			clearTenantConfigCache();
+			delete process.env.BASE_DOMAIN;
+			delete process.env.TENANT_TOKEN_MASTER_SECRET;
 		});
 
 		it("applies TOKEN_SECRET override when TENANT_TOKEN_MASTER_SECRET is set", async () => {

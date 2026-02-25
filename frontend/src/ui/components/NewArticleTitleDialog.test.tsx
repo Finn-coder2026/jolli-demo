@@ -1,6 +1,45 @@
 import { handleStopPropagation, NewArticleTitleDialog } from "./NewArticleTitleDialog";
-import { fireEvent, render, screen } from "@testing-library/preact";
+import { fireEvent, render, screen, waitFor } from "@testing-library/preact";
+import { act } from "preact/test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+let capturedOnValueChange: ((value: string) => void) | null = null;
+
+vi.mock("../../components/ui/SelectBox", () => {
+	return {
+		SelectBox: ({
+			value,
+			onValueChange,
+			options,
+			...props
+		}: {
+			value: string;
+			onValueChange: (value: string) => void;
+			options: Array<{ value: string; label: string }>;
+			width?: string;
+			className?: string;
+			"data-testid"?: string;
+		}) => {
+			capturedOnValueChange = onValueChange;
+			return (
+				<select
+					data-testid={props["data-testid"]}
+					value={value}
+					onChange={e => {
+						const target = e.target as HTMLSelectElement;
+						onValueChange(target.value);
+					}}
+				>
+					{options.map(opt => (
+						<option key={opt.value} value={opt.value}>
+							{opt.label}
+						</option>
+					))}
+				</select>
+			);
+		},
+	};
+});
 
 describe("NewArticleTitleDialog", () => {
 	const mockOnCreateWithTitle = vi.fn();
@@ -9,6 +48,7 @@ describe("NewArticleTitleDialog", () => {
 	beforeEach(() => {
 		mockOnCreateWithTitle.mockClear();
 		mockOnClose.mockClear();
+		capturedOnValueChange = null;
 	});
 
 	it("should render the dialog with title and subtitle", () => {
@@ -151,8 +191,8 @@ describe("NewArticleTitleDialog", () => {
 		const selectTrigger = screen.getByTestId("content-type-select");
 		expect(selectTrigger).toBeDefined();
 
-		// The default value should be visible (Markdown / MDX)
-		expect(screen.getByText("Markdown / MDX")).toBeDefined();
+		// The default value should be visible (Markdown)
+		expect(screen.getByText("Markdown")).toBeDefined();
 	});
 
 	it("should show type description text", () => {
@@ -161,5 +201,67 @@ describe("NewArticleTitleDialog", () => {
 		expect(
 			screen.getByText("Choose Markdown for documentation articles, or OpenAPI format for API specifications."),
 		).toBeDefined();
+	});
+
+	it("should call onCreateWithTitle with JSON contentType when changed", async () => {
+		render(<NewArticleTitleDialog onCreateWithTitle={mockOnCreateWithTitle} onClose={mockOnClose} />);
+
+		const titleInput = screen.getByTestId("title-input");
+		fireEvent.input(titleInput, { target: { value: "API Documentation" } });
+
+		const onChange = capturedOnValueChange;
+		if (onChange) {
+			await act(() => {
+				onChange("application/json");
+			});
+		}
+
+		const createButton = screen.getByTestId("create-button");
+		fireEvent.click(createButton);
+
+		await waitFor(() => {
+			expect(mockOnCreateWithTitle).toHaveBeenCalledWith("API Documentation", "application/json");
+		});
+	});
+
+	it("should call onCreateWithTitle with YAML contentType when changed", async () => {
+		render(<NewArticleTitleDialog onCreateWithTitle={mockOnCreateWithTitle} onClose={mockOnClose} />);
+
+		const titleInput = screen.getByTestId("title-input");
+		fireEvent.input(titleInput, { target: { value: "Config File" } });
+
+		const onChange = capturedOnValueChange;
+		if (onChange) {
+			act(() => {
+				onChange("application/yaml");
+			});
+		}
+
+		const createButton = screen.getByTestId("create-button");
+		fireEvent.click(createButton);
+
+		await waitFor(() => {
+			expect(mockOnCreateWithTitle).toHaveBeenCalledWith("Config File", "application/yaml");
+		});
+	});
+
+	it("should trigger onCreateWithTitle with JSON type when pressing Enter after changing contentType", async () => {
+		render(<NewArticleTitleDialog onCreateWithTitle={mockOnCreateWithTitle} onClose={mockOnClose} />);
+
+		const titleInput = screen.getByTestId("title-input");
+		fireEvent.input(titleInput, { target: { value: "API Spec" } });
+
+		const onChange = capturedOnValueChange;
+		if (onChange) {
+			act(() => {
+				onChange("application/json");
+			});
+		}
+
+		fireEvent.keyDown(titleInput, { key: "Enter" });
+
+		await waitFor(() => {
+			expect(mockOnCreateWithTitle).toHaveBeenCalledWith("API Spec", "application/json");
+		});
 	});
 });

@@ -36,6 +36,11 @@ export interface MercureService {
 	getConvoTopic(convoId: number): string;
 
 	/**
+	 * Get the onboarding topic for a specific user
+	 */
+	getOnboardingTopic(userId: number): string;
+
+	/**
 	 * Create a subscriber JWT for the specified topics.
 	 * This token is given to frontend clients to authorize subscriptions.
 	 *
@@ -58,6 +63,11 @@ export interface MercureService {
 	 * Publish a conversation event to the Mercure Hub
 	 */
 	publishConvoEvent(convoId: number, eventType: string, data: unknown): Promise<MercurePublishResult>;
+
+	/**
+	 * Publish an onboarding event to the Mercure Hub
+	 */
+	publishOnboardingEvent(userId: number, eventType: string, data: unknown): Promise<MercurePublishResult>;
 }
 
 /**
@@ -73,10 +83,12 @@ export function createMercureService(client?: MercureClient): MercureService {
 		getJobEventsTopic,
 		getDraftTopic,
 		getConvoTopic,
+		getOnboardingTopic,
 		createSubscriberToken,
 		publishJobEvent,
 		publishDraftEvent,
 		publishConvoEvent,
+		publishOnboardingEvent,
 	};
 
 	function isEnabled(): boolean {
@@ -114,6 +126,10 @@ export function createMercureService(client?: MercureClient): MercureService {
 
 	function getConvoTopic(convoId: number): string {
 		return `${getTenantPrefix()}/convos/${convoId}`;
+	}
+
+	function getOnboardingTopic(userId: number): string {
+		return `${getTenantOrgPrefix()}/onboarding/${userId}`;
 	}
 
 	function createSubscriberToken(topics: Array<string>): string {
@@ -188,6 +204,27 @@ export function createMercureService(client?: MercureClient): MercureService {
 			topic,
 			data: eventData,
 			private: true, // Conversation events require authentication
+		});
+	}
+
+	async function publishOnboardingEvent(
+		userId: number,
+		eventType: string,
+		data: unknown,
+	): Promise<MercurePublishResult> {
+		const topic = getOnboardingTopic(userId);
+		const eventData = {
+			type: eventType,
+			userId,
+			...(typeof data === "object" && data !== null ? data : { data }),
+			timestamp: new Date().toISOString(),
+		};
+
+		log.debug("Publishing onboarding event to Mercure: %s (user %d)", eventType, userId);
+		return await mercureClient.publish({
+			topic,
+			data: eventData,
+			private: true, // Onboarding events are user-specific
 		});
 	}
 }

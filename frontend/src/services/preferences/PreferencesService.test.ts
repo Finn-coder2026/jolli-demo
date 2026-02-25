@@ -86,7 +86,7 @@ describe("PreferencesService", () => {
 			};
 			const service = new PreferencesService(mockStorage, context);
 
-			expect(service.get(PREFERENCES.theme)).toBe("light");
+			expect(service.get(PREFERENCES.theme)).toBe("system");
 			expect(service.get(PREFERENCES.sidebarCollapsed)).toBe(false);
 			expect(service.get(PREFERENCES.chatWidth)).toBe(600);
 
@@ -142,10 +142,10 @@ describe("PreferencesService", () => {
 			service.set(PREFERENCES.chatWidth, 1000);
 			expect(service.get(PREFERENCES.chatWidth)).toBe(600); // Should return default
 
-			// Theme must be "light" or "dark"
+			// Theme must be "system", "light", or "dark"
 			// @ts-expect-error - testing invalid value
 			service.set(PREFERENCES.theme, "invalid");
-			expect(service.get(PREFERENCES.theme)).toBe("light"); // Should return default
+			expect(service.get(PREFERENCES.theme)).toBe("system"); // Should return default
 
 			service.destroy();
 		});
@@ -197,7 +197,7 @@ describe("PreferencesService", () => {
 			expect(service.get(PREFERENCES.theme)).toBe("dark");
 
 			service.remove(PREFERENCES.theme);
-			expect(service.get(PREFERENCES.theme)).toBe("light");
+			expect(service.get(PREFERENCES.theme)).toBe("system");
 			expect(storageData.has("theme")).toBe(false);
 
 			service.destroy();
@@ -304,7 +304,7 @@ describe("PreferencesService", () => {
 			service.subscribe(PREFERENCES.theme, callback);
 			service.remove(PREFERENCES.theme);
 
-			expect(callback).toHaveBeenCalledWith("light"); // Default value
+			expect(callback).toHaveBeenCalledWith("system"); // Default value
 
 			service.destroy();
 		});
@@ -386,6 +386,156 @@ describe("PreferencesService", () => {
 			// After destroy, setting should not notify
 			service.set(PREFERENCES.theme, "dark");
 			expect(callback).not.toHaveBeenCalled();
+		});
+	});
+
+	describe("storage event listener", () => {
+		it("should handle storage events for cross-tab synchronization", () => {
+			const context: TenantContext = {
+				isMultiTenant: false,
+				tenantSlug: null,
+				orgSlug: null,
+			};
+			const service = new PreferencesService(mockStorage, context);
+
+			// Subscribe to changes
+			const mockCallback = vi.fn();
+			service.subscribe(PREFERENCES.theme, mockCallback);
+
+			// Simulate storage event from another tab
+			const storageEvent = new StorageEvent("storage", {
+				key: "theme",
+				newValue: "dark",
+				oldValue: "system",
+			});
+			window.dispatchEvent(storageEvent);
+
+			// Callback should be called with new value
+			expect(mockCallback).toHaveBeenCalledWith("dark");
+
+			service.destroy();
+		});
+
+		it("should ignore storage events with no key", () => {
+			const context: TenantContext = {
+				isMultiTenant: false,
+				tenantSlug: null,
+				orgSlug: null,
+			};
+			const service = new PreferencesService(mockStorage, context);
+
+			const mockCallback = vi.fn();
+			service.subscribe(PREFERENCES.theme, mockCallback);
+
+			// Simulate storage event with no key (e.g., localStorage.clear())
+			const storageEvent = new StorageEvent("storage", {
+				key: null,
+			});
+			window.dispatchEvent(storageEvent);
+
+			// Callback should not be called
+			expect(mockCallback).not.toHaveBeenCalled();
+
+			service.destroy();
+		});
+
+		it("should handle callback errors gracefully in storage event listener", () => {
+			const context: TenantContext = {
+				isMultiTenant: false,
+				tenantSlug: null,
+				orgSlug: null,
+			};
+			const service = new PreferencesService(mockStorage, context);
+
+			// Subscribe with a callback that throws
+			const errorCallback = vi.fn().mockImplementation(() => {
+				throw new Error("Callback error");
+			});
+			const goodCallback = vi.fn();
+
+			service.subscribe(PREFERENCES.theme, errorCallback);
+			service.subscribe(PREFERENCES.theme, goodCallback);
+
+			// Simulate storage event
+			const storageEvent = new StorageEvent("storage", {
+				key: "theme",
+				newValue: "dark",
+			});
+
+			// Should not throw, and good callback should still be called
+			expect(() => window.dispatchEvent(storageEvent)).not.toThrow();
+			expect(errorCallback).toHaveBeenCalled();
+			expect(goodCallback).toHaveBeenCalledWith("dark");
+
+			service.destroy();
+		});
+
+		it("should not set up storage listener when window is undefined (SSR)", () => {
+			// Save original window
+			const originalWindow = global.window;
+
+			// @ts-expect-error - simulating SSR environment
+			delete global.window;
+
+			const context: TenantContext = {
+				isMultiTenant: false,
+				tenantSlug: null,
+				orgSlug: null,
+			};
+
+			// Should not throw when window is undefined
+			expect(() => new PreferencesService(mockStorage, context)).not.toThrow();
+
+			// Restore window
+			global.window = originalWindow;
+		});
+	});
+
+	describe("deserialization error handling", () => {
+		it("should return default value when deserialization fails", () => {
+			const context: TenantContext = {
+				isMultiTenant: false,
+				tenantSlug: null,
+				orgSlug: null,
+			};
+			const service = new PreferencesService(mockStorage, context);
+
+			// Store invalid data for a number preference
+			storageData.set("chatWidth", "not-a-number");
+
+			// Should return default value when deserialization fails
+			expect(service.get(PREFERENCES.chatWidth)).toBe(600);
+
+			service.destroy();
+		});
+
+		it("should return default value when deserialization throws", () => {
+			const context: TenantContext = {
+				isMultiTenant: false,
+				tenantSlug: null,
+				orgSlug: null,
+			};
+
+			// Create a custom preference with a deserializer that throws
+			const faultyPref = definePreference({
+				key: "faulty",
+				scope: "global" as const,
+				defaultValue: "default",
+				serialize: (value: string) => value,
+				deserialize: (_value: string) => {
+					throw new Error("Deserialization error");
+				},
+			});
+
+			const service = new PreferencesService(mockStorage, context);
+
+			// Store some value
+			storageData.set("faulty", "some-value");
+
+			// Should return default value when deserialize throws
+			expect(service.get(faultyPref)).toBe("default");
+
+			service.destroy();
 		});
 	});
 });
@@ -471,6 +621,28 @@ describe("PreferencesTypes utilities", () => {
 			expect(Serializers.nullableString.serialize(null)).toBe("");
 			expect(Serializers.nullableString.deserialize("hello")).toBe("hello");
 			expect(Serializers.nullableString.deserialize("")).toBeNull();
+		});
+
+		it("should serialize and deserialize nullable numbers", () => {
+			expect(Serializers.nullableNumber.serialize(42)).toBe("42");
+			expect(Serializers.nullableNumber.serialize(null)).toBe("");
+			expect(Serializers.nullableNumber.deserialize("42")).toBe(42);
+			expect(Serializers.nullableNumber.deserialize("")).toBeNull();
+		});
+
+		it("should serialize and deserialize number arrays", () => {
+			const array = [1, 2, 3, 4, 5];
+			const serialized = Serializers.numberArray.serialize(array);
+			expect(serialized).toBe("[1,2,3,4,5]");
+			expect(Serializers.numberArray.deserialize(serialized)).toEqual(array);
+		});
+
+		it("should return empty array when deserializing invalid JSON for number array", () => {
+			expect(Serializers.numberArray.deserialize("not-valid-json")).toEqual([]);
+		});
+
+		it("should return empty array when deserializing non-array JSON for number array", () => {
+			expect(Serializers.numberArray.deserialize('{"foo": "bar"}')).toEqual([]);
 		});
 	});
 

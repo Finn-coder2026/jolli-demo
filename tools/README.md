@@ -65,15 +65,13 @@ npm run package     # Build for distribution
 
 ### jolliagent
 
-AI agent for automated article creation. Runs workflows in E2B cloud sandboxes using Anthropic's API.
+AI agent library for automated article creation. Used by the Jolli backend to run workflows in E2B cloud sandboxes via Anthropic's API.
 
 ```bash
 cd jolliagent
-npm run cli                       # Run CLI mode
-npm run workflow                  # Run a workflow
-npm run workflow:getting-started  # Run getting-started workflow
-npm run workflow:architecture     # Run architecture workflow
-npm run workflow:code-docs        # Run code-docs workflow
+npm run build       # Build library
+npm test            # Run tests
+npm run lint        # Check for lint issues
 ```
 
 ### nextra-generator

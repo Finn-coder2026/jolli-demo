@@ -24,7 +24,10 @@ export function EditHistoryDropdown({ history, maxItems = 10 }: EditHistoryDropd
 			}
 			align="end"
 		>
-			<div className="max-h-80 overflow-y-auto min-w-[16rem]" data-testid="history-dropdown-content">
+			<div
+				className="max-h-80 overflow-y-auto min-w-[16rem] scrollbar-thin"
+				data-testid="history-dropdown-content"
+			>
 				{history.length === 0 ? (
 					<div
 						className="px-3 py-4 text-sm text-muted-foreground text-center"

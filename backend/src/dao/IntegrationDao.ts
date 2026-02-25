@@ -35,6 +35,10 @@ export interface IntegrationDao {
 	 */
 	listIntegrations(): Promise<Array<Integration>>;
 	/**
+	 * Returns the number of Integrations currently in the repository.
+	 */
+	countIntegrations(): Promise<number>;
+	/**
 	 * Updates an Integration if one exists.
 	 * @param id the integration id to update.
 	 * @param update the integration update.
@@ -80,6 +84,7 @@ export function createIntegrationDao(sequelize: Sequelize): IntegrationDao & Dao
 		createIntegration,
 		getIntegration,
 		listIntegrations,
+		countIntegrations,
 		updateIntegration,
 		deleteIntegration,
 		removeAllGitHubIntegrations,
@@ -120,6 +125,10 @@ export function createIntegrationDao(sequelize: Sequelize): IntegrationDao & Dao
 	async function listIntegrations(): Promise<Array<Integration>> {
 		const integrations = await Integrations.findAll({ order: [["createdAt", "DESC"]] });
 		return integrations.map(integration => integration.get({ plain: true }));
+	}
+
+	async function countIntegrations(): Promise<number> {
+		return await Integrations.count();
 	}
 
 	function getGitHubRepoIntegration(integration: Integration): GithubRepoIntegration | undefined {

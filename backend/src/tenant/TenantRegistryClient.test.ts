@@ -7,6 +7,7 @@ describe("TenantRegistryClient", () => {
 	let mockSequelize: Sequelize;
 	let mockQuery: ReturnType<typeof vi.fn>;
 	let mockClose: ReturnType<typeof vi.fn>;
+	const mockTransactionObj = { id: "mock-transaction" };
 
 	const tenantRow = {
 		id: "tenant-123",
@@ -49,6 +50,9 @@ describe("TenantRegistryClient", () => {
 		mockSequelize = {
 			query: mockQuery,
 			close: mockClose,
+			transaction: vi.fn().mockImplementation((callback: (t: unknown) => Promise<unknown>) => {
+				return callback(mockTransactionObj);
+			}),
 		} as unknown as Sequelize;
 
 		client = createTenantRegistryClient({
@@ -508,8 +512,10 @@ describe("TenantRegistryClient", () => {
 	});
 
 	describe("createInstallationMapping", () => {
-		it("creates a new installation mapping", async () => {
-			mockQuery.mockResolvedValue([[], undefined]);
+		it("creates a new installation mapping with stale cleanup", async () => {
+			mockQuery
+				.mockResolvedValueOnce([[], 0]) // DELETE stale: 0 deleted
+				.mockResolvedValueOnce([[], undefined]); // INSERT
 
 			await client.createInstallationMapping({
 				installationId: 12345,
@@ -519,16 +525,31 @@ describe("TenantRegistryClient", () => {
 				githubAccountType: "Organization",
 			});
 
-			expect(mockQuery).toHaveBeenCalledWith(
+			expect(mockQuery).toHaveBeenCalledTimes(2);
+			// First call: DELETE stale mappings within transaction
+			expect(mockQuery).toHaveBeenNthCalledWith(
+				1,
+				expect.stringContaining("DELETE FROM github_installation_mappings"),
+				expect.objectContaining({
+					bind: ["my-org", 12345],
+					transaction: mockTransactionObj,
+				}),
+			);
+			// Second call: INSERT/UPSERT within transaction
+			expect(mockQuery).toHaveBeenNthCalledWith(
+				2,
 				expect.stringContaining("INSERT INTO github_installation_mappings"),
 				expect.objectContaining({
 					bind: expect.arrayContaining([12345, "tenant-123", "org-123", "my-org", "Organization"]),
+					transaction: mockTransactionObj,
 				}),
 			);
 		});
 
 		it("handles upsert for existing installation", async () => {
-			mockQuery.mockResolvedValue([[], undefined]);
+			mockQuery
+				.mockResolvedValueOnce([[], 0]) // DELETE stale
+				.mockResolvedValueOnce([[], undefined]); // INSERT
 
 			await client.createInstallationMapping({
 				installationId: 12345,
@@ -538,10 +559,180 @@ describe("TenantRegistryClient", () => {
 				githubAccountType: "User",
 			});
 
-			// Should use ON CONFLICT DO UPDATE
-			expect(mockQuery).toHaveBeenCalledWith(
+			// Second call should use ON CONFLICT DO UPDATE
+			expect(mockQuery).toHaveBeenNthCalledWith(
+				2,
 				expect.stringContaining("ON CONFLICT (installation_id)"),
 				expect.anything(),
+			);
+		});
+
+		it("cleans up stale entries for same account on same tenant (reinstall)", async () => {
+			mockQuery
+				.mockResolvedValueOnce([[], 1]) // DELETE stale: 1 deleted
+				.mockResolvedValueOnce([[], undefined]); // INSERT
+
+			await client.createInstallationMapping({
+				installationId: 99999, // New installation ID after reinstall
+				tenantId: "tenant-123",
+				orgId: "org-123",
+				githubAccountLogin: "my-org",
+				githubAccountType: "Organization",
+			});
+
+			// DELETE should target same account with different installation ID
+			expect(mockQuery).toHaveBeenNthCalledWith(
+				1,
+				expect.stringContaining("github_account_login = $1"),
+				expect.objectContaining({
+					bind: ["my-org", 99999],
+				}),
+			);
+			expect(mockQuery).toHaveBeenNthCalledWith(
+				1,
+				expect.stringContaining("installation_id != $2"),
+				expect.anything(),
+			);
+		});
+
+		it("cleans up stale entries for same account on different tenant (cross-tenant move)", async () => {
+			mockQuery
+				.mockResolvedValueOnce([[], 1]) // DELETE stale: 1 deleted (old tenant's mapping)
+				.mockResolvedValueOnce([[], undefined]); // INSERT for new tenant
+
+			await client.createInstallationMapping({
+				installationId: 99999,
+				tenantId: "tenant-456", // New tenant
+				orgId: "org-456",
+				githubAccountLogin: "my-org", // Same GitHub account
+				githubAccountType: "Organization",
+			});
+
+			// DELETE cleans up ANY tenant's stale mapping for this GitHub account
+			expect(mockQuery).toHaveBeenNthCalledWith(
+				1,
+				expect.stringContaining("DELETE FROM github_installation_mappings"),
+				expect.objectContaining({
+					bind: ["my-org", 99999],
+				}),
+			);
+			// INSERT creates the new tenant's mapping
+			expect(mockQuery).toHaveBeenNthCalledWith(
+				2,
+				expect.stringContaining("INSERT INTO github_installation_mappings"),
+				expect.objectContaining({
+					bind: expect.arrayContaining([99999, "tenant-456", "org-456", "my-org"]),
+				}),
+			);
+		});
+	});
+
+	describe("ensureInstallationMapping", () => {
+		it("creates a mapping when none exists (rowCount > 0)", async () => {
+			mockQuery
+				.mockResolvedValueOnce([[], 0]) // DELETE stale: 0 deleted
+				.mockResolvedValueOnce([[], 1]); // INSERT: 1 created
+
+			const created = await client.ensureInstallationMapping({
+				installationId: 12345,
+				tenantId: "tenant-123",
+				orgId: "org-123",
+				githubAccountLogin: "my-org",
+				githubAccountType: "Organization",
+			});
+
+			expect(created).toBe(true);
+			expect(mockQuery).toHaveBeenCalledTimes(2);
+			expect(mockQuery).toHaveBeenNthCalledWith(
+				2,
+				expect.stringContaining("ON CONFLICT (installation_id) DO NOTHING"),
+				expect.objectContaining({
+					bind: expect.arrayContaining([12345, "tenant-123", "org-123", "my-org", "Organization"]),
+					transaction: mockTransactionObj,
+				}),
+			);
+		});
+
+		it("returns false when mapping already exists (rowCount === 0)", async () => {
+			mockQuery
+				.mockResolvedValueOnce([[], 0]) // DELETE stale
+				.mockResolvedValueOnce([[], 0]); // INSERT: 0 (conflict, already exists)
+
+			const created = await client.ensureInstallationMapping({
+				installationId: 12345,
+				tenantId: "tenant-456",
+				orgId: "org-456",
+				githubAccountLogin: "other-org",
+				githubAccountType: "User",
+			});
+
+			expect(created).toBe(false);
+		});
+
+		it("uses INSERT DO NOTHING (never overwrites)", async () => {
+			mockQuery
+				.mockResolvedValueOnce([[], 0]) // DELETE stale
+				.mockResolvedValueOnce([[], 0]); // INSERT
+
+			await client.ensureInstallationMapping({
+				installationId: 12345,
+				tenantId: "tenant-123",
+				orgId: "org-123",
+				githubAccountLogin: "my-org",
+				githubAccountType: "Organization",
+			});
+
+			// Second call (INSERT) should use DO NOTHING
+			const sql = mockQuery.mock.calls[1][0] as string;
+			expect(sql).toContain("DO NOTHING");
+			expect(sql).not.toContain("DO UPDATE");
+		});
+
+		it("cleans up stale entries for same account before inserting", async () => {
+			mockQuery
+				.mockResolvedValueOnce([[], 1]) // DELETE stale: 1 deleted
+				.mockResolvedValueOnce([[], 1]); // INSERT: 1 created
+
+			const created = await client.ensureInstallationMapping({
+				installationId: 99999,
+				tenantId: "tenant-123",
+				orgId: "org-123",
+				githubAccountLogin: "my-org",
+				githubAccountType: "Organization",
+			});
+
+			expect(created).toBe(true);
+			// First call: DELETE stale mappings
+			expect(mockQuery).toHaveBeenNthCalledWith(
+				1,
+				expect.stringContaining("DELETE FROM github_installation_mappings"),
+				expect.objectContaining({
+					bind: ["my-org", 99999],
+					transaction: mockTransactionObj,
+				}),
+			);
+		});
+
+		it("does not affect entries for a different github account", async () => {
+			mockQuery
+				.mockResolvedValueOnce([[], 0]) // DELETE stale: 0 (different account not touched)
+				.mockResolvedValueOnce([[], 1]); // INSERT
+
+			await client.ensureInstallationMapping({
+				installationId: 99999,
+				tenantId: "tenant-123",
+				orgId: "org-123",
+				githubAccountLogin: "my-org",
+				githubAccountType: "Organization",
+			});
+
+			// DELETE only targets rows matching "my-org", not other accounts
+			expect(mockQuery).toHaveBeenNthCalledWith(
+				1,
+				expect.stringContaining("github_account_login = $1"),
+				expect.objectContaining({
+					bind: ["my-org", 99999],
+				}),
 			);
 		});
 	});

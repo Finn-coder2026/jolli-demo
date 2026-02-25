@@ -1268,7 +1268,7 @@ describe("SiteDao", () => {
 			]);
 		});
 
-		it("should return deleted articles when they are no longer in database", async () => {
+		it("should return deleted articles with stored title when generatedArticleTitles exists", async () => {
 			const docsite: Site = {
 				id: 1,
 				name: "test-site",
@@ -1282,6 +1282,48 @@ describe("SiteDao", () => {
 					framework: "nextra",
 					articleCount: 1,
 					generatedArticleJrns: ["article:deleted-doc"],
+					generatedArticleTitles: { "article:deleted-doc": "My Deleted Article" },
+				},
+				lastGeneratedAt: new Date("2024-01-15T10:00:00Z"),
+				createdAt: new Date("2024-01-15T10:00:00Z"),
+				updatedAt: new Date("2024-01-15T10:00:00Z"),
+			};
+
+			const mockSiteInstance = {
+				get: vi.fn().mockReturnValue(docsite),
+			};
+
+			vi.mocked(mockNewDocsites.findByPk).mockResolvedValue(mockSiteInstance as never);
+			vi.mocked(mockDocs.findAll).mockResolvedValue([] as never);
+
+			const result = await siteDao.getChangedArticles(1);
+
+			expect(result).toHaveLength(1);
+			expect(result[0]).toMatchObject({
+				id: -1,
+				title: "My Deleted Article",
+				jrn: "article:deleted-doc",
+				contentType: "unknown",
+				changeType: "deleted",
+				changeReason: "content",
+			});
+		});
+
+		it("should fall back to JRN as title when generatedArticleTitles is missing (backward compat)", async () => {
+			const docsite: Site = {
+				id: 1,
+				name: "test-site",
+				displayName: "Test Site",
+				userId: 1,
+				status: "active",
+				visibility: "internal",
+				metadata: {
+					githubRepo: "test/repo",
+					githubUrl: "https://github.com/test/repo",
+					framework: "nextra",
+					articleCount: 1,
+					generatedArticleJrns: ["article:deleted-doc"],
+					// No generatedArticleTitles - old site format
 				},
 				lastGeneratedAt: new Date("2024-01-15T10:00:00Z"),
 				createdAt: new Date("2024-01-15T10:00:00Z"),
@@ -1305,6 +1347,58 @@ describe("SiteDao", () => {
 				contentType: "unknown",
 				changeType: "deleted",
 				changeReason: "content",
+			});
+		});
+
+		it("should treat soft-deleted articles as deleted, not updated", async () => {
+			// A soft-deleted article (deletedAt is set) should be filtered out of currentDocs
+			// and appear as "deleted" — not "updated" due to its updatedAt changing during soft-delete
+			const docsite: Site = {
+				id: 1,
+				name: "test-site",
+				displayName: "Test Site",
+				userId: 1,
+				status: "active",
+				visibility: "internal",
+				metadata: {
+					githubRepo: "test/repo",
+					githubUrl: "https://github.com/test/repo",
+					framework: "nextra",
+					articleCount: 2,
+					generatedArticleJrns: ["article:existing", "article:soft-deleted"],
+					generatedArticleTitles: { "article:existing": "Existing", "article:soft-deleted": "Soft Deleted" },
+				},
+				lastGeneratedAt: new Date("2024-01-15T10:00:00Z"),
+				createdAt: new Date("2024-01-15T10:00:00Z"),
+				updatedAt: new Date("2024-01-15T10:00:00Z"),
+			};
+
+			const mockSiteInstance = { get: vi.fn().mockReturnValue(docsite) };
+			vi.mocked(mockNewDocsites.findByPk).mockResolvedValue(mockSiteInstance as never);
+
+			// The soft-deleted article is excluded by the deletedAt filter in the query,
+			// so mockDocs.findAll only returns the existing article
+			const docs = [
+				{
+					id: 1,
+					jrn: "article:existing",
+					updatedAt: new Date("2024-01-14T10:00:00Z"),
+					contentType: "text/markdown",
+					contentMetadata: { title: "Existing" },
+				},
+			];
+			vi.mocked(mockDocs.findAll).mockResolvedValue(
+				docs.map(d => ({ get: vi.fn().mockReturnValue(d) })) as never,
+			);
+
+			const result = await siteDao.getChangedArticles(1);
+
+			// The soft-deleted article should appear as "deleted", not "updated"
+			expect(result).toHaveLength(1);
+			expect(result[0]).toMatchObject({
+				jrn: "article:soft-deleted",
+				changeType: "deleted",
+				title: "Soft Deleted",
 			});
 		});
 
@@ -1530,8 +1624,16 @@ describe("SiteDao", () => {
 
 			// Content should be stripped (jolliscript frontmatter removed, but these don't have any)
 			expect(result).toEqual(allDocs);
-			// Should have called findAll without a where clause for JRNs
-			expect(mockDocs.findAll).toHaveBeenCalledWith({ order: [["updatedAt", "DESC"]] });
+			// Should have called findAll with deletedAt filter (no JRN filter), ordered by parentId then sortOrder
+			expect(mockDocs.findAll).toHaveBeenCalledWith(
+				expect.objectContaining({
+					where: expect.objectContaining({ deletedAt: expect.anything() }),
+					order: [
+						["parentId", "ASC"],
+						["sortOrder", "ASC"],
+					],
+				}),
+			);
 		});
 
 		it("should return empty array when selectedArticleJrns is empty array (zero articles)", async () => {
@@ -1618,13 +1720,16 @@ describe("SiteDao", () => {
 			const result = await siteDao.getArticlesForSite(1);
 
 			expect(result).toEqual(selectedDocs);
-			// Should have called findAll with a where clause filtering by JRNs
+			// Should have called findAll with a where clause filtering by JRNs, ordered by parentId then sortOrder
 			expect(mockDocs.findAll).toHaveBeenCalledWith(
 				expect.objectContaining({
 					where: expect.objectContaining({
 						jrn: expect.anything(),
 					}),
-					order: [["updatedAt", "DESC"]],
+					order: [
+						["parentId", "ASC"],
+						["sortOrder", "ASC"],
+					],
 				}),
 			);
 		});
@@ -1770,13 +1875,14 @@ describe("SiteDao", () => {
 	 * Expected Outcomes:
 	 * - checkIfNeedsUpdate returns true/false correctly
 	 * - getChangedArticles returns correct changeType (new/updated/deleted)
-	 * - navigationChanged flag triggers _meta.js regeneration (new/deleted articles)
+	 * - getChangedArticles returns correct changeReason (content/selection)
 	 */
 	describe("Article Sync Test Matrix", () => {
 		// Helper to create a test site with customizable state
 		function createTestSite(overrides: {
 			selectedArticleJrns?: Array<string>;
 			generatedArticleJrns?: Array<string>;
+			generatedArticleTitles?: Record<string, string>;
 			lastGeneratedAt?: Date;
 			status?: "pending" | "building" | "active" | "error";
 		}): Site {
@@ -1794,6 +1900,9 @@ describe("SiteDao", () => {
 					articleCount: overrides.generatedArticleJrns?.length || 0,
 					generatedArticleJrns: overrides.generatedArticleJrns || [],
 					selectedArticleJrns: overrides.selectedArticleJrns || [],
+					...(overrides.generatedArticleTitles
+						? { generatedArticleTitles: overrides.generatedArticleTitles }
+						: {}),
 				},
 				lastGeneratedAt: overrides.lastGeneratedAt || new Date("2024-01-15T10:00:00Z"),
 				createdAt: new Date("2024-01-15T10:00:00Z"),
@@ -2871,6 +2980,244 @@ describe("SiteDao", () => {
 			// Should return undefined (domain not found) without throwing error
 			expect(result).toBeUndefined();
 			expect(mockNewDocsites.findAll).toHaveBeenCalled();
+		});
+	});
+
+	describe("getSitesForArticle", () => {
+		/** Helper to build a mock Sequelize model instance wrapping a Site plain object */
+		function makeMockInstance(plain: Site): { get: ReturnType<typeof vi.fn> } {
+			return { get: vi.fn().mockReturnValue(plain) };
+		}
+
+		function makeSite(overrides: Partial<Site> = {}): Site {
+			return {
+				id: 1,
+				name: "test-site",
+				displayName: "Test Site",
+				userId: 1,
+				status: "active",
+				visibility: "external",
+				metadata: undefined,
+				lastGeneratedAt: new Date("2024-01-15T10:00:00Z"),
+				createdAt: new Date("2024-01-15T08:00:00Z"),
+				updatedAt: new Date("2024-01-15T10:00:00Z"),
+				...overrides,
+			};
+		}
+
+		it("should return all sites in include-all mode when selectedArticleJrns is undefined", async () => {
+			// Sites with no selectedArticleJrns are in include-all mode and match every article
+			const site1 = makeSite({ id: 1, name: "site-one", displayName: "Site One", metadata: undefined });
+			const site2 = makeSite({ id: 2, name: "site-two", displayName: "Site Two", metadata: undefined });
+
+			vi.mocked(mockNewDocsites.findAll).mockResolvedValue([
+				makeMockInstance(site1),
+				makeMockInstance(site2),
+			] as never);
+
+			const result = await siteDao.getSitesForArticle("/docs/intro");
+
+			expect(result).toHaveLength(2);
+			expect(result[0]).toEqual({ id: 1, name: "site-one", displayName: "Site One", visibility: "external" });
+			expect(result[1]).toEqual({ id: 2, name: "site-two", displayName: "Site Two", visibility: "external" });
+		});
+
+		it("should return all sites in include-all mode when metadata has no selectedArticleJrns field", async () => {
+			// Metadata present but selectedArticleJrns omitted is also include-all mode
+			const site = makeSite({
+				id: 1,
+				name: "include-all-site",
+				displayName: "Include All Site",
+				metadata: {
+					githubRepo: "org/repo",
+					githubUrl: "https://github.com/org/repo",
+					framework: "nextra",
+					articleCount: 5,
+					// selectedArticleJrns intentionally absent
+				},
+			});
+
+			vi.mocked(mockNewDocsites.findAll).mockResolvedValue([makeMockInstance(site)] as never);
+
+			const result = await siteDao.getSitesForArticle("/docs/guide");
+
+			expect(result).toHaveLength(1);
+			expect(result[0].name).toBe("include-all-site");
+		});
+
+		it("should return only sites that explicitly include the article JRN", async () => {
+			const targetJrn = "/docs/target-article";
+			const matchingSite = makeSite({
+				id: 1,
+				name: "matching-site",
+				displayName: "Matching Site",
+				metadata: {
+					githubRepo: "org/repo",
+					githubUrl: "https://github.com/org/repo",
+					framework: "nextra",
+					articleCount: 5,
+					selectedArticleJrns: [targetJrn, "/docs/other-article"],
+				},
+			});
+
+			vi.mocked(mockNewDocsites.findAll).mockResolvedValue([makeMockInstance(matchingSite)] as never);
+
+			const result = await siteDao.getSitesForArticle(targetJrn);
+
+			expect(result).toHaveLength(1);
+			expect(result[0].name).toBe("matching-site");
+		});
+
+		it("should return empty array when no sites match the article JRN", async () => {
+			vi.mocked(mockNewDocsites.findAll).mockResolvedValue([] as never);
+
+			const result = await siteDao.getSitesForArticle("/docs/unrelated-article");
+
+			expect(result).toHaveLength(0);
+		});
+
+		it("should map visibility to 'internal' when jwtAuth.enabled is true", async () => {
+			const site = makeSite({
+				id: 1,
+				name: "jwt-protected-site",
+				displayName: "JWT Protected Site",
+				visibility: "internal",
+				metadata: {
+					githubRepo: "org/repo",
+					githubUrl: "https://github.com/org/repo",
+					framework: "nextra",
+					articleCount: 3,
+					jwtAuth: {
+						enabled: true,
+						mode: "full",
+						loginUrl: "/login",
+						publicKey: "test-public-key",
+					},
+				},
+			});
+
+			vi.mocked(mockNewDocsites.findAll).mockResolvedValue([makeMockInstance(site)] as never);
+
+			const result = await siteDao.getSitesForArticle("/docs/any-article");
+
+			expect(result).toHaveLength(1);
+			expect(result[0].visibility).toBe("internal");
+		});
+
+		it("should map visibility to 'external' when jwtAuth is absent", async () => {
+			const site = makeSite({
+				id: 1,
+				name: "public-site",
+				displayName: "Public Site",
+				visibility: "external",
+				metadata: {
+					githubRepo: "org/repo",
+					githubUrl: "https://github.com/org/repo",
+					framework: "nextra",
+					articleCount: 3,
+					// No jwtAuth field at all
+				},
+			});
+
+			vi.mocked(mockNewDocsites.findAll).mockResolvedValue([makeMockInstance(site)] as never);
+
+			const result = await siteDao.getSitesForArticle("/docs/any-article");
+
+			expect(result).toHaveLength(1);
+			expect(result[0].visibility).toBe("external");
+		});
+
+		it("should map visibility to 'external' when jwtAuth.enabled is false", async () => {
+			const site = makeSite({
+				id: 1,
+				name: "disabled-auth-site",
+				displayName: "Disabled Auth Site",
+				metadata: {
+					githubRepo: "org/repo",
+					githubUrl: "https://github.com/org/repo",
+					framework: "nextra",
+					articleCount: 2,
+					jwtAuth: {
+						enabled: false,
+						mode: "full",
+						loginUrl: "/login",
+						publicKey: "test-public-key",
+					},
+				},
+			});
+
+			vi.mocked(mockNewDocsites.findAll).mockResolvedValue([makeMockInstance(site)] as never);
+
+			const result = await siteDao.getSitesForArticle("/docs/any-article");
+
+			expect(result).toHaveLength(1);
+			expect(result[0].visibility).toBe("external");
+		});
+
+		it("should handle mixed include-all and explicit-selection sites", async () => {
+			const targetJrn = "/docs/shared-article";
+
+			// Site 1: include-all (matches because selectedArticleJrns IS NULL)
+			const includeAllSite = makeSite({
+				id: 1,
+				name: "include-all-site",
+				displayName: "Include All Site",
+				metadata: undefined,
+			});
+
+			// Site 2: explicitly selects the target JRN with JWT auth enabled
+			const explicitMatchSite = makeSite({
+				id: 2,
+				name: "explicit-match-site",
+				displayName: "Explicit Match Site",
+				metadata: {
+					githubRepo: "org/repo",
+					githubUrl: "https://github.com/org/repo",
+					framework: "nextra",
+					articleCount: 5,
+					selectedArticleJrns: [targetJrn, "/docs/other"],
+					jwtAuth: {
+						enabled: true,
+						mode: "full",
+						loginUrl: "/login",
+						publicKey: "test-key",
+					},
+				},
+			});
+
+			vi.mocked(mockNewDocsites.findAll).mockResolvedValue([
+				makeMockInstance(includeAllSite),
+				makeMockInstance(explicitMatchSite),
+			] as never);
+
+			const result = await siteDao.getSitesForArticle(targetJrn);
+
+			expect(result).toHaveLength(2);
+			expect(result.map(s => s.name)).toContain("include-all-site");
+			expect(result.map(s => s.name)).toContain("explicit-match-site");
+
+			// Verify visibility is derived from jwtAuth, not the site's stored visibility field
+			const includeAllResult = result.find(s => s.name === "include-all-site");
+			expect(includeAllResult?.visibility).toBe("external");
+
+			const explicitResult = result.find(s => s.name === "explicit-match-site");
+			expect(explicitResult?.visibility).toBe("internal");
+		});
+
+		it("should call findAll with required attributes and the JRN replacement for the WHERE clause", async () => {
+			vi.mocked(mockNewDocsites.findAll).mockResolvedValue([] as never);
+
+			await siteDao.getSitesForArticle("/docs/any-article");
+
+			expect(mockNewDocsites.findAll).toHaveBeenCalledWith(
+				expect.objectContaining({
+					attributes: ["id", "name", "displayName", "metadata"],
+					// Verify the JRN is passed as a parameterised replacement (not interpolated directly)
+					replacements: expect.objectContaining({
+						jrnJson: JSON.stringify(["/docs/any-article"]),
+					}),
+				}),
+			);
 		});
 	});
 });

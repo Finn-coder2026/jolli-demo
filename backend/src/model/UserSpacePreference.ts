@@ -6,7 +6,7 @@ export interface UserSpacePreference {
 	readonly id: number;
 	readonly userId: number;
 	readonly spaceId: number;
-	readonly sort: SpaceSortOption | undefined;
+	readonly sort: SpaceSortOption | null | undefined;
 	readonly filters: Record<string, unknown> | undefined;
 	readonly expandedFolders: Array<number>;
 	readonly updatedAt: Date;
@@ -42,11 +42,6 @@ const schema = {
 	userId: {
 		type: DataTypes.INTEGER,
 		allowNull: false,
-		references: {
-			model: "users",
-			key: "id",
-		},
-		onDelete: "CASCADE",
 	},
 	spaceId: {
 		type: DataTypes.INTEGER,

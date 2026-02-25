@@ -6,17 +6,24 @@
 	"name": "jolli-root",
 	"private": true,
 	"scripts": {
+		"cli:test": "cd cli && bun test",
+		"cli:build": "cd cli && bun run build",
+		"cli:lint": "cd cli && bun run lint",
 		"gateway:start": "npm run gateway:start -w jolli-gateway",
 		"gateway:stop": "npm run gateway:stop -w jolli-gateway",
 		"gateway:reload": "npm run gateway:reload -w jolli-gateway",
 		"gateway:test": "npm run gateway:test -w jolli-gateway",
-		"vercel:build": "npm run vercel:build -w jolli-deploy-vercel",
-		"vercel:init": "npm run vercel:init -w jolli-deploy-vercel"
+		"e2e:token": "node --experimental-strip-types --no-warnings ./e2e/scripts/GenerateTestToken.ts",
+		"e2e": "cd e2e && node ../node_modules/@playwright/test/cli.js test --project=chromium && node -e \"console.log('\\n\\x1b[33m[!] Ignore the command above - it will not work in this monorepo.\\x1b[0m');console.log('\\x1b[1m\\x1b[36m>>> To view the report, run: npm run e2e:report --workspaces=false\\x1b[0m\\n')\"",
+		"e2e:ui": "cd e2e && node ../node_modules/@playwright/test/cli.js test --ui",
+		"e2e:headed": "cd e2e && node ../node_modules/@playwright/test/cli.js test --headed && node -e \"console.log('\\n\\x1b[33m[!] Ignore the command above - it will not work in this monorepo.\\x1b[0m');console.log('\\x1b[1m\\x1b[36m>>> To view the report, run: npm run e2e:report --workspaces=false\\x1b[0m\\n')\"",
+		"e2e:setup": "cd e2e && node ../node_modules/@playwright/test/cli.js test --project=setup",
+		"e2e:debug": "cd e2e && node ../node_modules/@playwright/test/cli.js test --debug",
+		"e2e:report": "cd e2e && node ../node_modules/@playwright/test/cli.js show-report ./playwright-report"
 	},
 	"workspaces": [
 		"backend",
 		"common",
-		"deploy/vercel",
 		"extensions/vscode",
 		"frontend",
 		"gateway",
@@ -32,6 +39,7 @@
 		"path-to-regexp": ">=6.3.0"
 	},
 	"devDependencies": {
+		"@playwright/test": "^1.49.1",
 		"typescript": "^5.7.2"
 	}
 }

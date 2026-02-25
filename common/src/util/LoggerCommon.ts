@@ -1,3 +1,4 @@
+import { loggerRegistry } from "./LoggerRegistry";
 import type { Logger as PinoLogger, StreamEntry, ThreadStream } from "pino";
 import pino from "pino";
 
@@ -373,7 +374,12 @@ function createModuleLogger(
 	};
 	const logger = defaultLoggerProvider(effectiveConfig);
 
-	return logger.child({ module: moduleName }, { level: effectiveLevel });
+	const childLogger = logger.child({ module: moduleName }, { level: effectiveLevel });
+
+	// Register the logger with the registry for runtime level management
+	loggerRegistry.register(moduleName, childLogger);
+
+	return childLogger;
 }
 
 // Helper to get the more verbose (lower priority number) level

@@ -3,18 +3,6 @@ import { type Dictionary, insert, t } from "intlayer";
 const articleDraftContent = {
 	key: "article-draft",
 	content: {
-		aiAssistant: t({
-			en: "AI Assistant",
-			es: "Asistente de IA",
-		}),
-		aiTyping: t({
-			en: "AI is working",
-			es: "IA está trabajando",
-		}),
-		articleContent: t({
-			en: "Article Content",
-			es: "Contenido del artículo",
-		}),
 		close: t({
 			en: "Close",
 			es: "Cerrar",
@@ -27,85 +15,37 @@ const articleDraftContent = {
 			en: "Error saving draft",
 			es: "Error al guardar el borrador",
 		}),
-		errorSending: t({
-			en: "Error sending message",
-			es: "Error al enviar el mensaje",
-		}),
-		startConversation: t({
-			en: "Start a conversation with the AI to edit your article",
-			es: "Inicia una conversación con la IA para editar tu artículo",
-		}),
-		typeMessage: t({
-			en: "Type a message",
-			es: "Escribe un mensaje",
+		errorDiscarding: t({
+			en: "Error discarding draft",
+			es: "Error al descartar el borrador",
 		}),
 		untitledDraft: t({
 			en: "Untitled Draft",
 			es: "Borrador sin título",
 		}),
-		save: t({
-			en: "Save Article",
-			es: "Guardar artículo",
-		}),
-		saveChanges: t({
-			en: "Save Changes",
-			es: "Guardar cambios",
+		clickToEdit: t({
+			en: "Click to edit title",
+			es: "Haz clic para editar el título",
 		}),
 		saving: t({
 			en: "Saving",
 			es: "Guardando",
 		}),
-		editingArticle: t({
-			en: "Editing:",
-			es: "Editando:",
+		lastEditedBy: t({
+			en: "Last edited by",
+			es: "Última edición por",
 		}),
-		preview: t({
-			en: "Preview",
-			es: "Vista previa",
-		}),
-		edit: t({
-			en: "Edit",
-			es: "Editar",
-		}),
-		contentPlaceholder: t({
-			en: "# Start writing your article",
-			es: "# Comienza a escribir tu artículo",
+		lastEditedOn: t({
+			en: "on",
+			es: "el",
 		}),
 		lastEdited: t({
-			en: "Last Edited:",
-			es: "Última edición:",
+			en: "Last edited",
+			es: "Última edición",
 		}),
 		noEditsYet: t({
 			en: "No edits yet",
 			es: "Sin ediciones aún",
-		}),
-		toolExecuting: t({
-			en: "Working",
-			es: "Trabajando",
-		}),
-		toolCall: t({
-			en: insert("Running {{toolName}}({{args}})"),
-			es: insert("Ejecutando {{toolName}}({{args}})"),
-		}),
-		toolCallRunning: t({
-			en: insert("Running the {{toolName}} tool"),
-			es: insert("Ejecutando la herramienta {{toolName}}"),
-		}),
-		toolCallCompleted: t({
-			en: insert("Running the {{toolName}} tool: completed"),
-			es: insert("Ejecutando la herramienta {{toolName}}: completado"),
-		}),
-		showDetails: t({
-			en: "Show details",
-			es: "Mostrar detalles",
-		}),
-		hideDetails: t({
-			en: "Hide details",
-			es: "Ocultar detalles",
-		}),
-		writingArticle: t({
-			en: "Writing article",
-			es: "Escribiendo artículo",
 		}),
 		connected: t({
 			en: "Connected",
@@ -119,13 +59,13 @@ const articleDraftContent = {
 			en: "Disconnected",
 			es: "Desconectado",
 		}),
-		suggestedEdits: t({
-			en: "Suggested Edits",
-			es: "Ediciones sugeridas",
+		suggestion: t({
+			en: "suggestion",
+			es: "sugerencia",
 		}),
-		validating: t({
-			en: "Validating...",
-			es: "Validando...",
+		suggestions: t({
+			en: "suggestions",
+			es: "sugerencias",
 		}),
 		validationErrors: t({
 			en: "Validation Errors",
@@ -143,17 +83,13 @@ const articleDraftContent = {
 			en: "Shared",
 			es: "Compartido",
 		}),
-		shareSuccess: t({
-			en: "Draft shared successfully",
-			es: "Borrador compartido con éxito",
-		}),
 		shareError: t({
 			en: "Error sharing draft",
 			es: "Error al compartir el borrador",
 		}),
 		versionHistory: t({
-			en: "Version History",
-			es: "Historial de versiones",
+			en: "History",
+			es: "Historial",
 		}),
 		imageUploadHint: t({
 			en: "Upload images (PNG, JPEG, GIF, WebP - max 10MB)",
@@ -190,6 +126,142 @@ const articleDraftContent = {
 		uploadFailed: t({
 			en: "Failed to upload image",
 			es: "Error al subir la imagen",
+		}),
+		saveArticle: t({
+			en: "Save Article",
+			es: "Guardar artículo",
+		}),
+		discard: t({
+			en: "Discard",
+			es: "Descartar",
+		}),
+		discardDraft: t({
+			en: "Discard Draft",
+			es: "Descartar borrador",
+		}),
+		discardDraftConfirmTitle: t({
+			en: "Discard Draft",
+			es: "Descartar borrador",
+		}),
+		discardDraftConfirmDescription: t({
+			en: "Are you sure you want to discard this draft? This action cannot be undone.",
+			es: "¿Estás seguro de que quieres descartar este borrador? Esta acción no se puede deshacer.",
+		}),
+		discardDraftCancel: t({
+			en: "Cancel",
+			es: "Cancelar",
+		}),
+		discardDraftConfirm: t({
+			en: "Discard",
+			es: "Descartar",
+		}),
+		deleteArticle: t({
+			en: "Delete article",
+			es: "Eliminar artículo",
+		}),
+		deleteArticleConfirmTitle: t({
+			en: "Delete Article",
+			es: "Eliminar artículo",
+		}),
+		deleteArticleConfirmDescription: t({
+			en: "Are you sure you want to delete this article? It will be moved to the trash.",
+			es: "¿Estás seguro de que quieres eliminar este artículo? Se moverá a la papelera.",
+		}),
+		deleteArticleCancel: t({
+			en: "Cancel",
+			es: "Cancelar",
+		}),
+		deleteArticleConfirm: t({
+			en: "Delete",
+			es: "Eliminar",
+		}),
+		deleteArticleError: t({
+			en: "Failed to delete article",
+			es: "Error al eliminar el artículo",
+		}),
+		showToolbar: t({
+			en: "Show toolbar",
+			es: "Mostrar barra de herramientas",
+		}),
+		hideToolbar: t({
+			en: "Hide toolbar",
+			es: "Ocultar barra de herramientas",
+		}),
+		agentPanel: t({
+			en: "Jolli Agent",
+			es: "Agente Jolli",
+		}),
+		aiWritingAssistant: t({
+			en: "AI Writing Assistant",
+			es: "Asistente de escritura IA",
+		}),
+		aiTyping: t({
+			en: "AI is working",
+			es: "IA está trabajando",
+		}),
+		writingArticle: t({
+			en: "Writing article",
+			es: "Escribiendo artículo",
+		}),
+		startConversation: t({
+			en: "Start a conversation with the AI to edit your article",
+			es: "Inicia una conversación con la IA para editar tu artículo",
+		}),
+		errorSending: t({
+			en: "Error sending message",
+			es: "Error al enviar el mensaje",
+		}),
+		quickSuggestions: t({
+			en: "Quick suggestions",
+			es: "Sugerencias rápidas",
+		}),
+		suggestionImproveIntro: t({
+			en: "Improve the introduction",
+			es: "Mejorar la introducción",
+		}),
+		suggestionAddExamples: t({
+			en: "Add more examples",
+			es: "Añadir más ejemplos",
+		}),
+		suggestionCheckOutdated: t({
+			en: "Check for outdated info",
+			es: "Revisar información obsoleta",
+		}),
+		suggestionSimplifyTerms: t({
+			en: "Simplify technical terms",
+			es: "Simplificar términos técnicos",
+		}),
+		askJolliAnything: t({
+			en: "Ask Jolli anything...",
+			es: "Pregunta lo que quieras a Jolli...",
+		}),
+		moveToLeftSide: t({
+			en: "Move to left side",
+			es: "Mover al lado izquierdo",
+		}),
+		moveToRightSide: t({
+			en: "Move to right side",
+			es: "Mover al lado derecho",
+		}),
+		toolCall: t({
+			en: insert("Running {{toolName}}({{args}})"),
+			es: insert("Ejecutando {{toolName}}({{args}})"),
+		}),
+		toolCallRunning: t({
+			en: insert("Running the {{toolName}} tool"),
+			es: insert("Ejecutando la herramienta {{toolName}}"),
+		}),
+		toolCallCompleted: t({
+			en: insert("Running the {{toolName}} tool: completed"),
+			es: insert("Ejecutando la herramienta {{toolName}}: completado"),
+		}),
+		showDetails: t({
+			en: "Show details",
+			es: "Mostrar detalles",
+		}),
+		hideDetails: t({
+			en: "Hide details",
+			es: "Ocultar detalles",
 		}),
 	},
 } satisfies Dictionary;

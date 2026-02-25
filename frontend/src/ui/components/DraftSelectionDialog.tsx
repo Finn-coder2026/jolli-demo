@@ -57,7 +57,7 @@ export function DraftSelectionDialog({
 					</Button>
 				</div>
 
-				<div className="flex-1 overflow-y-auto space-y-3 mb-4">
+				<div className="flex-1 overflow-y-auto space-y-3 mb-4 scrollbar-thin">
 					{drafts.map(draft => (
 						<div
 							key={draft.id}

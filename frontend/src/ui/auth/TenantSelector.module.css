@@ -1,0 +1,205 @@
+.container {
+	align-items: center;
+	display: flex;
+	justify-content: center;
+	min-height: 100vh;
+	padding: 24px;
+}
+
+.card {
+	align-items: center;
+	background: #fff;
+	border: 1px solid #dadce0;
+	border-radius: 8px;
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+	max-width: 450px;
+	padding: 48px 40px;
+	width: 100%;
+}
+
+.title {
+	color: #202124;
+	font-size: 24px;
+	font-weight: 500;
+	margin: 0;
+	text-align: center;
+}
+
+.titleWithIcon {
+	align-items: center;
+	display: flex;
+	gap: 16px;
+	justify-content: center;
+}
+
+.iconBox {
+	align-items: center;
+	background: #5b7ee5;
+	border-radius: 8px;
+	display: flex;
+	flex-shrink: 0;
+	font-size: 28px;
+	height: 56px;
+	justify-content: center;
+	width: 56px;
+}
+
+.subtitle {
+	color: #5f6368;
+	font-size: 14px;
+	margin: 0;
+	text-align: center;
+}
+
+.loading {
+	color: #5f6368;
+	font-size: 14px;
+	padding: 2rem;
+	text-align: center;
+}
+
+.error {
+	background-color: #fdecea;
+	border-radius: 4px;
+	color: #d32f2f;
+	font-size: 14px;
+	padding: 12px 16px;
+	text-align: center;
+	width: 100%;
+}
+
+.noTenantsMessage {
+	color: #5f6368;
+	font-size: 14px;
+	line-height: 1.6;
+	text-align: center;
+}
+
+.switchAccountButton {
+	background: #5b7ee5;
+	border: none;
+	border-radius: 4px;
+	color: #fff;
+	cursor: pointer;
+	font-size: 14px;
+	font-weight: 500;
+	margin-top: 8px;
+	padding: 12px 24px;
+	transition: background-color 0.2s;
+	width: 100%;
+}
+
+.switchAccountButton:hover {
+	background-color: #4a6fd4;
+}
+
+.switchAccountButton:disabled {
+	cursor: not-allowed;
+	opacity: 0.6;
+}
+
+.tenantList {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	overflow: visible;
+	width: 100%;
+}
+
+.tenantButton {
+	align-items: center;
+	background: #fff;
+	border: 1px solid #dadce0;
+	border-radius: 8px;
+	box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+	cursor: pointer;
+	display: flex;
+	justify-content: space-between;
+	overflow: visible;
+	padding: 16px 20px;
+	position: relative;
+	text-align: left;
+	transition:
+		background-color 0.2s,
+		border-color 0.2s,
+		box-shadow 0.2s;
+	width: 100%;
+}
+
+.tenantButton:hover {
+	background: #f8f9fa;
+	border-color: #5b7ee5;
+	box-shadow: 0 2px 4px rgba(91, 126, 229, 0.15);
+}
+
+.defaultTenant {
+	background: #f0f4ff;
+	border-color: #5b7ee5;
+}
+
+.lastAccessedTenant {
+	background: #f0fdf4;
+	border-color: #22c55e;
+}
+
+.lastUsedBadge {
+	background: #22c55e;
+	border-radius: 0 8px 0 8px;
+	color: #fff;
+	font-size: 11px;
+	font-weight: 500;
+	padding: 2px 8px;
+	position: absolute;
+	right: -1px;
+	top: -1px;
+	z-index: 1;
+}
+
+.tenantInfo {
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.tenantName {
+	align-items: center;
+	color: #3c4043;
+	display: flex;
+	font-size: 16px;
+	font-weight: 500;
+	gap: 8px;
+}
+
+.defaultBadge {
+	background: #5b7ee5;
+	border-radius: 12px;
+	color: #fff;
+	font-size: 12px;
+	font-weight: 500;
+	padding: 2px 8px;
+}
+
+.orgName {
+	color: #5f6368;
+	font-size: 14px;
+}
+
+.tenantRole {
+	color: #5f6368;
+	font-size: 14px;
+}
+
+.arrowIcon {
+	color: #5f6368;
+	height: 20px;
+	transition: transform 0.2s;
+	width: 20px;
+}
+
+.tenantButton:hover .arrowIcon {
+	color: #5b7ee5;
+	transform: translateX(4px);
+}

@@ -2,6 +2,7 @@ import { auditLog, computeAuditChanges } from "../audit";
 import type { DaoProvider } from "../dao/DaoProvider";
 import type { DocDao } from "../dao/DocDao";
 import type { IntegrationsManager } from "../integrations/IntegrationsManager";
+import type { PermissionMiddlewareFactory } from "../middleware/PermissionMiddleware";
 import type { Integration, NewIntegration, StaticFileIntegration } from "../model/Integration";
 import { getTenantContext } from "../tenant/TenantContext";
 import { getLog } from "../util/Logger";
@@ -14,10 +15,11 @@ const log = getLog(import.meta);
 export interface IntegrationRouterDeps {
 	manager: IntegrationsManager;
 	docDaoProvider: DaoProvider<DocDao>;
+	permissionMiddleware: PermissionMiddlewareFactory;
 }
 
 export function createIntegrationRouter(deps: IntegrationRouterDeps): Router {
-	const { manager, docDaoProvider } = deps;
+	const { manager, docDaoProvider, permissionMiddleware } = deps;
 	const router = express.Router();
 
 	async function getIntegrationFromRequest(
@@ -37,12 +39,19 @@ export function createIntegrationRouter(deps: IntegrationRouterDeps): Router {
 		return integration;
 	}
 
-	router.get("/", async (_req, res) => {
+	// Permission-free: any authenticated user can check if integrations exist
+	// Used by NavigationContext to decide whether to show onboarding
+	router.get("/exists", async (_req, res) => {
+		const count = await manager.countIntegrations();
+		res.json({ exists: count > 0 });
+	});
+
+	router.get("/", permissionMiddleware.requirePermission("integrations.view"), async (_req, res) => {
 		const integrations = await manager.listIntegrations();
 		res.json(integrations);
 	});
 
-	router.post("/", async (req, res) => {
+	router.post("/", permissionMiddleware.requirePermission("integrations.edit"), async (req, res) => {
 		const newIntegration = req.body as NewIntegration;
 		const response = await manager.createIntegration(newIntegration);
 		if (response.error) {
@@ -68,7 +77,7 @@ export function createIntegrationRouter(deps: IntegrationRouterDeps): Router {
 		}
 	});
 
-	router.get("/:id", async (req, res) => {
+	router.get("/:id", permissionMiddleware.requirePermission("integrations.view"), async (req, res) => {
 		const id = Number.parseInt(req.params.id);
 		if (Number.isNaN(id)) {
 			res.status(400).json({ error: "Invalid integration ID" });
@@ -83,7 +92,7 @@ export function createIntegrationRouter(deps: IntegrationRouterDeps): Router {
 		}
 	});
 
-	router.put("/:id", async (req, res) => {
+	router.put("/:id", permissionMiddleware.requirePermission("integrations.edit"), async (req, res) => {
 		try {
 			const integration = await getIntegrationFromRequest(req, res);
 			if (!integration) {
@@ -116,7 +125,7 @@ export function createIntegrationRouter(deps: IntegrationRouterDeps): Router {
 		}
 	});
 
-	router.delete("/:id", async (req, res) => {
+	router.delete("/:id", permissionMiddleware.requirePermission("integrations.edit"), async (req, res) => {
 		try {
 			// Get the integration to check for GitHub App metadata
 			const integration = await getIntegrationFromRequest(req, res);
@@ -148,7 +157,7 @@ export function createIntegrationRouter(deps: IntegrationRouterDeps): Router {
 		}
 	});
 
-	router.post("/:id/check-access", async (req, res) => {
+	router.post("/:id/check-access", permissionMiddleware.requirePermission("integrations.view"), async (req, res) => {
 		try {
 			const integration = await getIntegrationFromRequest(req, res);
 			if (!integration) {
@@ -179,7 +188,7 @@ export function createIntegrationRouter(deps: IntegrationRouterDeps): Router {
 	 * Upload a file to a static_file integration.
 	 * Creates a doc entry in the docs table linked to this integration.
 	 */
-	router.post("/:id/upload", async (req, res) => {
+	router.post("/:id/upload", permissionMiddleware.requirePermission("integrations.edit"), async (req, res) => {
 		try {
 			const docDao = docDaoProvider.getDao(getTenantContext());
 			const integration = await getIntegrationFromRequest(req, res);
@@ -257,7 +266,6 @@ export function createIntegrationRouter(deps: IntegrationRouterDeps): Router {
 				spaceId: undefined,
 				parentId: undefined,
 				docType: "document",
-				sortOrder: 0,
 				createdBy: "static-file-upload",
 			});
 

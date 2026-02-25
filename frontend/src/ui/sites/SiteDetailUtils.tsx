@@ -1,15 +1,42 @@
 import { Badge } from "../../components/ui/Badge";
-import type { ArticleChangeType } from "jolli-common";
+import type { ArticleChangeType, DocsiteStatus, SiteWithUpdate } from "jolli-common";
 import { Pencil, Plus, Trash2 } from "lucide-react";
+import type { ReactElement, ReactNode } from "react";
 
-/**
- * Returns a status badge component based on the site's build status.
- */
+export function getChangeCount(site: SiteWithUpdate): number {
+	let count = 0;
+	if (site.changedArticles) {
+		count += site.changedArticles.length;
+	}
+	if (site.changedConfigFiles) {
+		count += site.changedConfigFiles.length;
+	}
+	if (site.authChange) {
+		count += 1;
+	}
+	if (site.brandingChanged) {
+		count += 1;
+	}
+	if (site.folderStructureChanged) {
+		count += 1;
+	}
+	return count;
+}
+
+export function needsRebuild(site: SiteWithUpdate): boolean {
+	return (
+		site.needsUpdate ||
+		!!site.authChange ||
+		!!site.brandingChanged ||
+		!!site.folderStructureChanged ||
+		(site.changedConfigFiles !== undefined && site.changedConfigFiles.length > 0)
+	);
+}
+
 export function getStatusBadge(
-	status: string,
-	// biome-ignore lint/suspicious/noExplicitAny: Intlayer returns Proxy objects with unknown structure
-	statusLabels: { active: any; building: any; pending: any; error: any },
-) {
+	status: DocsiteStatus,
+	statusLabels: { active: ReactNode; building: ReactNode; pending: ReactNode; error: ReactNode },
+): ReactElement | null {
 	switch (status) {
 		case "active":
 			return (
@@ -40,36 +67,15 @@ export function getStatusBadge(
 	}
 }
 
-/**
- * Returns a visibility badge component based on the site's visibility setting.
- */
-export function getVisibilityBadge(
-	visibility: string,
-	// biome-ignore lint/suspicious/noExplicitAny: Intlayer returns Proxy objects with unknown structure
-	visibilityLabels: { internal: any; external: any },
-) {
-	switch (visibility) {
-		case "external":
-			return (
-				<Badge className="bg-blue-500/10 text-blue-700 dark:text-blue-400 hover:bg-blue-500/20">
-					{visibilityLabels.external}
-				</Badge>
-			);
-		case "internal":
-			return (
-				<Badge className="bg-purple-500/10 text-purple-700 dark:text-purple-400 hover:bg-purple-500/20">
-					{visibilityLabels.internal}
-				</Badge>
-			);
-		default:
-			return null;
-	}
+interface ChangeTypeStyle {
+	Icon: typeof Plus;
+	bgClass: string;
+	textClass: string;
+	borderClass: string;
+	badgeClass: string;
 }
 
-/**
- * Returns styling information for article change types (new, updated, deleted).
- */
-export function getChangeTypeStyle(changeType: ArticleChangeType | undefined) {
+export function getChangeTypeStyle(changeType: ArticleChangeType | undefined): ChangeTypeStyle {
 	switch (changeType) {
 		case "new":
 			return {

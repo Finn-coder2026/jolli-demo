@@ -4,29 +4,32 @@ import { join } from "node:path";
 import { z } from "zod";
 
 /**
- * Boolean schema that transforms string "true"/"false" to boolean
+ * Boolean schema that accepts string "true"/"false" or boolean values
  */
-const BooleanSchema = z
-	.string()
-	.refine(s => s === "true" || s === "false")
-	.transform(s => s === "true")
-	.default(false);
+const BooleanSchema = z.union([z.boolean(), z.string().transform(s => s === "true")]).default(false);
 
 /**
  * Configuration schema definition
  */
 const configSchema = {
-	// Jolli server URL for API calls and auth
-	JOLLI_URL: z.string().url().default("http://localhost:8034"),
+	// Jolli server URL for API calls and auth (trailing slash stripped after validation)
+	JOLLI_URL: z
+		.string()
+		.url()
+		.default("http://localhost:8034")
+		.transform(url => url.replace(/\/+$/, "")),
 
-	// Sync server URL (local sync daemon)
-	SYNC_SERVER_URL: z.string().url().default("http://localhost:3001"),
+	// Sync server URL (falls back to JOLLI_URL/api when not set)
+	SYNC_SERVER_URL: z.string().url().optional(),
 
 	// Enable debug logging
 	DEBUG: BooleanSchema,
 
 	// Log level for pino logger
-	LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error", "fatal"]).default("info"),
+	LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error", "fatal"]).default("warn"),
+
+	// JRN prefix for sync-enabled documents (must match backend SYNC_JRN_PREFIX)
+	SYNC_JRN_PREFIX: z.string().default("jrn:/global:docs:article/sync-"),
 };
 
 /**
@@ -35,6 +38,9 @@ const configSchema = {
 type ConfigSchema = typeof configSchema;
 type Config = {
 	[K in keyof ConfigSchema]: z.infer<ConfigSchema[K]>;
+} & {
+	// Always resolved (falls back to JOLLI_URL/api)
+	SYNC_SERVER_URL: string;
 };
 
 /**
@@ -114,11 +120,15 @@ function createConfig(): Config {
 		return envValue === "" ? undefined : envValue;
 	}
 
+	const jolliUrl = configSchema.JOLLI_URL.parse(getEnvValue("JOLLI_URL"));
+	const explicitSyncUrl = configSchema.SYNC_SERVER_URL.parse(getEnvValue("SYNC_SERVER_URL"));
+
 	return {
-		JOLLI_URL: configSchema.JOLLI_URL.parse(getEnvValue("JOLLI_URL")),
-		SYNC_SERVER_URL: configSchema.SYNC_SERVER_URL.parse(getEnvValue("SYNC_SERVER_URL")),
+		JOLLI_URL: jolliUrl,
+		SYNC_SERVER_URL: explicitSyncUrl ?? `${jolliUrl.replace(/\/+$/, "")}/api`,
 		DEBUG: configSchema.DEBUG.parse(getEnvValue("DEBUG")),
 		LOG_LEVEL: configSchema.LOG_LEVEL.parse(getEnvValue("LOG_LEVEL")),
+		SYNC_JRN_PREFIX: configSchema.SYNC_JRN_PREFIX.parse(getEnvValue("SYNC_JRN_PREFIX")),
 	};
 }
 

@@ -135,6 +135,12 @@ export interface WorkflowConfig {
 	anthropicApiKey: string;
 	/** GitHub access token from the job/integration */
 	githubToken?: string;
+	/** Sync server URL for CLI sync commands running inside sandbox (e.g., JOLLI_PUBLIC_URL + "/api") */
+	syncServerUrl?: string;
+	/** Short-lived sandbox auth token for CLI commands */
+	jolliAuthToken?: string;
+	/** Target space slug/identifier for CLI sync operations */
+	jolliSpace?: string;
 	/** Optional Vercel token for deployments */
 	vercelToken?: string;
 	/** Optional Tavily API key for web search */
@@ -170,7 +176,8 @@ export type WorkflowType =
 	| "architecture-doc"
 	| "architecture-update"
 	| "citations-graph"
-	| "run-jolliscript";
+	| "run-jolliscript"
+	| "cli-impact";
 
 /**
  * Type for additional tool executor function

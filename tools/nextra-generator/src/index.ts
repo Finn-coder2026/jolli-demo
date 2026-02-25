@@ -11,7 +11,7 @@ export { main as cli } from "./Cli.js";
 export { generateAppRouterSite, generateSite, getNextra3xFilesToDelete } from "./generators/index.js";
 export type { GenerateSiteToMemoryResult } from "./generators/memory.js";
 // Generators - in-memory (main API for backend integration)
-export { generateSiteToMemory } from "./generators/memory.js";
+export { generateSiteToMemory, getArticleSlug } from "./generators/memory.js";
 // Auth templates
 export { generateAuthLayout, generateAuthLib } from "./templates/auth.js";
 // Types
@@ -46,13 +46,10 @@ export type {
 	OpenApiValidationResult,
 	PageConfig,
 	PageMeta,
-	// Redirect mapping for safe slug sanitization
-	RedirectMapping,
 	RouterType,
 	TemplateFile,
 	ThemeConfig,
 } from "./types.js";
-export type { SlugResult } from "./utils/content.js";
 // Content utilities
 export {
 	detectsAsJson,
@@ -65,12 +62,11 @@ export {
 	generateNavMeta,
 	getDeletedFilePaths,
 	getEffectiveContentType,
+	getNonSlugifiedFolderPaths,
 	getOrphanedContentFiles,
 	isValidUrl,
 	parseOpenApiSpec,
-	sanitizeContentForMdx,
 	slugify,
-	slugifyWithRedirect,
 } from "./utils/content.js";
 // File utilities
 export { copyFile, ensureDir, exists, readFile, writeFile } from "./utils/file.js";
@@ -94,16 +90,12 @@ export {
 	type MetaMergeResult,
 	MetaMerger,
 } from "./utils/MetaMerger.js";
-// export type { ExistingNavMeta, MergeNavMetaResult, MigrationParseResult, Nextra3Config } from "./utils/migration.js"; // old
-export type { ExistingNavMeta, MigrationParseResult, Nextra3Config } from "./utils/migration.js"; // removed MergeNavMetaResult
+export type { ExistingNavMeta, MigrationParseResult, Nextra3Config } from "./utils/migration.js";
 // Migration utilities (Nextra 3.x to 4.x)
 export {
 	convertToNextra4Config,
 	isNextra3xFile,
-	// mergeNavMeta, // Deprecated - use MetaMerger.merge() or MetaMerger.mergeFromParsed() instead
 	NEXTRA_3X_FILES_TO_DELETE,
-	// parseNavMeta, // Deprecated - use MetaMerger.validateSyntax() instead
-	// parseNextra3NavMeta, // Deprecated - use MetaMerger instead
 	parseNextra3ThemeConfig,
 } from "./utils/migration.js";
 // OpenAPI utilities
@@ -112,10 +104,6 @@ export { extractApiInfo, loadOpenApiSpec } from "./utils/openapi.js";
 export { getAllReservedWords, isReservedSlug } from "./utils/reserved-words.js";
 // Validation types are imported from jolli-common and re-exported for convenience
 export type { ConsistencyValidationResult, SyntaxValidationResult } from "jolli-common";
-
-// Templates (for external use) - App Router only
-import * as _appRouterTemplates from "./templates/app-router/index.js";
-export { _appRouterTemplates as appRouterTemplates };
 
 import { generateSite } from "./generators/index.js";
 // Main class-based API
@@ -183,8 +171,8 @@ export class NextraGenerator {
 	 * Add a new page to the site
 	 */
 	async addPage(pagePath: string, content: string, _title?: string): Promise<void> {
-		// Nextra 4.x uses content/ folder for MDX files
-		const filePath = resolvePath(this.config.outputDir, `content/${pagePath}.mdx`);
+		// Nextra 4.x uses content/ folder for MD files (lenient parsing)
+		const filePath = resolvePath(this.config.outputDir, `content/${pagePath}.md`);
 		await writeFile(filePath, content);
 	}
 
@@ -203,13 +191,13 @@ export class NextraGenerator {
 		const { pages, jsonFiles, errors } = await processInputFiles(inputFiles, this.config.router);
 		const added: Array<string> = [];
 
-		// Nextra 4.x uses content/ folder for MDX files
+		// Nextra 4.x uses content/ folder for MD files (lenient parsing)
 		const basePath = "content";
 
 		for (const page of pages) {
-			const filePath = resolvePath(this.config.outputDir, `${basePath}/${page.path}.mdx`);
+			const filePath = resolvePath(this.config.outputDir, `${basePath}/${page.path}.md`);
 			await writeFile(filePath, page.content);
-			added.push(`${basePath}/${page.path}.mdx`);
+			added.push(`${basePath}/${page.path}.md`);
 		}
 
 		// Handle OpenAPI JSON files

@@ -151,7 +151,7 @@ export function createSiteAuthRouter(siteDaoProvider: DaoProvider<SiteDao>, toke
 					if (err) {
 						log.error(err, "Failed to save session for site auth");
 					}
-					res.redirect("/");
+					res.redirect("/login");
 				});
 				return;
 			}

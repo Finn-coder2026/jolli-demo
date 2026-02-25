@@ -6,6 +6,7 @@ import type { MultiTenantJobSchedulerManager } from "../jobs/MultiTenantJobSched
 import type { TenantOrgJobScheduler } from "../jobs/TenantOrgJobScheduler.js";
 import type { TenantRegistryClient } from "../tenant/TenantRegistryClient.js";
 import { getLog } from "../util/Logger.js";
+import { calculateBackoffDelay } from "../util/Retry.js";
 
 const log = getLog(import.meta);
 
@@ -17,6 +18,14 @@ export interface WorkerPollingConfig {
 	pollIntervalMs: number;
 	/** Maximum number of concurrent schedulers (limits memory usage) */
 	maxConcurrentSchedulers: number;
+	/** Maximum number of consecutive failures before giving up on a tenant-org */
+	retryMaxRetries: number;
+	/** Base delay in milliseconds for exponential backoff */
+	retryBaseDelayMs: number;
+	/** Maximum delay in milliseconds for backoff */
+	retryMaxDelayMs: number;
+	/** Time in milliseconds after which to reset the failure count */
+	retryResetAfterMs: number;
 }
 
 /**
@@ -26,6 +35,23 @@ interface WorkerPollingState {
 	activeSchedulers: Map<string, TenantOrgJobScheduler>;
 	pollInterval: ReturnType<typeof setInterval> | null;
 	isShuttingDown: boolean;
+	/** Tracks failed initialization attempts for exponential backoff */
+	failedAttempts: Map<string, { count: number; lastAttemptTime: number }>;
+}
+
+/**
+ * Extracts a meaningful error message from an error, handling pg-boss assertion errors.
+ */
+function extractErrorMessage(error: unknown): string {
+	if (error instanceof Error) {
+		// pg-boss assertion errors may have the original error as a cause
+		if ("code" in error && error.code === "ERR_ASSERTION") {
+			// The assertion error message might contain the original error
+			return `Assertion failure during pg-boss initialization: ${error.message}`;
+		}
+		return error.message;
+	}
+	return String(error);
 }
 
 /**
@@ -33,6 +59,128 @@ interface WorkerPollingState {
  */
 function getTenantOrgKey(tenantId: string, orgId: string): string {
 	return `${tenantId}:${orgId}`;
+}
+
+/**
+ * Result of checking if a tenant-org is in backoff period.
+ */
+interface BackoffCheckResult {
+	shouldSkip: boolean;
+	reason?: "in_backoff" | "max_retries_exceeded";
+}
+
+/**
+ * Configuration for retry behavior checks.
+ */
+interface RetryCheckConfig {
+	maxRetries: number;
+	baseDelayMs: number;
+	maxDelayMs: number;
+	resetAfterMs: number;
+}
+
+/**
+ * Checks if a tenant-org should be skipped due to backoff or max retries exceeded.
+ */
+function checkBackoffStatus(
+	key: string,
+	failedAttempts: Map<string, { count: number; lastAttemptTime: number }>,
+	retryConfig: RetryCheckConfig,
+): BackoffCheckResult {
+	const failedInfo = failedAttempts.get(key);
+	if (!failedInfo) {
+		return { shouldSkip: false };
+	}
+
+	const now = Date.now();
+	const timeSinceLastAttempt = now - failedInfo.lastAttemptTime;
+
+	// Reset failure count if enough time has passed
+	if (timeSinceLastAttempt >= retryConfig.resetAfterMs) {
+		failedAttempts.delete(key);
+		return { shouldSkip: false };
+	}
+
+	// Check if max retries exceeded (give up on this tenant-org until reset period)
+	if (failedInfo.count >= retryConfig.maxRetries) {
+		log.debug(
+			{ key, attemptCount: failedInfo.count, maxRetries: retryConfig.maxRetries },
+			"Skipping tenant-org %s (max retries exceeded, will retry after reset period)",
+			key,
+		);
+		return { shouldSkip: true, reason: "max_retries_exceeded" };
+	}
+
+	// Check if still in backoff period
+	const backoffDelay = calculateBackoffDelay(failedInfo.count, retryConfig.baseDelayMs, retryConfig.maxDelayMs);
+	if (timeSinceLastAttempt < backoffDelay) {
+		log.debug(
+			{ key, backoffMs: backoffDelay - timeSinceLastAttempt },
+			"Skipping tenant-org %s (in backoff period)",
+			key,
+		);
+		return { shouldSkip: true, reason: "in_backoff" };
+	}
+
+	return { shouldSkip: false };
+}
+
+/**
+ * Records a failure for a tenant-org and logs it.
+ */
+function recordFailure(
+	key: string,
+	tenantId: string,
+	orgId: string,
+	error: unknown,
+	failedAttempts: Map<string, { count: number; lastAttemptTime: number }>,
+	retryConfig: RetryCheckConfig,
+): void {
+	const currentFailure = failedAttempts.get(key);
+	const newCount = (currentFailure?.count ?? 0) + 1;
+	failedAttempts.set(key, {
+		count: newCount,
+		lastAttemptTime: Date.now(),
+	});
+
+	const errorMessage = extractErrorMessage(error);
+
+	// Check if this was the last retry
+	if (newCount >= retryConfig.maxRetries) {
+		log.error(
+			{
+				error,
+				tenantId,
+				orgId,
+				attemptCount: newCount,
+				maxRetries: retryConfig.maxRetries,
+				resetAfterMs: retryConfig.resetAfterMs,
+				errorMessage,
+			},
+			"Max retries reached for tenant/org (attempt %d/%d, giving up until reset period): %s",
+			newCount,
+			retryConfig.maxRetries,
+			errorMessage,
+		);
+	} else {
+		const backoffDelay = calculateBackoffDelay(newCount, retryConfig.baseDelayMs, retryConfig.maxDelayMs);
+		log.error(
+			{
+				error,
+				tenantId,
+				orgId,
+				attemptCount: newCount,
+				maxRetries: retryConfig.maxRetries,
+				nextRetryMs: backoffDelay,
+				errorMessage,
+			},
+			"Failed to start scheduler for tenant/org (attempt %d/%d, retry in %dms): %s",
+			newCount,
+			retryConfig.maxRetries,
+			backoffDelay,
+			errorMessage,
+		);
+	}
 }
 
 /**
@@ -53,6 +201,15 @@ export async function startWorkerPolling(
 		activeSchedulers: new Map(),
 		pollInterval: null,
 		isShuttingDown: false,
+		failedAttempts: new Map(),
+	};
+
+	// Build retry config from polling config
+	const retryConfig: RetryCheckConfig = {
+		maxRetries: config.retryMaxRetries,
+		baseDelayMs: config.retryBaseDelayMs,
+		maxDelayMs: config.retryMaxDelayMs,
+		resetAfterMs: config.retryResetAfterMs,
 	};
 
 	/**
@@ -91,6 +248,12 @@ export async function startWorkerPolling(
 						continue;
 					}
 
+					// Check if this tenant-org is in backoff period or has exceeded max retries
+					const backoffCheck = checkBackoffStatus(key, state.failedAttempts, retryConfig);
+					if (backoffCheck.shouldSkip) {
+						continue;
+					}
+
 					try {
 						// Get full tenant and org objects
 						const fullTenant = await registryClient.getTenant(tenantSummary.id);
@@ -104,10 +267,12 @@ export async function startWorkerPolling(
 							continue;
 						}
 
-						// Create and start scheduler for this tenant-org
+						// Get scheduler for this tenant-org (getScheduler already starts it)
 						const scheduler = await schedulerManager.getScheduler(fullTenant, fullOrg);
-						await scheduler.start();
 						state.activeSchedulers.set(key, scheduler);
+
+						// Clear any previous failure tracking on success
+						state.failedAttempts.delete(key);
 
 						log.info(
 							{ tenant: tenantSummary.slug, org: orgSummary.slug },
@@ -116,10 +281,7 @@ export async function startWorkerPolling(
 							orgSummary.slug,
 						);
 					} catch (error) {
-						log.error(
-							{ error, tenantId: tenantSummary.id, orgId: orgSummary.id },
-							"Failed to start scheduler for tenant/org",
-						);
+						recordFailure(key, tenantSummary.id, orgSummary.id, error, state.failedAttempts, retryConfig);
 					}
 				}
 			}

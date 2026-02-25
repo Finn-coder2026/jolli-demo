@@ -83,8 +83,28 @@ const articleContent = {
 			en: "Edit",
 			es: "Editar",
 		}),
+		historyButton: t({
+			en: "History",
+			es: "Historial",
+		}),
+		suggestion: t({
+			en: "suggestion",
+			es: "sugerencia",
+		}),
+		suggestions: t({
+			en: "suggestions",
+			es: "sugerencias",
+		}),
 
 		// Metadata labels
+		lastEditedBy: t({
+			en: "Last edited by",
+			es: "Última edición por",
+		}),
+		lastEditedOn: t({
+			en: "on",
+			es: "el",
+		}),
 		untitled: t({
 			en: "Untitled",
 			es: "Sin título",

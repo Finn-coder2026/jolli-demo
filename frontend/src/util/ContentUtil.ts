@@ -18,7 +18,8 @@ export function extractFrontmatter(content: string): {
 } {
 	// Match frontmatter: starts with ---, optional content, ends with ---
 	// The ([\s\S]*?) captures everything between the delimiters (can be empty)
-	const match = content.match(/^---\r?\n([\s\S]*?)---\r?\n?/);
+	// Requires newline before and after closing --- to avoid SETEXT heading conflicts
+	const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n/);
 	if (!match) {
 		return { frontmatter: null, contentWithoutFrontmatter: content };
 	}
@@ -118,4 +119,24 @@ export function stripJolliScriptFrontmatter(content: string | undefined): string
 
 	// Not a jolliscript article, return original content unchanged
 	return content;
+}
+
+/**
+ * Extracts the heading title from the first line of the content, if it is a markdown heading.
+ * Only matches headings on the very first line, consistent with stripLeadingHeading.
+ * e.g. "## New Section\n\nBody text" → "New Section"
+ */
+export function extractHeadingTitle(content: string): string | null {
+	const match = content.match(/^(#{1,6})\s+(.+)/);
+	return match ? match[2].trim() : null;
+}
+
+/**
+ * Strips the first markdown heading line from content.
+ * Used to avoid duplicating the section title when it is already displayed separately.
+ * e.g. "## New Section\n\nBody text" → "Body text"
+ * Returns the original content unchanged if no heading is found.
+ */
+export function stripLeadingHeading(content: string): string {
+	return content.replace(/^#{1,6}\s+.+\n?/, "").trim();
 }

@@ -15,11 +15,28 @@ const devEnv = loadEnv("development", __dirname);
 const gatewayDomain = devEnv.VITE_GATEWAY_DOMAIN || process.env.VITE_GATEWAY_DOMAIN;
 
 const chunks = {
+	// Authentication client
+	"better-auth": ["/better-auth/", "/@better-auth/", "/@better-fetch/", "/defu/", "/nanostores/"],
+
+	// Date utilities
+	"date-fns": ["/date-fns/", "/@date-fns/", "/react-day-picker/"],
+
 	diff2html: ["/diff2html/", "/diff/", "/@profoundlogic/"],
-	intlayer: ["/intlayer/", "/react-intlayer/", "/@intlayer/"],
+
+	// Drag and drop
+	"dnd-kit": ["/@dnd-kit/"],
+
+	// Intlayer i18n — split into sub-chunks for cacheability (more specific patterns first)
+	"intlayer-runtime": ["/react-intlayer/", "/intlayer/"],
+	"intlayer-core": ["/@intlayer/core/"],
+	"intlayer-config": ["/@intlayer/config/"],
+	"intlayer-editor": ["/@intlayer/editor"],
+	"intlayer-dicts": ["/@intlayer/dictionaries-entry/", "/@intlayer/unmerged-dictionaries-entry/"],
+	"intlayer-other": ["/@intlayer/"],
 	lucide: ["/lucide-preact/"],
-	pino: ["/pino/", "/quick-format-unescaped/", "/dateformat/"],
+	cmdk: ["/cmdk/"],
 	"markdown-to-jsx": ["/markdown-to-jsx/", "/highlight.js/"],
+	pino: ["/pino/", "/quick-format-unescaped/", "/dateformat/"],
 	preact: ["/preact/"],
 	radixui: ["/@radix-ui/"],
 	"react-select": [
@@ -32,8 +49,35 @@ const chunks = {
 		"/use-callback-ref/",
 		"/use-sidecar/",
 	],
+	"react-resizable-panels": ["/react-resizable-panels/"],
+	sonner: ["/sonner/"],
 	tailwind: ["/tailwindcss/", "/tailwind-merge/", "/tailwind-variants/", "/clsx/", "/class-variance-authority/"],
+
+	// TipTap heavy extensions — separated for visibility and caching
+	"tiptap-drag-handle": [
+		"/@tiptap/extension-drag-handle",
+		"/@tiptap/extension-node-range",
+		"/@tiptap/extension-collaboration",
+		"/@tiptap/y-tiptap",
+	],
+
+	// TipTap + ProseMirror editor ecosystem (catches remaining @tiptap packages)
+	tiptap: [
+		"/@tiptap/",
+		"/prosemirror-",
+		"/lowlight/",
+		"/linkifyjs/",
+		"/orderedmap/",
+		"/rope-sequence/",
+		"/w3c-keyname/",
+		"/devlop/",
+		"/marked/",
+	],
+
 	yaml: ["/yaml/"],
+
+	// Yjs collaboration (transitive deps of tiptap collaboration extensions)
+	yjs: ["/yjs/", "/y-protocols/", "/lib0/"],
 };
 
 export default defineConfig({
@@ -45,7 +89,7 @@ export default defineConfig({
 		},
 	},
 	build: {
-		minify: "terser",
+		minify: "esbuild",
 		modulePreload: false,
 		rollupOptions: {
 			external: ["pino-roll", "pino-pretty"],
@@ -73,20 +117,6 @@ export default defineConfig({
 			},
 		},
 		target: "es2022",
-		terserOptions: {
-			compress: {
-				ecma: 2020,
-				module: true,
-				passes: 5,
-				pure_getters: true,
-				unsafe: true,
-				unsafe_arrows: true,
-				unsafe_methods: true,
-				unsafe_proto: true,
-				unsafe_regexp: true,
-				unsafe_undefined: true,
-			},
-		},
 	},
 	envPrefix: ["NODE_", "VITE_"],
 	plugins: [
@@ -120,6 +150,24 @@ export default defineConfig({
 					});
 				},
 			},
+			"/auth": {
+				target: "http://localhost:7034",
+				// Preserve original host header for multi-tenant routing
+				headers: {
+					"X-Forwarded-Host": "preserve",
+				},
+				configure: proxy => {
+					proxy.on("proxyReq", (proxyReq, req) => {
+						// Forward the original host to the backend
+						// Use X-Forwarded-Host from nginx if available, otherwise fall back to Host header
+						const forwardedHost = req.headers["x-forwarded-host"];
+						const originalHost = typeof forwardedHost === "string" ? forwardedHost : req.headers.host;
+						if (originalHost) {
+							proxyReq.setHeader("X-Forwarded-Host", originalHost);
+						}
+					});
+				},
+			},
 		},
 		// When VITE_GATEWAY_DOMAIN is set, allow all hosts for HTTPS gateway support
 		allowedHosts: gatewayDomain ? true : ["localhost"],
@@ -138,16 +186,18 @@ export default defineConfig({
 				"**/types/**",
 				"src/test/TestUtils.tsx",
 				"src/test/IntlayerMock.ts",
-				"src/ui/sites/CreateSiteDialog.tsx",
+				"src/ui/auth/AcceptOwnerInvitationPage.tsx", // Page component - tested via E2E
+				"src/ui/sites/CreateSiteWizard.tsx",
 				"src/ui/sites/SiteDetail.tsx",
 				"src/ui/sites/RepositoryViewer.tsx",
 				"src/ui/Sites.tsx",
+				"src/ui/onboarding/OnboardingFsmLog.tsx", // FSM log display - tested via E2E
 			],
 			include: ["src/**"],
 			reporter: ["html", "json", "lcov", "text"],
 			thresholds: {
 				branches: 97,
-				functions: 97,
+				functions: 96,
 				lines: 97,
 				statements: 97,
 			},

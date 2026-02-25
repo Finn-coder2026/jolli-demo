@@ -1,0 +1,422 @@
+/**
+ * SpaceContext - Context provider for managing the current space.
+ *
+ * Provides:
+ * - Current space information
+ * - List of available spaces
+ * - Actions to switch and create spaces
+ */
+
+import { usePreference } from "../hooks/usePreference";
+import { useUserPreferences } from "../hooks/useUserPreferences";
+import { PREFERENCES } from "../services/preferences/PreferencesRegistry";
+import { getLog } from "../util/Logger";
+import { useClient } from "./ClientContext";
+import type { Space } from "jolli-common";
+import {
+	createContext,
+	type ReactElement,
+	type ReactNode,
+	useCallback,
+	useContext,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
+
+const log = getLog(import.meta);
+
+/**
+ * Data for updating a space.
+ */
+export interface UpdateSpaceData {
+	name?: string;
+	/** Use null to clear the description, undefined to leave it unchanged */
+	description?: string | null;
+}
+
+/**
+ * Context type for space management.
+ */
+export interface SpaceContextType {
+	/** Current space (undefined while loading) */
+	currentSpace: Space | undefined;
+	/** The user's personal space, derived from the spaces list (undefined if not yet loaded) */
+	personalSpace: Space | undefined;
+	/** List of all available spaces */
+	spaces: Array<Space>;
+	/** Array of favorite space IDs */
+	favoriteSpaces: Array<number>;
+	/** Whether space data is loading */
+	isLoading: boolean;
+	/** Error message if loading failed */
+	error: string | undefined;
+	/** Switch to a different space by ID */
+	switchSpace: (spaceId: number) => Promise<void>;
+	/** Switch to the user's personal space (fetches from API if not in list) */
+	switchToPersonalSpace: () => Promise<void>;
+	/** Create a new space and optionally switch to it */
+	createSpace: (data: CreateSpaceData, switchToNew?: boolean) => Promise<Space>;
+	/** Update an existing space */
+	updateSpace: (spaceId: number, data: UpdateSpaceData) => Promise<Space | undefined>;
+	/**
+	 * Soft delete a space.
+	 * @param spaceId the space ID to delete.
+	 * @param deleteContent if true, also soft delete all documents in the space.
+	 */
+	deleteSpace: (spaceId: number, deleteContent?: boolean) => Promise<void>;
+	/** Migrate content from one space to another, then delete the source space */
+	migrateSpaceContent: (sourceSpaceId: number, targetSpaceId: number) => Promise<void>;
+	/** Refresh the space list */
+	refreshSpaces: () => Promise<void>;
+	/** Toggle a space as favorite */
+	toggleSpaceFavorite: (spaceId: number) => void;
+	/** Check if a space is favorited */
+	isFavorite: (spaceId: number) => boolean;
+}
+
+/**
+ * Data required to create a new space.
+ * Only name and optional description are needed.
+ * The backend generates slug, jrn, and defaults automatically.
+ */
+export interface CreateSpaceData {
+	name: string;
+	description?: string;
+}
+
+const SpaceContext = createContext<SpaceContextType | undefined>(undefined);
+
+export interface SpaceProviderProps {
+	children: ReactNode;
+}
+
+/**
+ * Provider component for space context.
+ * Manages the current space selection and provides methods to switch/create spaces.
+ */
+export function SpaceProvider({ children }: SpaceProviderProps): ReactElement {
+	const client = useClient();
+	// savedSpaceId is persisted to localStorage via usePreference
+	const [savedSpaceId, setSavedSpaceId] = usePreference(PREFERENCES.currentSpaceId);
+	// favoriteSpaces now uses database-backed storage with cross-device sync
+	const { favoriteSpaces, toggleSpaceFavorite, isSpaceFavorite } = useUserPreferences();
+	const [currentSpace, setCurrentSpace] = useState<Space | undefined>(undefined);
+	const [spaces, setSpaces] = useState<Array<Space>>([]);
+	const [isLoading, setIsLoading] = useState(true);
+	const [error, setError] = useState<string | undefined>(undefined);
+	const isInitialized = useRef(false);
+
+	// Load spaces and set current space
+	const loadSpaces = useCallback(async () => {
+		try {
+			setIsLoading(true);
+			setError(undefined);
+
+			// Load all spaces
+			const allSpaces = await client.spaces().listSpaces();
+			setSpaces(allSpaces);
+
+			// Determine which space to use as current
+			let targetSpace: Space | undefined;
+
+			if (savedSpaceId !== null) {
+				// Try to find the saved space
+				targetSpace = allSpaces.find(s => s.id === savedSpaceId);
+			}
+
+			if (!targetSpace && allSpaces.length > 0) {
+				// Use the first space in the org (oldest by creation time)
+				targetSpace = allSpaces[0];
+				// Update saved preference
+				if (savedSpaceId !== null && savedSpaceId !== targetSpace.id) {
+					setSavedSpaceId(targetSpace.id);
+				}
+			}
+
+			// Fallback: If no spaces exist at all, create one
+			if (!targetSpace) {
+				try {
+					log.warn("No spaces found for user - creating default space as fallback");
+					// Actively create a new space
+					const newSpace = await client.spaces().createSpace({
+						name: "Default Space",
+						// slug will be auto-generated by backend
+					});
+
+					// Update state with the new space
+					setSpaces([newSpace]);
+					setCurrentSpace(newSpace);
+					setSavedSpaceId(newSpace.id);
+
+					log.debug("Successfully created fallback default space: %d", newSpace.id);
+					return; // Exit early, space is now set
+				} catch (error) {
+					// If space creation fails, show error to user
+					log.error(
+						"Failed to create default space: %s",
+						error instanceof Error ? error.message : String(error),
+					);
+					setError("Failed to initialize workspace. Please contact support or refresh the page.");
+					return;
+				}
+			}
+
+			setCurrentSpace(targetSpace);
+		} catch (err) {
+			log.error(err, "Failed to load spaces.");
+			setError(err instanceof Error ? err.message : "Failed to load spaces");
+		} finally {
+			setIsLoading(false);
+		}
+	}, [client, savedSpaceId, setSavedSpaceId]);
+
+	// Load on mount only (not when savedSpaceId changes)
+	useEffect(() => {
+		if (!isInitialized.current) {
+			isInitialized.current = true;
+			loadSpaces();
+		}
+	}, [loadSpaces]);
+
+	const switchSpace = useCallback(
+		async (spaceId: number) => {
+			// Don't switch if already on this space
+			if (currentSpace?.id === spaceId) {
+				return;
+			}
+
+			const targetSpace = spaces.find(s => s.id === spaceId);
+			if (targetSpace) {
+				setCurrentSpace(targetSpace);
+				setSavedSpaceId(spaceId);
+			} else {
+				// Space not in list, try to fetch it
+				try {
+					const space = await client.spaces().getSpace(spaceId);
+					if (space) {
+						setCurrentSpace(space);
+						setSavedSpaceId(spaceId);
+						// Refresh list to include the new space
+						const allSpaces = await client.spaces().listSpaces();
+						setSpaces(allSpaces);
+					}
+				} catch (err) {
+					log.error(err, "Failed to switch to space %d.", spaceId);
+				}
+			}
+		},
+		[client, spaces, currentSpace, setSavedSpaceId],
+	);
+
+	const createSpace = useCallback(
+		async (data: CreateSpaceData, switchToNew = true): Promise<Space> => {
+			// Create the space (backend generates slug, jrn, and sets ownerId from auth token)
+			const newSpace = await client.spaces().createSpace(data);
+			// Refresh the space list
+			const allSpaces = await client.spaces().listSpaces();
+			setSpaces(allSpaces);
+			// Switch to the new space if requested
+			if (switchToNew) {
+				setCurrentSpace(newSpace);
+				setSavedSpaceId(newSpace.id);
+			}
+			return newSpace;
+		},
+		[client, setSavedSpaceId],
+	);
+
+	/* v8 ignore start -- Update space with UI state sync, tested via integration tests */
+	const updateSpace = useCallback(
+		async (spaceId: number, data: UpdateSpaceData): Promise<Space | undefined> => {
+			const updatedSpace = await client.spaces().updateSpace(spaceId, data);
+			if (updatedSpace) {
+				// Refresh the space list to reflect the changes
+				const allSpaces = await client.spaces().listSpaces();
+				setSpaces(allSpaces);
+				// Update currentSpace if it was the one updated
+				if (currentSpace?.id === spaceId) {
+					setCurrentSpace(updatedSpace);
+				}
+			}
+			return updatedSpace;
+		},
+		[client, currentSpace],
+	);
+	/* v8 ignore stop */
+
+	/* v8 ignore start -- Delete space with UI navigation, tested via integration tests */
+	const deleteSpace = useCallback(
+		async (spaceId: number, deleteContent = false): Promise<void> => {
+			await client.spaces().deleteSpace(spaceId, deleteContent);
+			// Refresh the space list
+			const allSpaces = await client.spaces().listSpaces();
+			setSpaces(allSpaces);
+			// If the deleted space was current, switch to first available space
+			if (currentSpace?.id === spaceId && allSpaces.length > 0) {
+				const fallbackSpace = allSpaces[0];
+				setCurrentSpace(fallbackSpace);
+				setSavedSpaceId(fallbackSpace.id);
+			}
+			// Remove from favorites if it was favorited
+			if (isSpaceFavorite(spaceId)) {
+				toggleSpaceFavorite(spaceId);
+			}
+		},
+		[client, currentSpace, isSpaceFavorite, toggleSpaceFavorite, setSavedSpaceId],
+	);
+	/* v8 ignore stop */
+
+	/* v8 ignore start -- Migrate space content with UI navigation, tested via integration tests */
+	const migrateSpaceContent = useCallback(
+		async (sourceSpaceId: number, targetSpaceId: number): Promise<void> => {
+			// First migrate the content
+			await client.spaces().migrateContent(sourceSpaceId, targetSpaceId);
+			// Then delete the source space
+			await client.spaces().deleteSpace(sourceSpaceId);
+			// Refresh the space list
+			const allSpaces = await client.spaces().listSpaces();
+			setSpaces(allSpaces);
+			// If the deleted space was current, switch to target space
+			if (currentSpace?.id === sourceSpaceId) {
+				const targetSpace = allSpaces.find(s => s.id === targetSpaceId);
+				if (targetSpace) {
+					setCurrentSpace(targetSpace);
+					setSavedSpaceId(targetSpaceId);
+				} else if (allSpaces.length > 0) {
+					const fallbackSpace = allSpaces[0];
+					setCurrentSpace(fallbackSpace);
+					setSavedSpaceId(fallbackSpace.id);
+				}
+			}
+			// Remove from favorites if it was favorited
+			if (isSpaceFavorite(sourceSpaceId)) {
+				toggleSpaceFavorite(sourceSpaceId);
+			}
+		},
+		[client, currentSpace, isSpaceFavorite, toggleSpaceFavorite, setSavedSpaceId],
+	);
+	/* v8 ignore stop */
+
+	const refreshSpaces = useCallback(async () => {
+		try {
+			const allSpaces = await client.spaces().listSpaces();
+			setSpaces(allSpaces);
+
+			// Update currentSpace with latest data if it exists
+			if (currentSpace) {
+				const updatedCurrentSpace = allSpaces.find(s => s.id === currentSpace.id);
+				if (updatedCurrentSpace) {
+					setCurrentSpace(updatedCurrentSpace);
+				} else if (allSpaces.length > 0) {
+					// Current space was deleted, use first available space
+					const fallbackSpace = allSpaces[0];
+					setCurrentSpace(fallbackSpace);
+					setSavedSpaceId(fallbackSpace.id);
+				} else {
+					// No spaces - clear current space (Phase 4 fallback will handle)
+					setCurrentSpace(undefined);
+					setSavedSpaceId(null);
+				}
+			}
+		} catch (err) {
+			log.error(err, "Failed to refresh spaces.");
+		}
+	}, [client, currentSpace, setSavedSpaceId]);
+
+	// Refresh spaces when external changes occur (e.g., onboarding creates a new space)
+	useEffect(() => {
+		function handleSpacesChanged(): void {
+			refreshSpaces();
+		}
+		window.addEventListener("jolli:spaces-changed", handleSpacesChanged);
+		return () => window.removeEventListener("jolli:spaces-changed", handleSpacesChanged);
+	}, [refreshSpaces]);
+
+	// Derive personal space from the spaces list (defensive array check for test environments)
+	const personalSpace = useMemo(() => (Array.isArray(spaces) ? spaces.find(s => s.isPersonal) : undefined), [spaces]);
+
+	// Switch to the user's personal space, fetching from API if not already in the list
+	const switchToPersonalSpace = useCallback(async () => {
+		if (personalSpace) {
+			setCurrentSpace(personalSpace);
+			setSavedSpaceId(personalSpace.id);
+			return;
+		}
+		// Personal space not in list yet — fetch/create via API and refresh
+		try {
+			const space = await client.spaces().getPersonalSpace();
+			setCurrentSpace(space);
+			setSavedSpaceId(space.id);
+			const allSpaces = await client.spaces().listSpaces();
+			setSpaces(allSpaces);
+		} catch (err) {
+			log.error(err, "Failed to switch to personal space.");
+		}
+	}, [client, personalSpace, setSavedSpaceId]);
+
+	// toggleSpaceFavorite and isSpaceFavorite are provided by useUserPreferences hook
+	// isFavorite is an alias for isSpaceFavorite for backwards compatibility
+	const isFavorite = isSpaceFavorite;
+
+	const value = useMemo<SpaceContextType>(
+		() => ({
+			currentSpace,
+			personalSpace,
+			spaces,
+			favoriteSpaces,
+			isLoading,
+			error,
+			switchSpace,
+			switchToPersonalSpace,
+			createSpace,
+			updateSpace,
+			deleteSpace,
+			migrateSpaceContent,
+			refreshSpaces,
+			toggleSpaceFavorite,
+			isFavorite,
+		}),
+		[
+			currentSpace,
+			personalSpace,
+			spaces,
+			favoriteSpaces,
+			isLoading,
+			error,
+			switchSpace,
+			switchToPersonalSpace,
+			createSpace,
+			updateSpace,
+			deleteSpace,
+			migrateSpaceContent,
+			refreshSpaces,
+			toggleSpaceFavorite,
+			isFavorite,
+		],
+	);
+
+	return <SpaceContext.Provider value={value}>{children}</SpaceContext.Provider>;
+}
+
+/**
+ * Hook to access the space context.
+ * Must be used within a SpaceProvider.
+ */
+export function useSpace(): SpaceContextType {
+	const context = useContext(SpaceContext);
+	if (context === undefined) {
+		throw new Error("useSpace must be used within a SpaceProvider");
+	}
+	return context;
+}
+
+/**
+ * Hook to get just the current space.
+ * Convenience wrapper around useSpace().
+ */
+export function useCurrentSpace(): Space | undefined {
+	const { currentSpace } = useSpace();
+	return currentSpace;
+}

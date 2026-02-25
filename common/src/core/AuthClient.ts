@@ -1,79 +1,79 @@
 import type { ClientAuth } from "./Client";
 
+/**
+ * Error thrown when tenant selection fails with a specific error code from the server.
+ * The `code` field contains the machine-readable error key (e.g., "user_inactive").
+ */
+export class TenantSelectionError extends Error {
+	readonly code: string;
+
+	constructor(code: string, message: string) {
+		super(message);
+		this.name = "TenantSelectionError";
+		this.code = code;
+	}
+}
+
 export interface SessionConfig {
-	idleTimeoutMs: number;
-	enabledProviders: Array<string>;
+	/** @deprecated Frontend idle timeout removed, kept for backwards compatibility */
+	idleTimeoutMs?: number;
+	/** @deprecated OAuth provider selection UI not used in production, kept for backwards compatibility */
+	enabledProviders?: Array<string>;
 	/** Site deployment environment: "local", "dev", "preview", or "prod" */
 	siteEnv: "local" | "dev" | "preview" | "prod";
 	/** Base domain for jolli.site subdomains (e.g., "jolli.site") */
 	jolliSiteDomain: string;
+	/** Auth gateway origin for centralized authentication (optional) */
+	authGatewayOrigin?: string;
+	/** Cookie domain for cross-subdomain cookie sharing (e.g., ".jolli.app") */
+	cookieDomain?: string;
+}
+
+export interface CliTokenResponse {
+	token: string;
+	space?: string;
 }
 
 export interface AuthClient {
 	/**
-	 * Gets a CLI token for command-line authentication
+	 * Gets a CLI token and default space for command-line authentication
 	 */
-	getCliToken(): Promise<string>;
+	getCliToken(): Promise<CliTokenResponse>;
 	/**
 	 * Sets the auth token for subsequent requests
 	 */
 	setAuthToken(token: string | undefined): void;
 	/**
-	 * Gets available emails for the pending authentication
-	 */
-	getEmails(): Promise<Array<string>>;
-	/**
-	 * Selects an email for the account.
-	 * Returns a redirect URL if in gateway mode (for multi-tenant auth).
-	 */
-	selectEmail(email: string): Promise<{ redirectTo?: string }>;
-	/**
 	 * Gets session configuration (idle timeout, etc.)
 	 */
 	getSessionConfig(): Promise<SessionConfig>;
+	/**
+	 * Selects a tenant/org and regenerates JWT with new tenant context.
+	 * This allows switching tenants while staying logged in.
+	 */
+	selectTenant(tenantId: string, orgId: string): Promise<{ success: boolean; url: string }>;
 }
 
 export function createAuthClient(baseUrl: string, auth: ClientAuth): AuthClient {
 	return {
 		getCliToken,
 		setAuthToken,
-		getEmails,
-		selectEmail,
 		getSessionConfig,
+		selectTenant,
 	};
 
-	async function getCliToken(): Promise<string> {
+	async function getCliToken(): Promise<CliTokenResponse> {
 		const response = await fetch(`${baseUrl}/api/auth/cli-token`, auth.createRequest("GET"));
 		auth.checkUnauthorized?.(response);
 		if (!response.ok) {
 			throw new Error("Failed to get CLI token");
 		}
-		const data = (await response.json()) as { token: string };
-		return data.token;
+		const data = (await response.json()) as CliTokenResponse;
+		return data;
 	}
 
 	function setAuthToken(token: string | undefined): void {
 		auth.authToken = token;
-	}
-
-	async function getEmails(): Promise<Array<string>> {
-		const response = await fetch(`${baseUrl}/api/auth/emails`, auth.createRequest("GET"));
-		auth.checkUnauthorized?.(response);
-		if (!response.ok) {
-			throw new Error("Failed to get emails");
-		}
-		const data = (await response.json()) as { emails: Array<string> };
-		return data.emails;
-	}
-
-	async function selectEmail(email: string): Promise<{ redirectTo?: string }> {
-		const response = await fetch(`${baseUrl}/api/auth/select-email`, auth.createRequest("POST", { email }));
-		auth.checkUnauthorized?.(response);
-		if (!response.ok) {
-			throw new Error("Failed to select email");
-		}
-		const data = (await response.json()) as { success: boolean; redirectTo?: string };
-		return data.redirectTo ? { redirectTo: data.redirectTo } : {};
 	}
 
 	async function getSessionConfig(): Promise<SessionConfig> {
@@ -83,5 +83,21 @@ export function createAuthClient(baseUrl: string, auth: ClientAuth): AuthClient 
 			throw new Error("Failed to get session config");
 		}
 		return (await response.json()) as SessionConfig;
+	}
+
+	async function selectTenant(tenantId: string, orgId: string): Promise<{ success: boolean; url: string }> {
+		const response = await fetch(
+			`${baseUrl}/api/auth/tenants/select`,
+			auth.createRequest("POST", { tenantId, orgId }),
+		);
+		auth.checkUnauthorized?.(response);
+		if (!response.ok) {
+			const errorData = await response.json().catch(() => ({ error: "unknown" }));
+			throw new TenantSelectionError(
+				(errorData as { error: string }).error ?? "unknown",
+				(errorData as { message?: string }).message ?? "Failed to select tenant",
+			);
+		}
+		return (await response.json()) as { success: boolean; url: string };
 	}
 }

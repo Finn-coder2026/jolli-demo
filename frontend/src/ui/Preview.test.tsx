@@ -3,6 +3,18 @@ import { Preview } from "./Preview";
 import { fireEvent, render, screen, waitFor } from "@testing-library/preact";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const mockNavigate = vi.fn();
+
+vi.mock("../contexts/NavigationContext", async () => {
+	const actual = await vi.importActual("../contexts/NavigationContext");
+	return {
+		...actual,
+		useNavigation: () => ({
+			navigate: mockNavigate,
+		}),
+	};
+});
+
 /**
  * JRN Format History:
  * - v1 (path-based): /root/integrations/{org}/{repo}/{branch}
@@ -19,6 +31,7 @@ vi.mock("markdown-to-jsx", () => ({
 
 describe("Preview", () => {
 	beforeEach(() => {
+		vi.clearAllMocks();
 		global.fetch = vi.fn();
 	});
 
@@ -73,9 +86,17 @@ describe("Preview", () => {
 			},
 		};
 
-		(global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
-			ok: true,
-			json: async () => mockDoc,
+		(global.fetch as ReturnType<typeof vi.fn>).mockImplementation(url => {
+			if (String(url).includes("/api/doc-drafts/with-pending-changes")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => [],
+				});
+			}
+			return Promise.resolve({
+				ok: true,
+				json: async () => mockDoc,
+			});
 		});
 
 		render(
@@ -156,9 +177,17 @@ describe("Preview", () => {
 			},
 		};
 
-		(global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
-			ok: true,
-			json: async () => mockDoc,
+		(global.fetch as ReturnType<typeof vi.fn>).mockImplementation(url => {
+			if (String(url).includes("/api/doc-drafts/with-pending-changes")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => [],
+				});
+			}
+			return Promise.resolve({
+				ok: true,
+				json: async () => mockDoc,
+			});
 		});
 
 		render(
@@ -187,9 +216,17 @@ describe("Preview", () => {
 			version: 1,
 		};
 
-		(global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
-			ok: true,
-			json: async () => mockDoc,
+		(global.fetch as ReturnType<typeof vi.fn>).mockImplementation(url => {
+			if (String(url).includes("/api/doc-drafts/with-pending-changes")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => [],
+				});
+			}
+			return Promise.resolve({
+				ok: true,
+				json: async () => mockDoc,
+			});
 		});
 
 		render(
@@ -206,7 +243,6 @@ describe("Preview", () => {
 	});
 
 	it("should strip jolliscript frontmatter from preview", async () => {
-		// Test doc uses v1 (path-based) JRN format in frontmatter
 		const mockDoc = {
 			id: 1,
 			jrn: "doc:automation-test",
@@ -235,9 +271,17 @@ This is the visible content.`,
 			},
 		};
 
-		(global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
-			ok: true,
-			json: async () => mockDoc,
+		(global.fetch as ReturnType<typeof vi.fn>).mockImplementation(url => {
+			if (String(url).includes("/api/doc-drafts/with-pending-changes")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => [],
+				});
+			}
+			return Promise.resolve({
+				ok: true,
+				json: async () => mockDoc,
+			});
 		});
 
 		render(
@@ -282,9 +326,17 @@ Content here.`,
 			},
 		};
 
-		(global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
-			ok: true,
-			json: async () => mockDoc,
+		(global.fetch as ReturnType<typeof vi.fn>).mockImplementation(url => {
+			if (String(url).includes("/api/doc-drafts/with-pending-changes")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => [],
+				});
+			}
+			return Promise.resolve({
+				ok: true,
+				json: async () => mockDoc,
+			});
 		});
 
 		render(
@@ -311,5 +363,1138 @@ Content here.`,
 		// Jolliscript frontmatter should NOT be in raw view either
 		expect(screen.queryByText(/article_type/)).toBeNull();
 		expect(screen.queryByText(/GIT_PUSH/)).toBeNull();
+	});
+
+	it("should display Edit button", async () => {
+		const mockDoc = {
+			id: 1,
+			jrn: "doc:test-article",
+			createdAt: "2025-10-01T00:00:00Z",
+			updatedAt: "2025-10-01T00:00:00Z",
+			updatedBy: "system",
+			content: "# Test Article\n\nThis is test content.",
+			contentType: "text/markdown",
+			version: 1,
+			contentMetadata: {
+				title: "Test Article",
+			},
+		};
+
+		(global.fetch as ReturnType<typeof vi.fn>).mockImplementation(url => {
+			if (String(url).includes("/api/docs/")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockDoc,
+				});
+			}
+			if (String(url).includes("/api/doc-drafts/with-pending-changes")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => [],
+				});
+			}
+			return Promise.resolve({ ok: true, json: async () => ({}) });
+		});
+
+		render(
+			<ClientProvider>
+				<Preview jrn="doc:test-article" />
+			</ClientProvider>,
+		);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("edit-article-button")).toBeDefined();
+		});
+
+		expect(screen.getByText("Edit")).toBeDefined();
+	});
+
+	it("should display Edit button with suggestion count when draft has pending changes", async () => {
+		const mockDoc = {
+			id: 42,
+			jrn: "doc:article-with-suggestions",
+			createdAt: "2025-10-01T00:00:00Z",
+			updatedAt: "2025-10-01T00:00:00Z",
+			updatedBy: "system",
+			content: "# Article with Suggestions\n\nContent here.",
+			contentType: "text/markdown",
+			version: 1,
+			contentMetadata: {
+				title: "Article with Suggestions",
+			},
+		};
+
+		const mockDraftsWithPendingChanges = [
+			{
+				draft: {
+					id: 100,
+					docId: 42,
+					title: "Article with Suggestions",
+					content: "content",
+					contentType: "text/markdown",
+					createdBy: 1,
+					createdAt: "2025-10-01T00:00:00Z",
+					updatedAt: "2025-10-01T00:00:00Z",
+					isShared: false,
+					createdByAgent: true,
+				},
+				pendingChangesCount: 3,
+				lastChangeUpdatedAt: "2025-10-01T00:00:00Z",
+			},
+		];
+
+		(global.fetch as ReturnType<typeof vi.fn>).mockImplementation(url => {
+			if (String(url).includes("/api/docs/")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockDoc,
+				});
+			}
+			if (String(url).includes("/api/doc-drafts/with-pending-changes")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockDraftsWithPendingChanges,
+				});
+			}
+			return Promise.resolve({ ok: true, json: async () => ({}) });
+		});
+
+		render(
+			<ClientProvider>
+				<Preview jrn="doc:article-with-suggestions" />
+			</ClientProvider>,
+		);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("edit-article-button")).toBeDefined();
+		});
+
+		expect(screen.getByText(/Edit.*3.*suggestions/)).toBeDefined();
+	});
+
+	it("should display singular 'suggestion' when count is 1", async () => {
+		const mockDoc = {
+			id: 42,
+			jrn: "doc:article-one-suggestion",
+			createdAt: "2025-10-01T00:00:00Z",
+			updatedAt: "2025-10-01T00:00:00Z",
+			updatedBy: "system",
+			content: "# Article\n\nContent.",
+			contentType: "text/markdown",
+			version: 1,
+			contentMetadata: {
+				title: "Article",
+			},
+		};
+
+		const mockDraftsWithPendingChanges = [
+			{
+				draft: {
+					id: 100,
+					docId: 42,
+					title: "Article",
+					content: "content",
+					contentType: "text/markdown",
+					createdBy: 1,
+					createdAt: "2025-10-01T00:00:00Z",
+					updatedAt: "2025-10-01T00:00:00Z",
+					isShared: false,
+					createdByAgent: true,
+				},
+				pendingChangesCount: 1,
+				lastChangeUpdatedAt: "2025-10-01T00:00:00Z",
+			},
+		];
+
+		(global.fetch as ReturnType<typeof vi.fn>).mockImplementation(url => {
+			if (String(url).includes("/api/docs/")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockDoc,
+				});
+			}
+			if (String(url).includes("/api/doc-drafts/with-pending-changes")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockDraftsWithPendingChanges,
+				});
+			}
+			return Promise.resolve({ ok: true, json: async () => ({}) });
+		});
+
+		render(
+			<ClientProvider>
+				<Preview jrn="doc:article-one-suggestion" />
+			</ClientProvider>,
+		);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("edit-article-button")).toBeDefined();
+		});
+
+		expect(screen.getByText(/Edit.*1.*suggestion[^s]/)).toBeDefined();
+	});
+
+	it("should navigate to edit page with existing draft when clicking Edit with suggestions", async () => {
+		const mockDoc = {
+			id: 42,
+			jrn: "doc:article-with-draft",
+			createdAt: "2025-10-01T00:00:00Z",
+			updatedAt: "2025-10-01T00:00:00Z",
+			updatedBy: "system",
+			content: "# Article\n\nContent.",
+			contentType: "text/markdown",
+			version: 1,
+			contentMetadata: {
+				title: "Article",
+			},
+		};
+
+		const mockDraftsWithPendingChanges = [
+			{
+				draft: {
+					id: 100,
+					docId: 42,
+					title: "Article",
+					content: "content",
+					contentType: "text/markdown",
+					createdBy: 1,
+					createdAt: "2025-10-01T00:00:00Z",
+					updatedAt: "2025-10-01T00:00:00Z",
+					isShared: false,
+					createdByAgent: true,
+				},
+				pendingChangesCount: 2,
+				lastChangeUpdatedAt: "2025-10-01T00:00:00Z",
+			},
+		];
+
+		(global.fetch as ReturnType<typeof vi.fn>).mockImplementation(url => {
+			if (String(url).includes("/api/docs/")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockDoc,
+				});
+			}
+			if (String(url).includes("/api/doc-drafts/with-pending-changes")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockDraftsWithPendingChanges,
+				});
+			}
+			return Promise.resolve({ ok: true, json: async () => ({}) });
+		});
+
+		render(
+			<ClientProvider>
+				<Preview jrn="doc:article-with-draft" />
+			</ClientProvider>,
+		);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("edit-article-button")).toBeDefined();
+		});
+
+		fireEvent.click(screen.getByTestId("edit-article-button"));
+
+		await waitFor(() => {
+			expect(mockNavigate).toHaveBeenCalledWith("/articles?edit=100");
+		});
+	});
+
+	it("should create draft and navigate when clicking Edit without existing draft", async () => {
+		const mockDoc = {
+			id: 42,
+			jrn: "doc:article-no-draft",
+			createdAt: "2025-10-01T00:00:00Z",
+			updatedAt: "2025-10-01T00:00:00Z",
+			updatedBy: "system",
+			content: "# Article\n\nContent.",
+			contentType: "text/markdown",
+			version: 1,
+			contentMetadata: {
+				title: "Article",
+			},
+		};
+
+		const mockCreatedDraft = {
+			id: 200,
+			docId: 42,
+			title: "Article",
+			content: "# Article\n\nContent.",
+			contentType: "text/markdown",
+			createdBy: 1,
+			createdAt: "2025-10-01T00:00:00Z",
+			updatedAt: "2025-10-01T00:00:00Z",
+			isShared: false,
+			createdByAgent: false,
+		};
+
+		(global.fetch as ReturnType<typeof vi.fn>).mockImplementation((url, options) => {
+			const method = options?.method || "GET";
+			if (String(url).includes("/api/docs/") && !String(url).includes("create-draft")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockDoc,
+				});
+			}
+			if (String(url).includes("/api/doc-drafts/with-pending-changes")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => [],
+				});
+			}
+			if (String(url).includes("create-draft") && method === "POST") {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockCreatedDraft,
+				});
+			}
+			return Promise.resolve({ ok: true, json: async () => ({}) });
+		});
+
+		render(
+			<ClientProvider>
+				<Preview jrn="doc:article-no-draft" />
+			</ClientProvider>,
+		);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("edit-article-button")).toBeDefined();
+		});
+
+		fireEvent.click(screen.getByTestId("edit-article-button"));
+
+		await waitFor(() => {
+			expect(mockNavigate).toHaveBeenCalledWith("/articles?edit=200");
+		});
+	});
+
+	it("should apply amber text styling and container border when there are suggestions", async () => {
+		const mockDoc = {
+			id: 42,
+			jrn: "doc:article-amber",
+			createdAt: "2025-10-01T00:00:00Z",
+			updatedAt: "2025-10-01T00:00:00Z",
+			updatedBy: "system",
+			content: "# Article\n\nContent.",
+			contentType: "text/markdown",
+			version: 1,
+			contentMetadata: {
+				title: "Article",
+			},
+		};
+
+		const mockDraftsWithPendingChanges = [
+			{
+				draft: {
+					id: 100,
+					docId: 42,
+					title: "Article",
+					content: "content",
+					contentType: "text/markdown",
+					createdBy: 1,
+					createdAt: "2025-10-01T00:00:00Z",
+					updatedAt: "2025-10-01T00:00:00Z",
+					isShared: false,
+					createdByAgent: true,
+				},
+				pendingChangesCount: 2,
+				lastChangeUpdatedAt: "2025-10-01T00:00:00Z",
+			},
+		];
+
+		(global.fetch as ReturnType<typeof vi.fn>).mockImplementation(url => {
+			if (String(url).includes("/api/docs/")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockDoc,
+				});
+			}
+			if (String(url).includes("/api/doc-drafts/with-pending-changes")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockDraftsWithPendingChanges,
+				});
+			}
+			return Promise.resolve({ ok: true, json: async () => ({}) });
+		});
+
+		render(
+			<ClientProvider>
+				<Preview jrn="doc:article-amber" />
+			</ClientProvider>,
+		);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("edit-button-container")).toBeDefined();
+		});
+
+		const container = screen.getByTestId("edit-button-container");
+		expect(container.className).toContain("border");
+		expect(container.className).toContain("border-input");
+
+		const editButton = screen.getByTestId("edit-article-button");
+		expect(editButton.className).toContain("text-amber-600");
+	});
+
+	it("should show toggle button when there are suggestions", async () => {
+		const mockDoc = {
+			id: 42,
+			jrn: "doc:article-toggle",
+			createdAt: "2025-10-01T00:00:00Z",
+			updatedAt: "2025-10-01T00:00:00Z",
+			updatedBy: "system",
+			content: "# Article\n\nContent.",
+			contentType: "text/markdown",
+			version: 1,
+			contentMetadata: {
+				title: "Article",
+			},
+		};
+
+		const mockDraftsWithPendingChanges = [
+			{
+				draft: {
+					id: 100,
+					docId: 42,
+					title: "Article",
+					content: "content",
+					contentType: "text/markdown",
+					createdBy: 1,
+					createdAt: "2025-10-01T00:00:00Z",
+					updatedAt: "2025-10-01T00:00:00Z",
+					isShared: false,
+					createdByAgent: true,
+				},
+				pendingChangesCount: 3,
+				lastChangeUpdatedAt: "2025-10-01T00:00:00Z",
+			},
+		];
+
+		(global.fetch as ReturnType<typeof vi.fn>).mockImplementation(url => {
+			if (String(url).includes("/api/docs/")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockDoc,
+				});
+			}
+			if (String(url).includes("/api/doc-drafts/with-pending-changes")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockDraftsWithPendingChanges,
+				});
+			}
+			return Promise.resolve({ ok: true, json: async () => ({}) });
+		});
+
+		render(
+			<ClientProvider>
+				<Preview jrn="doc:article-toggle" />
+			</ClientProvider>,
+		);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("toggle-suggestions-button")).toBeDefined();
+		});
+	});
+
+	it("should not show toggle button when there are no suggestions", async () => {
+		const mockDoc = {
+			id: 42,
+			jrn: "doc:article-no-toggle",
+			createdAt: "2025-10-01T00:00:00Z",
+			updatedAt: "2025-10-01T00:00:00Z",
+			updatedBy: "system",
+			content: "# Article\n\nContent.",
+			contentType: "text/markdown",
+			version: 1,
+			contentMetadata: {
+				title: "Article",
+			},
+		};
+
+		(global.fetch as ReturnType<typeof vi.fn>).mockImplementation(url => {
+			if (String(url).includes("/api/docs/")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockDoc,
+				});
+			}
+			if (String(url).includes("/api/doc-drafts/with-pending-changes")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => [],
+				});
+			}
+			return Promise.resolve({ ok: true, json: async () => ({}) });
+		});
+
+		render(
+			<ClientProvider>
+				<Preview jrn="doc:article-no-toggle" />
+			</ClientProvider>,
+		);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("edit-article-button")).toBeDefined();
+		});
+
+		expect(screen.queryByTestId("toggle-suggestions-button")).toBeNull();
+	});
+
+	it("should expand suggestion navigation when toggle is clicked", async () => {
+		const mockDoc = {
+			id: 42,
+			jrn: "doc:article-expand",
+			createdAt: "2025-10-01T00:00:00Z",
+			updatedAt: "2025-10-01T00:00:00Z",
+			updatedBy: "system",
+			content: "# Article\n\nContent.",
+			contentType: "text/markdown",
+			version: 1,
+			contentMetadata: {
+				title: "Article",
+			},
+		};
+
+		const mockDraftsWithPendingChanges = [
+			{
+				draft: {
+					id: 100,
+					docId: 42,
+					title: "Article",
+					content: "content",
+					contentType: "text/markdown",
+					createdBy: 1,
+					createdAt: "2025-10-01T00:00:00Z",
+					updatedAt: "2025-10-01T00:00:00Z",
+					isShared: false,
+					createdByAgent: true,
+				},
+				pendingChangesCount: 5,
+				lastChangeUpdatedAt: "2025-10-01T00:00:00Z",
+			},
+		];
+
+		(global.fetch as ReturnType<typeof vi.fn>).mockImplementation(url => {
+			if (String(url).includes("/api/docs/")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockDoc,
+				});
+			}
+			if (String(url).includes("/api/doc-drafts/with-pending-changes")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockDraftsWithPendingChanges,
+				});
+			}
+			return Promise.resolve({ ok: true, json: async () => ({}) });
+		});
+
+		render(
+			<ClientProvider>
+				<Preview jrn="doc:article-expand" />
+			</ClientProvider>,
+		);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("toggle-suggestions-button")).toBeDefined();
+		});
+
+		expect(screen.queryByTestId("suggestion-counter")).toBeNull();
+		expect(screen.queryByTestId("suggestion-divider")).toBeNull();
+
+		fireEvent.click(screen.getByTestId("toggle-suggestions-button"));
+
+		await waitFor(() => {
+			expect(screen.getByTestId("suggestion-counter")).toBeDefined();
+		});
+
+		expect(screen.getByTestId("suggestion-divider")).toBeDefined();
+		expect(screen.getByTestId("previous-suggestion-button")).toBeDefined();
+		expect(screen.getByTestId("next-suggestion-button")).toBeDefined();
+		expect(screen.getByText("1/5")).toBeDefined();
+	});
+
+	it("should collapse suggestion navigation when toggle is clicked again", async () => {
+		const mockDoc = {
+			id: 42,
+			jrn: "doc:article-collapse",
+			createdAt: "2025-10-01T00:00:00Z",
+			updatedAt: "2025-10-01T00:00:00Z",
+			updatedBy: "system",
+			content: "# Article\n\nContent.",
+			contentType: "text/markdown",
+			version: 1,
+			contentMetadata: {
+				title: "Article",
+			},
+		};
+
+		const mockDraftsWithPendingChanges = [
+			{
+				draft: {
+					id: 100,
+					docId: 42,
+					title: "Article",
+					content: "content",
+					contentType: "text/markdown",
+					createdBy: 1,
+					createdAt: "2025-10-01T00:00:00Z",
+					updatedAt: "2025-10-01T00:00:00Z",
+					isShared: false,
+					createdByAgent: true,
+				},
+				pendingChangesCount: 3,
+				lastChangeUpdatedAt: "2025-10-01T00:00:00Z",
+			},
+		];
+
+		(global.fetch as ReturnType<typeof vi.fn>).mockImplementation(url => {
+			if (String(url).includes("/api/docs/")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockDoc,
+				});
+			}
+			if (String(url).includes("/api/doc-drafts/with-pending-changes")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockDraftsWithPendingChanges,
+				});
+			}
+			return Promise.resolve({ ok: true, json: async () => ({}) });
+		});
+
+		render(
+			<ClientProvider>
+				<Preview jrn="doc:article-collapse" />
+			</ClientProvider>,
+		);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("toggle-suggestions-button")).toBeDefined();
+		});
+
+		fireEvent.click(screen.getByTestId("toggle-suggestions-button"));
+
+		await waitFor(() => {
+			expect(screen.getByTestId("suggestion-counter")).toBeDefined();
+		});
+
+		fireEvent.click(screen.getByTestId("toggle-suggestions-button"));
+
+		await waitFor(() => {
+			expect(screen.queryByTestId("suggestion-counter")).toBeNull();
+		});
+
+		expect(screen.queryByTestId("suggestion-divider")).toBeNull();
+	});
+
+	it("should navigate to next suggestion when clicking next button", async () => {
+		const mockDoc = {
+			id: 42,
+			jrn: "doc:article-next",
+			createdAt: "2025-10-01T00:00:00Z",
+			updatedAt: "2025-10-01T00:00:00Z",
+			updatedBy: "system",
+			content: "# Article\n\nContent.",
+			contentType: "text/markdown",
+			version: 1,
+			contentMetadata: {
+				title: "Article",
+			},
+		};
+
+		const mockDraftsWithPendingChanges = [
+			{
+				draft: {
+					id: 100,
+					docId: 42,
+					title: "Article",
+					content: "content",
+					contentType: "text/markdown",
+					createdBy: 1,
+					createdAt: "2025-10-01T00:00:00Z",
+					updatedAt: "2025-10-01T00:00:00Z",
+					isShared: false,
+					createdByAgent: true,
+				},
+				pendingChangesCount: 3,
+				lastChangeUpdatedAt: "2025-10-01T00:00:00Z",
+			},
+		];
+
+		(global.fetch as ReturnType<typeof vi.fn>).mockImplementation(url => {
+			if (String(url).includes("/api/docs/")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockDoc,
+				});
+			}
+			if (String(url).includes("/api/doc-drafts/with-pending-changes")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockDraftsWithPendingChanges,
+				});
+			}
+			return Promise.resolve({ ok: true, json: async () => ({}) });
+		});
+
+		render(
+			<ClientProvider>
+				<Preview jrn="doc:article-next" />
+			</ClientProvider>,
+		);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("toggle-suggestions-button")).toBeDefined();
+		});
+
+		fireEvent.click(screen.getByTestId("toggle-suggestions-button"));
+
+		await waitFor(() => {
+			expect(screen.getByText("1/3")).toBeDefined();
+		});
+
+		fireEvent.click(screen.getByTestId("next-suggestion-button"));
+
+		await waitFor(() => {
+			expect(screen.getByText("2/3")).toBeDefined();
+		});
+	});
+
+	it("should navigate to previous suggestion when clicking previous button", async () => {
+		const mockDoc = {
+			id: 42,
+			jrn: "doc:article-prev",
+			createdAt: "2025-10-01T00:00:00Z",
+			updatedAt: "2025-10-01T00:00:00Z",
+			updatedBy: "system",
+			content: "# Article\n\nContent.",
+			contentType: "text/markdown",
+			version: 1,
+			contentMetadata: {
+				title: "Article",
+			},
+		};
+
+		const mockDraftsWithPendingChanges = [
+			{
+				draft: {
+					id: 100,
+					docId: 42,
+					title: "Article",
+					content: "content",
+					contentType: "text/markdown",
+					createdBy: 1,
+					createdAt: "2025-10-01T00:00:00Z",
+					updatedAt: "2025-10-01T00:00:00Z",
+					isShared: false,
+					createdByAgent: true,
+				},
+				pendingChangesCount: 3,
+				lastChangeUpdatedAt: "2025-10-01T00:00:00Z",
+			},
+		];
+
+		(global.fetch as ReturnType<typeof vi.fn>).mockImplementation(url => {
+			if (String(url).includes("/api/docs/")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockDoc,
+				});
+			}
+			if (String(url).includes("/api/doc-drafts/with-pending-changes")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockDraftsWithPendingChanges,
+				});
+			}
+			return Promise.resolve({ ok: true, json: async () => ({}) });
+		});
+
+		render(
+			<ClientProvider>
+				<Preview jrn="doc:article-prev" />
+			</ClientProvider>,
+		);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("toggle-suggestions-button")).toBeDefined();
+		});
+
+		fireEvent.click(screen.getByTestId("toggle-suggestions-button"));
+
+		await waitFor(() => {
+			expect(screen.getByText("1/3")).toBeDefined();
+		});
+
+		fireEvent.click(screen.getByTestId("next-suggestion-button"));
+
+		await waitFor(() => {
+			expect(screen.getByText("2/3")).toBeDefined();
+		});
+
+		fireEvent.click(screen.getByTestId("previous-suggestion-button"));
+
+		await waitFor(() => {
+			expect(screen.getByText("1/3")).toBeDefined();
+		});
+	});
+
+	it("should disable previous button when at first suggestion", async () => {
+		const mockDoc = {
+			id: 42,
+			jrn: "doc:article-first",
+			createdAt: "2025-10-01T00:00:00Z",
+			updatedAt: "2025-10-01T00:00:00Z",
+			updatedBy: "system",
+			content: "# Article\n\nContent.",
+			contentType: "text/markdown",
+			version: 1,
+			contentMetadata: {
+				title: "Article",
+			},
+		};
+
+		const mockDraftsWithPendingChanges = [
+			{
+				draft: {
+					id: 100,
+					docId: 42,
+					title: "Article",
+					content: "content",
+					contentType: "text/markdown",
+					createdBy: 1,
+					createdAt: "2025-10-01T00:00:00Z",
+					updatedAt: "2025-10-01T00:00:00Z",
+					isShared: false,
+					createdByAgent: true,
+				},
+				pendingChangesCount: 3,
+				lastChangeUpdatedAt: "2025-10-01T00:00:00Z",
+			},
+		];
+
+		(global.fetch as ReturnType<typeof vi.fn>).mockImplementation(url => {
+			if (String(url).includes("/api/docs/")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockDoc,
+				});
+			}
+			if (String(url).includes("/api/doc-drafts/with-pending-changes")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockDraftsWithPendingChanges,
+				});
+			}
+			return Promise.resolve({ ok: true, json: async () => ({}) });
+		});
+
+		render(
+			<ClientProvider>
+				<Preview jrn="doc:article-first" />
+			</ClientProvider>,
+		);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("toggle-suggestions-button")).toBeDefined();
+		});
+
+		fireEvent.click(screen.getByTestId("toggle-suggestions-button"));
+
+		await waitFor(() => {
+			expect(screen.getByTestId("previous-suggestion-button")).toBeDefined();
+		});
+
+		const prevButton = screen.getByTestId("previous-suggestion-button") as HTMLButtonElement;
+		expect(prevButton.disabled).toBe(true);
+	});
+
+	it("should disable next button when at last suggestion", async () => {
+		const mockDoc = {
+			id: 42,
+			jrn: "doc:article-last",
+			createdAt: "2025-10-01T00:00:00Z",
+			updatedAt: "2025-10-01T00:00:00Z",
+			updatedBy: "system",
+			content: "# Article\n\nContent.",
+			contentType: "text/markdown",
+			version: 1,
+			contentMetadata: {
+				title: "Article",
+			},
+		};
+
+		const mockDraftsWithPendingChanges = [
+			{
+				draft: {
+					id: 100,
+					docId: 42,
+					title: "Article",
+					content: "content",
+					contentType: "text/markdown",
+					createdBy: 1,
+					createdAt: "2025-10-01T00:00:00Z",
+					updatedAt: "2025-10-01T00:00:00Z",
+					isShared: false,
+					createdByAgent: true,
+				},
+				pendingChangesCount: 2,
+				lastChangeUpdatedAt: "2025-10-01T00:00:00Z",
+			},
+		];
+
+		(global.fetch as ReturnType<typeof vi.fn>).mockImplementation(url => {
+			if (String(url).includes("/api/docs/")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockDoc,
+				});
+			}
+			if (String(url).includes("/api/doc-drafts/with-pending-changes")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockDraftsWithPendingChanges,
+				});
+			}
+			return Promise.resolve({ ok: true, json: async () => ({}) });
+		});
+
+		render(
+			<ClientProvider>
+				<Preview jrn="doc:article-last" />
+			</ClientProvider>,
+		);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("toggle-suggestions-button")).toBeDefined();
+		});
+
+		fireEvent.click(screen.getByTestId("toggle-suggestions-button"));
+
+		await waitFor(() => {
+			expect(screen.getByText("1/2")).toBeDefined();
+		});
+
+		fireEvent.click(screen.getByTestId("next-suggestion-button"));
+
+		await waitFor(() => {
+			expect(screen.getByText("2/2")).toBeDefined();
+		});
+
+		const nextButton = screen.getByTestId("next-suggestion-button") as HTMLButtonElement;
+		expect(nextButton.disabled).toBe(true);
+	});
+
+	it("should not change index when clicking disabled previous button at first suggestion", async () => {
+		const mockDoc = {
+			id: 42,
+			jrn: "doc:article-boundary-prev",
+			createdAt: "2025-10-01T00:00:00Z",
+			updatedAt: "2025-10-01T00:00:00Z",
+			updatedBy: "system",
+			content: "# Article\n\nContent.",
+			contentType: "text/markdown",
+			version: 1,
+			contentMetadata: {
+				title: "Article",
+			},
+		};
+
+		const mockDraftsWithPendingChanges = [
+			{
+				draft: {
+					id: 100,
+					docId: 42,
+					title: "Article",
+					content: "content",
+					contentType: "text/markdown",
+					createdBy: 1,
+					createdAt: "2025-10-01T00:00:00Z",
+					updatedAt: "2025-10-01T00:00:00Z",
+					isShared: false,
+					createdByAgent: true,
+				},
+				pendingChangesCount: 3,
+				lastChangeUpdatedAt: "2025-10-01T00:00:00Z",
+			},
+		];
+
+		(global.fetch as ReturnType<typeof vi.fn>).mockImplementation(url => {
+			if (String(url).includes("/api/docs/")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockDoc,
+				});
+			}
+			if (String(url).includes("/api/doc-drafts/with-pending-changes")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockDraftsWithPendingChanges,
+				});
+			}
+			return Promise.resolve({ ok: true, json: async () => ({}) });
+		});
+
+		render(
+			<ClientProvider>
+				<Preview jrn="doc:article-boundary-prev" />
+			</ClientProvider>,
+		);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("toggle-suggestions-button")).toBeDefined();
+		});
+
+		fireEvent.click(screen.getByTestId("toggle-suggestions-button"));
+
+		await waitFor(() => {
+			expect(screen.getByText("1/3")).toBeDefined();
+		});
+
+		fireEvent.click(screen.getByTestId("previous-suggestion-button"));
+
+		expect(screen.getByText("1/3")).toBeDefined();
+	});
+
+	it("should not change index when clicking disabled next button at last suggestion", async () => {
+		const mockDoc = {
+			id: 42,
+			jrn: "doc:article-boundary-next",
+			createdAt: "2025-10-01T00:00:00Z",
+			updatedAt: "2025-10-01T00:00:00Z",
+			updatedBy: "system",
+			content: "# Article\n\nContent.",
+			contentType: "text/markdown",
+			version: 1,
+			contentMetadata: {
+				title: "Article",
+			},
+		};
+
+		const mockDraftsWithPendingChanges = [
+			{
+				draft: {
+					id: 100,
+					docId: 42,
+					title: "Article",
+					content: "content",
+					contentType: "text/markdown",
+					createdBy: 1,
+					createdAt: "2025-10-01T00:00:00Z",
+					updatedAt: "2025-10-01T00:00:00Z",
+					isShared: false,
+					createdByAgent: true,
+				},
+				pendingChangesCount: 2,
+				lastChangeUpdatedAt: "2025-10-01T00:00:00Z",
+			},
+		];
+
+		(global.fetch as ReturnType<typeof vi.fn>).mockImplementation(url => {
+			if (String(url).includes("/api/docs/")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockDoc,
+				});
+			}
+			if (String(url).includes("/api/doc-drafts/with-pending-changes")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockDraftsWithPendingChanges,
+				});
+			}
+			return Promise.resolve({ ok: true, json: async () => ({}) });
+		});
+
+		render(
+			<ClientProvider>
+				<Preview jrn="doc:article-boundary-next" />
+			</ClientProvider>,
+		);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("toggle-suggestions-button")).toBeDefined();
+		});
+
+		fireEvent.click(screen.getByTestId("toggle-suggestions-button"));
+
+		await waitFor(() => {
+			expect(screen.getByText("1/2")).toBeDefined();
+		});
+
+		fireEvent.click(screen.getByTestId("next-suggestion-button"));
+
+		await waitFor(() => {
+			expect(screen.getByText("2/2")).toBeDefined();
+		});
+
+		fireEvent.click(screen.getByTestId("next-suggestion-button"));
+
+		expect(screen.getByText("2/2")).toBeDefined();
+	});
+
+	it("should handle error when creating draft from article", async () => {
+		const mockDoc = {
+			id: 42,
+			jrn: "doc:article-error",
+			createdAt: "2025-10-01T00:00:00Z",
+			updatedAt: "2025-10-01T00:00:00Z",
+			updatedBy: "system",
+			content: "# Article\n\nContent.",
+			contentType: "text/markdown",
+			version: 1,
+			contentMetadata: {
+				title: "Article",
+			},
+		};
+
+		(global.fetch as ReturnType<typeof vi.fn>).mockImplementation((url, options) => {
+			const method = options?.method || "GET";
+			if (String(url).includes("/api/docs/") && !String(url).includes("create-draft")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => mockDoc,
+				});
+			}
+			if (String(url).includes("/api/doc-drafts/with-pending-changes")) {
+				return Promise.resolve({
+					ok: true,
+					json: async () => [],
+				});
+			}
+			if (String(url).includes("create-draft") && method === "POST") {
+				return Promise.resolve({
+					ok: false,
+					status: 500,
+					statusText: "Internal Server Error",
+				});
+			}
+			return Promise.resolve({ ok: true, json: async () => ({}) });
+		});
+
+		render(
+			<ClientProvider>
+				<Preview jrn="doc:article-error" />
+			</ClientProvider>,
+		);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("edit-article-button")).toBeDefined();
+		});
+
+		const editButton = screen.getByTestId("edit-article-button") as HTMLButtonElement;
+		fireEvent.click(editButton);
+
+		await waitFor(() => {
+			expect(editButton.disabled).toBe(false);
+		});
+
+		expect(mockNavigate).not.toHaveBeenCalled();
 	});
 });

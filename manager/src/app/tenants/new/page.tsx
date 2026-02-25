@@ -86,6 +86,7 @@ export default function NewTenantPage() {
 	const { gatewayDomain } = useConfig();
 	const [slug, setSlug] = useState("");
 	const [displayName, setDisplayName] = useState("");
+	const [ownerEmail, setOwnerEmail] = useState("");
 	const [selectedRegion, setSelectedRegion] = useState<RegionSlug>(DEFAULT_REGION);
 	const [providerId, setProviderId] = useState("");
 	const [providers, setProviders] = useState<Array<DatabaseProvider>>([]);
@@ -145,6 +146,7 @@ export default function NewTenantPage() {
 				body: JSON.stringify({
 					slug,
 					displayName,
+					ownerEmail,
 					databaseProviderId: providerId || undefined,
 				}),
 			});
@@ -258,13 +260,7 @@ export default function NewTenantPage() {
 
 	return (
 		<main style={{ padding: "2rem", fontFamily: "system-ui, sans-serif", maxWidth: "600px" }}>
-			<Breadcrumb
-				items={[
-					{ label: "Dashboard", href: "/" },
-					{ label: "Tenants", href: "/tenants" },
-					{ label: "New Tenant" },
-				]}
-			/>
+			<Breadcrumb items={[{ label: "Tenants", href: "/tenants" }, { label: "New Tenant" }]} />
 			<h1>Create New Tenant</h1>
 
 			<form onSubmit={handleSubmit} style={{ marginTop: "1rem" }}>
@@ -316,6 +312,33 @@ export default function NewTenantPage() {
 							borderRadius: "4px",
 						}}
 					/>
+				</div>
+
+				<div style={{ marginBottom: "1rem" }}>
+					<label
+						htmlFor="ownerEmail"
+						style={{ display: "block", marginBottom: "0.5rem", fontWeight: "bold" }}
+					>
+						Owner Email
+					</label>
+					<input
+						type="email"
+						id="ownerEmail"
+						value={ownerEmail}
+						onChange={e => setOwnerEmail(e.target.value)}
+						placeholder="owner@example.com"
+						required
+						style={{
+							width: "100%",
+							padding: "0.5rem",
+							fontSize: "1rem",
+							border: "1px solid #ccc",
+							borderRadius: "4px",
+						}}
+					/>
+					<small style={{ color: "#666" }}>
+						The owner will have full administrative access to this tenant.
+					</small>
 				</div>
 
 				<div style={{ marginBottom: "1rem" }}>

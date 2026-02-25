@@ -1,5 +1,5 @@
 import type { Database } from "../core/Database";
-import type { CollabConvo } from "../model/CollabConvo";
+import type { ArtifactType, CollabConvo } from "../model/CollabConvo";
 import { mockCollabConvo, mockCollabMessage, mockNewCollabConvo } from "../model/CollabConvo.mock";
 import type { TenantOrgContext } from "../tenant/TenantContext";
 import type { ModelDef } from "../util/ModelDef";
@@ -22,6 +22,9 @@ describe("CollabConvoDao", () => {
 
 		const mockSequelize = {
 			define: vi.fn().mockReturnValue(mockCollabConvos),
+			where: vi.fn().mockReturnValue({}),
+			fn: vi.fn().mockReturnValue("mock-fn"),
+			col: vi.fn().mockReturnValue("mock-col"),
 		} as unknown as Sequelize;
 
 		collabConvoDao = createCollabConvoDao(mockSequelize);
@@ -46,6 +49,43 @@ describe("CollabConvoDao", () => {
 
 			expect(mockCollabConvos.create).toHaveBeenCalledWith(newConvo);
 			expect(result).toEqual(createdConvo);
+		});
+
+		it("should strip null bytes from convo payload before create", async () => {
+			const newConvo = mockNewCollabConvo({
+				artifactType: "cli_workspace\u0000" as ArtifactType,
+				artifactId: 1,
+				messages: [mockCollabMessage({ role: "assistant", content: "Hello\u0000world" })],
+				metadata: {
+					workspaceRoot: "/Users/phu/docs-vault\u0000",
+					sources: [{ name: "example-express-js", path: "/Users/phu/work/example\u0000-express" }],
+				},
+			});
+
+			const createdConvo = mockCollabConvo({
+				...newConvo,
+				id: 1,
+				artifactType: "cli_workspace",
+				messages: [mockCollabMessage({ role: "assistant", content: "Helloworld" })],
+				metadata: {
+					workspaceRoot: "/Users/phu/docs-vault",
+					sources: [{ name: "example-express-js", path: "/Users/phu/work/example-express" }],
+				},
+			});
+
+			vi.mocked(mockCollabConvos.create).mockResolvedValue(createdConvo as never);
+
+			await collabConvoDao.createCollabConvo(newConvo);
+
+			expect(mockCollabConvos.create).toHaveBeenCalledWith({
+				...newConvo,
+				artifactType: "cli_workspace",
+				messages: [mockCollabMessage({ role: "assistant", content: "Helloworld" })],
+				metadata: {
+					workspaceRoot: "/Users/phu/docs-vault",
+					sources: [{ name: "example-express-js", path: "/Users/phu/work/example-express" }],
+				},
+			});
 		});
 	});
 
@@ -100,6 +140,48 @@ describe("CollabConvoDao", () => {
 		});
 	});
 
+	describe("listByArtifactType", () => {
+		it("should list convos by artifact type with default pagination", async () => {
+			const convos = [
+				mockCollabConvo({ id: 1, artifactType: "doc_draft" }),
+				mockCollabConvo({ id: 2, artifactType: "doc_draft" }),
+			];
+
+			vi.mocked(mockCollabConvos.findAll).mockResolvedValue(convos.map(c => ({ get: () => c })) as never);
+
+			const result = await collabConvoDao.listByArtifactType("doc_draft");
+
+			expect(mockCollabConvos.findAll).toHaveBeenCalledWith({
+				where: { artifactType: "doc_draft" },
+				order: [["updatedAt", "DESC"]],
+				limit: 50,
+				offset: 0,
+			});
+			expect(result).toEqual(convos);
+		});
+
+		it("should respect limit and offset parameters", async () => {
+			vi.mocked(mockCollabConvos.findAll).mockResolvedValue([] as never);
+
+			await collabConvoDao.listByArtifactType("cli_workspace", 10, 5);
+
+			expect(mockCollabConvos.findAll).toHaveBeenCalledWith({
+				where: { artifactType: "cli_workspace" },
+				order: [["updatedAt", "DESC"]],
+				limit: 10,
+				offset: 5,
+			});
+		});
+
+		it("should return empty array when no convos found", async () => {
+			vi.mocked(mockCollabConvos.findAll).mockResolvedValue([] as never);
+
+			const result = await collabConvoDao.listByArtifactType("doc_draft");
+
+			expect(result).toEqual([]);
+		});
+	});
+
 	describe("addMessage", () => {
 		it("should add a message to a convo", async () => {
 			const message = mockCollabMessage({ content: "Hello" });
@@ -134,6 +216,79 @@ describe("CollabConvoDao", () => {
 
 			expect(result).toBeUndefined();
 			expect(mockCollabConvos.update).not.toHaveBeenCalled();
+		});
+	});
+
+	describe("addMessages", () => {
+		it("should append messages in a single update", async () => {
+			const message1 = mockCollabMessage({ content: "One" });
+			const message2 = mockCollabMessage({ content: "Two" });
+			const convo = mockCollabConvo({ id: 1, messages: [] });
+			const updatedConvo = mockCollabConvo({
+				id: 1,
+				messages: [message1, message2],
+			});
+
+			vi.mocked(mockCollabConvos.findOne).mockResolvedValueOnce({
+				get: () => convo,
+			} as never);
+
+			vi.mocked(mockCollabConvos.update).mockResolvedValue([1] as never);
+
+			vi.mocked(mockCollabConvos.findOne).mockResolvedValueOnce({
+				get: () => updatedConvo,
+			} as never);
+
+			const result = await collabConvoDao.addMessages(1, [message1, message2]);
+
+			expect(mockCollabConvos.update).toHaveBeenCalledWith(
+				{ messages: [message1, message2] },
+				{ where: { id: 1 } },
+			);
+			expect(result).toEqual(updatedConvo);
+		});
+
+		it("should return current convo when no messages provided", async () => {
+			const convo = mockCollabConvo({ id: 1, messages: [] });
+			vi.mocked(mockCollabConvos.findOne).mockResolvedValue({
+				get: () => convo,
+			} as never);
+
+			const result = await collabConvoDao.addMessages(1, []);
+
+			expect(mockCollabConvos.update).not.toHaveBeenCalled();
+			expect(result).toEqual(convo);
+		});
+
+		it("should return undefined if convo not found", async () => {
+			const message = mockCollabMessage();
+			vi.mocked(mockCollabConvos.findOne).mockResolvedValue(null);
+
+			const result = await collabConvoDao.addMessages(999, [message]);
+
+			expect(result).toBeUndefined();
+			expect(mockCollabConvos.update).not.toHaveBeenCalled();
+		});
+
+		it("should strip null bytes from appended messages", async () => {
+			const message = mockCollabMessage({ role: "assistant", content: "A\u0000B" });
+			const convo = mockCollabConvo({ id: 1, messages: [] });
+			const updatedConvo = mockCollabConvo({
+				id: 1,
+				messages: [mockCollabMessage({ role: "assistant", content: "AB" })],
+			});
+
+			vi.mocked(mockCollabConvos.findOne)
+				.mockResolvedValueOnce({ get: () => convo } as never)
+				.mockResolvedValueOnce({ get: () => updatedConvo } as never);
+			vi.mocked(mockCollabConvos.update).mockResolvedValue([1] as never);
+
+			await collabConvoDao.addMessages(1, [message]);
+
+			expect(mockCollabConvos.update).toHaveBeenCalledWith(
+				{ messages: [mockCollabMessage({ role: "assistant", content: "AB" })] },
+				{ where: { id: 1 } },
+			);
 		});
 	});
 
@@ -240,6 +395,182 @@ describe("CollabConvoDao", () => {
 			await collabConvoDao.deleteAllCollabConvos();
 
 			expect(mockCollabConvos.destroy).toHaveBeenCalledWith({ where: {} });
+		});
+	});
+
+	describe("updateMetadata", () => {
+		it("should update metadata on an existing convo", async () => {
+			const convo = mockCollabConvo({
+				id: 1,
+				metadata: { sandboxId: "existing-sandbox-123" },
+			});
+			const updatedConvo = mockCollabConvo({
+				id: 1,
+				metadata: { sandboxId: "new-sandbox-456" },
+			});
+
+			vi.mocked(mockCollabConvos.findOne)
+				.mockResolvedValueOnce({
+					get: () => convo,
+				} as never)
+				.mockResolvedValueOnce({
+					get: () => updatedConvo,
+				} as never);
+
+			vi.mocked(mockCollabConvos.update).mockResolvedValue([1] as never);
+
+			const result = await collabConvoDao.updateMetadata(1, { sandboxId: "new-sandbox-456" });
+
+			expect(mockCollabConvos.update).toHaveBeenCalledWith(
+				{ metadata: { sandboxId: "new-sandbox-456" } },
+				{ where: { id: 1 } },
+			);
+			expect(result).toEqual(updatedConvo);
+		});
+
+		it("should return undefined if convo not found", async () => {
+			vi.mocked(mockCollabConvos.findOne).mockResolvedValue(null);
+
+			const result = await collabConvoDao.updateMetadata(999, { sandboxId: "test" });
+
+			expect(result).toBeUndefined();
+			expect(mockCollabConvos.update).not.toHaveBeenCalled();
+		});
+
+		it("should strip null bytes from metadata values", async () => {
+			const convo = mockCollabConvo({
+				id: 1,
+				metadata: { sandboxId: "existing-sandbox-123" },
+			});
+			const updatedConvo = mockCollabConvo({
+				id: 1,
+				metadata: { sandboxId: "new-sandbox-456", workspaceRoot: "/tmp/docs-vault" },
+			});
+
+			vi.mocked(mockCollabConvos.findOne)
+				.mockResolvedValueOnce({ get: () => convo } as never)
+				.mockResolvedValueOnce({ get: () => updatedConvo } as never);
+			vi.mocked(mockCollabConvos.update).mockResolvedValue([1] as never);
+
+			await collabConvoDao.updateMetadata(1, { workspaceRoot: "/tmp/docs-vault\u0000" });
+
+			expect(mockCollabConvos.update).toHaveBeenCalledWith(
+				{ metadata: { sandboxId: "existing-sandbox-123", workspaceRoot: "/tmp/docs-vault" } },
+				{ where: { id: 1 } },
+			);
+		});
+	});
+
+	describe("updateTitle", () => {
+		it("should update the title on an existing convo", async () => {
+			const convo = mockCollabConvo({ id: 1, title: "Old Title" });
+			const updatedConvo = mockCollabConvo({ id: 1, title: "New Title" });
+
+			vi.mocked(mockCollabConvos.findOne)
+				.mockResolvedValueOnce({
+					get: () => convo,
+				} as never)
+				.mockResolvedValueOnce({
+					get: () => updatedConvo,
+				} as never);
+
+			vi.mocked(mockCollabConvos.update).mockResolvedValue([1] as never);
+
+			const result = await collabConvoDao.updateTitle(1, "New Title");
+
+			expect(mockCollabConvos.update).toHaveBeenCalledWith({ title: "New Title" }, { where: { id: 1 } });
+			expect(result).toEqual(updatedConvo);
+		});
+
+		it("should return undefined if convo not found", async () => {
+			vi.mocked(mockCollabConvos.findOne).mockResolvedValue(null);
+
+			const result = await collabConvoDao.updateTitle(999, "New Title");
+
+			expect(result).toBeUndefined();
+			expect(mockCollabConvos.update).not.toHaveBeenCalled();
+		});
+
+		it("should strip null bytes from title", async () => {
+			const convo = mockCollabConvo({ id: 1, title: "Old Title" });
+			const updatedConvo = mockCollabConvo({ id: 1, title: "NewTitle" });
+
+			vi.mocked(mockCollabConvos.findOne)
+				.mockResolvedValueOnce({ get: () => convo } as never)
+				.mockResolvedValueOnce({ get: () => updatedConvo } as never);
+			vi.mocked(mockCollabConvos.update).mockResolvedValue([1] as never);
+
+			await collabConvoDao.updateTitle(1, "New\u0000Title");
+
+			expect(mockCollabConvos.update).toHaveBeenCalledWith({ title: "NewTitle" }, { where: { id: 1 } });
+		});
+	});
+
+	describe("truncateMessages", () => {
+		it("should truncate messages to the specified count", async () => {
+			const messages = [
+				mockCollabMessage({ content: "1" }),
+				mockCollabMessage({ content: "2" }),
+				mockCollabMessage({ content: "3" }),
+			];
+			const convo = mockCollabConvo({ id: 1, messages });
+			const truncatedConvo = mockCollabConvo({ id: 1, messages: messages.slice(0, 2) });
+
+			vi.mocked(mockCollabConvos.findOne)
+				.mockResolvedValueOnce({ get: () => convo } as never)
+				.mockResolvedValueOnce({ get: () => truncatedConvo } as never);
+
+			vi.mocked(mockCollabConvos.update).mockResolvedValue([1] as never);
+
+			const result = await collabConvoDao.truncateMessages(1, 2);
+
+			expect(mockCollabConvos.update).toHaveBeenCalledWith(
+				{ messages: messages.slice(0, 2) },
+				{ where: { id: 1 } },
+			);
+			expect(result).toEqual(truncatedConvo);
+		});
+
+		it("should return undefined if convo not found", async () => {
+			vi.mocked(mockCollabConvos.findOne).mockResolvedValue(null);
+
+			const result = await collabConvoDao.truncateMessages(999, 2);
+
+			expect(result).toBeUndefined();
+			expect(mockCollabConvos.update).not.toHaveBeenCalled();
+		});
+	});
+
+	describe("findSeededConvo", () => {
+		it("should return matching seeded convo", async () => {
+			const convo = mockCollabConvo({
+				id: 5,
+				artifactType: "agent_hub",
+				metadata: { convoKind: "getting_started", createdForUserId: 1 },
+			});
+			const mockGet = vi.fn().mockReturnValue(convo);
+
+			vi.mocked(mockCollabConvos.findOne).mockResolvedValue({
+				get: mockGet,
+			} as never);
+
+			const result = await collabConvoDao.findSeededConvo("agent_hub", "getting_started", 1);
+
+			expect(mockCollabConvos.findOne).toHaveBeenCalledWith({
+				where: expect.objectContaining({
+					artifactType: "agent_hub",
+				}),
+			});
+			expect(mockGet).toHaveBeenCalledWith({ plain: true });
+			expect(result).toEqual(convo);
+		});
+
+		it("should return undefined when no matching seeded convo exists", async () => {
+			vi.mocked(mockCollabConvos.findOne).mockResolvedValue(null);
+
+			const result = await collabConvoDao.findSeededConvo("agent_hub", "getting_started", 1);
+
+			expect(result).toBeUndefined();
 		});
 	});
 

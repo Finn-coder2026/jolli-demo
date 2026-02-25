@@ -13,6 +13,8 @@ export interface SelectBoxProps {
 	width?: string;
 	className?: string;
 	placeholder?: string;
+	/** Additional className passed to SelectContent (e.g., for max-height constraints) */
+	contentClassName?: string;
 	"data-testid"?: string;
 }
 
@@ -23,6 +25,7 @@ export function SelectBox({
 	width = "180px",
 	className = "",
 	placeholder,
+	contentClassName,
 	"data-testid": dataTestId,
 }: SelectBoxProps): ReactElement {
 	return (
@@ -30,7 +33,7 @@ export function SelectBox({
 			<SelectTrigger className={className} style={{ width }} data-testid={dataTestId}>
 				<SelectValue placeholder={placeholder} />
 			</SelectTrigger>
-			<SelectContent>
+			<SelectContent className={contentClassName}>
 				{options.map(option => (
 					<SelectItem
 						key={option.value}

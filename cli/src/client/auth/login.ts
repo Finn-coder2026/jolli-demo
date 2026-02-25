@@ -1,4 +1,4 @@
-import { saveAuthToken } from "./config";
+import { saveAuthToken, saveSpace } from "./config";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { URL } from "node:url";
 import open from "open";
@@ -45,6 +45,7 @@ export function createLoginServer(options: LoginServerOptions): Server {
 		}
 
 		const token = url.searchParams.get("token");
+		const space = url.searchParams.get("space") ?? undefined;
 		const error = url.searchParams.get("error");
 
 		if (error) {
@@ -64,6 +65,9 @@ export function createLoginServer(options: LoginServerOptions): Server {
 
 		try {
 			await saveAuthToken(token);
+			if (space) {
+				await saveSpace(space);
+			}
 			sendHtml(res, 200, "Login Successful!", "You can close this tab.");
 			server?.close();
 			onSuccess();

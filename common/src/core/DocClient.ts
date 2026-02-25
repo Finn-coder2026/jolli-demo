@@ -1,4 +1,4 @@
-import type { Doc, NewDoc } from "../types/Doc";
+import type { ArticleLinkSearchResult, Doc, NewDoc } from "../types/Doc";
 import type { DocDraft } from "../types/DocDraft";
 import type { ClientAuth } from "./Client";
 
@@ -66,6 +66,39 @@ export interface DocClient {
 	 */
 	renameDoc(id: number, title: string): Promise<Doc>;
 	/**
+	 * Reorders a document by moving it up or down among its siblings.
+	 * @param id - The document ID
+	 * @param direction - "up" to move before previous sibling, "down" to move after next sibling
+	 * @returns The updated document, or undefined if not found or at boundary
+	 */
+	reorderDoc(id: number, direction: "up" | "down"): Promise<Doc | undefined>;
+	/**
+	 * Moves a document to a new parent folder.
+	 * Updates the path for the document and all its descendants recursively.
+	 * @param id - The document ID to move
+	 * @param parentId - The new parent folder ID (null for root level)
+	 * @param referenceDocId - Optional: undefined/null = end, number = relative to that doc
+	 * @param position - Optional: "before" to place before referenceDocId, "after" to place after.
+	 *                   When referenceDocId is undefined/null, position is ignored.
+	 * @returns The updated document
+	 */
+	moveDoc(
+		id: number,
+		parentId: number | null,
+		referenceDocId?: number | null,
+		position?: "before" | "after",
+	): Promise<Doc>;
+	/**
+	 * Reorders a document to a specific position among its siblings.
+	 * Uses fractional indexing to calculate the new sortOrder.
+	 * @param id - The document ID to reorder
+	 * @param referenceDocId - Optional: undefined/null = end, number = relative to that doc
+	 * @param position - Optional: "before" to place before referenceDocId, "after" to place after.
+	 *                   When referenceDocId is undefined/null, position is ignored and document is placed at the end.
+	 * @returns The updated document, or undefined if not found
+	 */
+	reorderAt(id: number, referenceDocId?: number | null, position?: "before" | "after"): Promise<Doc | undefined>;
+	/**
 	 * Deletes all documents
 	 */
 	clearAll(): Promise<void>;
@@ -77,6 +110,11 @@ export interface DocClient {
 	 * Search documents by title
 	 */
 	searchByTitle(title: string): Promise<Array<Doc>>;
+	/**
+	 * Search articles for the [[ link menu.
+	 * Returns results with parent folder name, limited to 10.
+	 */
+	searchArticlesForLink(title: string, spaceId?: number): Promise<Array<ArticleLinkSearchResult>>;
 	/**
 	 * Creates a draft from an existing article for editing
 	 */
@@ -96,9 +134,13 @@ export function createDocClient(baseUrl: string, auth: ClientAuth): DocClient {
 		softDelete,
 		restore,
 		renameDoc,
+		reorderDoc,
+		moveDoc,
+		reorderAt,
 		clearAll,
 		search,
 		searchByTitle,
+		searchArticlesForLink,
 		createDraftFromArticle,
 	};
 
@@ -212,6 +254,76 @@ export function createDocClient(baseUrl: string, auth: ClientAuth): DocClient {
 		return (await response.json()) as Doc;
 	}
 
+	async function reorderDoc(id: number, direction: "up" | "down"): Promise<Doc | undefined> {
+		const response = await fetch(`${basePath}/by-id/${id}/reorder`, createRequest("POST", { direction }));
+		auth.checkUnauthorized?.(response);
+
+		if (response.status === 400) {
+			// Document not found or at boundary
+			return;
+		}
+
+		if (!response.ok) {
+			throw new Error(`Failed to reorder document: ${response.statusText}`);
+		}
+
+		return (await response.json()) as Doc;
+	}
+
+	async function moveDoc(
+		id: number,
+		parentId: number | null,
+		referenceDocId?: number | null,
+		position?: "before" | "after",
+	): Promise<Doc> {
+		const body: { parentId: number | null; referenceDocId?: number | null; position?: "before" | "after" } = {
+			parentId,
+		};
+		if (referenceDocId !== undefined) {
+			body.referenceDocId = referenceDocId;
+		}
+		if (position !== undefined) {
+			body.position = position;
+		}
+		const response = await fetch(`${basePath}/by-id/${id}/move`, createRequest("POST", body));
+		auth.checkUnauthorized?.(response);
+
+		if (!response.ok) {
+			const data = (await response.json()) as { error: string };
+			throw new Error(data.error || `Failed to move document: ${response.statusText}`);
+		}
+
+		return (await response.json()) as Doc;
+	}
+
+	async function reorderAt(
+		id: number,
+		referenceDocId?: number | null,
+		position?: "before" | "after",
+	): Promise<Doc | undefined> {
+		const body: { referenceDocId?: number | null; position?: "before" | "after" } = {};
+		if (referenceDocId !== undefined) {
+			body.referenceDocId = referenceDocId;
+		}
+		if (position !== undefined) {
+			body.position = position;
+		}
+		const response = await fetch(`${basePath}/by-id/${id}/reorder-at`, createRequest("POST", body));
+		auth.checkUnauthorized?.(response);
+
+		if (response.status === 400) {
+			const data = (await response.json()) as { error: string };
+			throw new Error(data.error || `Failed to reorder document: ${response.statusText}`);
+		}
+
+		if (!response.ok) {
+			const data = (await response.json()) as { error: string };
+			throw new Error(data.error || `Failed to reorder document: ${response.statusText}`);
+		}
+
+		return (await response.json()) as Doc;
+	}
+
 	async function clearAll(): Promise<void> {
 		const response = await fetch(`${basePath}/clearAll`, createRequest("DELETE"));
 		auth.checkUnauthorized?.(response);
@@ -241,6 +353,21 @@ export function createDocClient(baseUrl: string, auth: ClientAuth): DocClient {
 		}
 
 		return (await response.json()) as Array<Doc>;
+	}
+
+	async function searchArticlesForLink(title: string, spaceId?: number): Promise<Array<ArticleLinkSearchResult>> {
+		const body: Record<string, unknown> = { title };
+		if (spaceId !== undefined) {
+			body.spaceId = spaceId;
+		}
+		const response = await fetch(`${basePath}/search-articles-for-link`, createRequest("POST", body));
+		auth.checkUnauthorized?.(response);
+
+		if (!response.ok) {
+			throw new Error(`Failed to search articles for link: ${response.statusText}`);
+		}
+
+		return (await response.json()) as Array<ArticleLinkSearchResult>;
 	}
 
 	async function createDraftFromArticle(jrn: string): Promise<DocDraft> {

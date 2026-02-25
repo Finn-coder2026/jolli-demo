@@ -65,6 +65,21 @@ export const Serializers = {
 		serialize: (value: string | null): string => value ?? "",
 		deserialize: (value: string): string | null => (value === "" ? null : value),
 	},
+	nullableNumber: {
+		serialize: (value: number | null): string => (value === null ? "" : String(value)),
+		deserialize: (value: string): number | null => (value === "" ? null : Number.parseInt(value, 10)),
+	},
+	numberArray: {
+		serialize: (value: Array<number>): string => JSON.stringify(value),
+		deserialize: (value: string): Array<number> => {
+			try {
+				const parsed = JSON.parse(value);
+				return Array.isArray(parsed) ? parsed : [];
+			} catch {
+				return [];
+			}
+		},
+	},
 } as const;
 
 /**

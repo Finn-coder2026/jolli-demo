@@ -1,7 +1,9 @@
 import type { Database } from "../core/Database";
 import type { AssetDao } from "../dao/AssetDao";
 import type { DaoProvider } from "../dao/DaoProvider";
+import type { SpaceDao } from "../dao/SpaceDao";
 import type { Asset } from "../model/Asset";
+import type { Space } from "../model/Space";
 import type { ImageStorageService } from "../services/ImageStorageService";
 import { createTenantOrgContext, runWithTenantContext } from "../tenant/TenantContext";
 import { createAuthHandler } from "../util/AuthHandler";
@@ -26,6 +28,26 @@ function mockAsset(overrides: Partial<Asset> = {}): Asset {
 		createdAt: new Date("2024-01-01"),
 		updatedAt: new Date("2024-01-01"),
 		deletedAt: null,
+		orphanedAt: null,
+		spaceId: null,
+		...overrides,
+	};
+}
+
+function mockSpace(overrides: Partial<Space> = {}): Space {
+	return {
+		id: 10,
+		name: "Test Space",
+		slug: "test-space",
+		jrn: "jrn:space:test-space",
+		description: "A test space",
+		ownerId: 1,
+		isPersonal: false,
+		defaultSort: "default",
+		defaultFilters: { updated: "any_time", creator: "" },
+		deletedAt: undefined,
+		createdAt: new Date("2024-01-01"),
+		updatedAt: new Date("2024-01-01"),
 		...overrides,
 	};
 }
@@ -91,6 +113,8 @@ describe("ImageRouter", () => {
 	let mockImageStorageService: ImageStorageService;
 	let mockAssetDao: AssetDao;
 	let mockAssetDaoProvider: DaoProvider<AssetDao>;
+	let mockSpaceDao: SpaceDao;
+	let mockSpaceDaoProvider: DaoProvider<SpaceDao>;
 	let authToken: string;
 
 	const tokenUtil = createTokenUtil<UserInfo>("test-secret", {
@@ -126,6 +150,7 @@ describe("ImageRouter", () => {
 		mockAssetDao = {
 			createAsset: vi.fn().mockResolvedValue(mockAsset()),
 			findByS3Key: vi.fn().mockResolvedValue(mockAsset()),
+			findByS3KeyWithSpaceAccess: vi.fn().mockResolvedValue(mockAsset()),
 			findById: vi.fn().mockResolvedValue(mockAsset()),
 			listAssets: vi.fn().mockResolvedValue([mockAsset()]),
 			listByUploader: vi.fn().mockResolvedValue([mockAsset()]),
@@ -133,18 +158,43 @@ describe("ImageRouter", () => {
 			softDelete: vi.fn().mockResolvedValue(true),
 			hardDelete: vi.fn().mockResolvedValue(true),
 			deleteAll: vi.fn().mockResolvedValue(undefined),
+			listActiveAssets: vi.fn().mockResolvedValue([mockAsset()]),
+			markAsOrphaned: vi.fn().mockResolvedValue(0),
+			restoreToActive: vi.fn().mockResolvedValue(0),
+			findOrphanedOlderThan: vi.fn().mockResolvedValue([]),
+			findRecentlyUploaded: vi.fn().mockResolvedValue([]),
 		};
 
-		// Create mock DAO provider
+		// Create mock asset DAO provider
 		mockAssetDaoProvider = {
 			getDao: vi.fn().mockReturnValue(mockAssetDao),
+		};
+
+		// Create mock space DAO
+		mockSpaceDao = {
+			createSpace: vi.fn().mockResolvedValue(mockSpace()),
+			getSpace: vi.fn().mockResolvedValue(mockSpace()),
+			getSpaceByJrn: vi.fn().mockResolvedValue(mockSpace()),
+			getSpaceBySlug: vi.fn().mockResolvedValue(mockSpace()),
+			listSpaces: vi.fn().mockResolvedValue([mockSpace()]),
+			updateSpace: vi.fn().mockResolvedValue(mockSpace()),
+			deleteSpace: vi.fn().mockResolvedValue(true),
+		} as unknown as SpaceDao;
+
+		// Create mock space DAO provider
+		mockSpaceDaoProvider = {
+			getDao: vi.fn().mockReturnValue(mockSpaceDao),
 		};
 
 		app = express();
 		app.use(cookieParser());
 
 		const authHandler = createAuthHandler(tokenUtil);
-		app.use("/images", authHandler, createImageRouter(mockImageStorageService, mockAssetDaoProvider, tokenUtil));
+		app.use(
+			"/images",
+			authHandler,
+			createImageRouter(mockImageStorageService, mockAssetDaoProvider, mockSpaceDaoProvider, tokenUtil),
+		);
 
 		// Add error handler to catch any uncaught errors and return JSON
 		app.use(
@@ -192,6 +242,7 @@ describe("ImageRouter", () => {
 				expect.any(Buffer),
 				"image/png",
 				"png",
+				undefined,
 				undefined,
 			);
 		});
@@ -405,6 +456,7 @@ describe("ImageRouter", () => {
 				size: 1234,
 				originalFilename: null,
 				uploadedBy: 1,
+				spaceId: null,
 			});
 		});
 
@@ -430,6 +482,7 @@ describe("ImageRouter", () => {
 				"image/png",
 				"png",
 				"my-screenshot.png",
+				undefined,
 			);
 			// Verify original filename was saved to database
 			expect(mockAssetDao.createAsset).toHaveBeenCalledWith({
@@ -439,6 +492,7 @@ describe("ImageRouter", () => {
 				size: 1234,
 				originalFilename: "my-screenshot.png",
 				uploadedBy: 1,
+				spaceId: null,
 			});
 		});
 
@@ -490,6 +544,123 @@ describe("ImageRouter", () => {
 			expect(response?.status).toBe(500);
 			expect(response?.body.error).toContain("Failed to upload");
 		});
+
+		it("should upload image with space scoping when X-Space-Id header is provided", async () => {
+			const tenant = createMockTenant();
+			const org = createMockOrg();
+			const database = createMockDatabase();
+			const context = createTenantOrgContext(tenant, org, database);
+
+			const space = mockSpace({ id: 42, slug: "my-space" });
+			(mockSpaceDao.getSpace as ReturnType<typeof vi.fn>).mockResolvedValueOnce(space);
+			(mockImageStorageService.uploadImage as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+				imageId: "123/456/my-space/test-uuid-1234.png",
+				bucket: "jolli-images-test",
+				key: "123/456/my-space/test-uuid-1234.png",
+				mimeType: "image/png",
+				size: 1234,
+			});
+
+			let response: request.Response | undefined;
+			await runWithTenantContext(context, async () => {
+				response = await request(app)
+					.post("/images")
+					.set("Cookie", `authToken=${authToken}`)
+					.set("Content-Type", "image/png")
+					.set("X-Space-Id", "42")
+					.send(PNG_HEADER);
+			});
+
+			expect(response?.status).toBe(201);
+			expect(response?.body.imageId).toBe("123/456/my-space/test-uuid-1234.png");
+			// Verify space was looked up
+			expect(mockSpaceDao.getSpace).toHaveBeenCalledWith(42, 1);
+			// Verify upload was called with space slug
+			expect(mockImageStorageService.uploadImage).toHaveBeenCalledWith(
+				"123",
+				"456",
+				expect.any(Buffer),
+				"image/png",
+				"png",
+				undefined,
+				"my-space",
+			);
+			// Verify asset was saved with spaceId
+			expect(mockAssetDao.createAsset).toHaveBeenCalledWith(
+				expect.objectContaining({
+					spaceId: 42,
+				}),
+			);
+		});
+
+		it("should upload as org-wide when X-Space-Id header references non-existent space", async () => {
+			const tenant = createMockTenant();
+			const org = createMockOrg();
+			const database = createMockDatabase();
+			const context = createTenantOrgContext(tenant, org, database);
+
+			// Space not found
+			(mockSpaceDao.getSpace as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined);
+
+			let response: request.Response | undefined;
+			await runWithTenantContext(context, async () => {
+				response = await request(app)
+					.post("/images")
+					.set("Cookie", `authToken=${authToken}`)
+					.set("Content-Type", "image/png")
+					.set("X-Space-Id", "999")
+					.send(PNG_HEADER);
+			});
+
+			expect(response?.status).toBe(201);
+			// Verify upload was called without space slug (org-wide)
+			expect(mockImageStorageService.uploadImage).toHaveBeenCalledWith(
+				"123",
+				"456",
+				expect.any(Buffer),
+				"image/png",
+				"png",
+				undefined,
+				undefined,
+			);
+			// Verify asset was saved without spaceId
+			expect(mockAssetDao.createAsset).toHaveBeenCalledWith(
+				expect.objectContaining({
+					spaceId: null,
+				}),
+			);
+		});
+
+		it("should ignore invalid X-Space-Id header format", async () => {
+			const tenant = createMockTenant();
+			const org = createMockOrg();
+			const database = createMockDatabase();
+			const context = createTenantOrgContext(tenant, org, database);
+
+			let response: request.Response | undefined;
+			await runWithTenantContext(context, async () => {
+				response = await request(app)
+					.post("/images")
+					.set("Cookie", `authToken=${authToken}`)
+					.set("Content-Type", "image/png")
+					.set("X-Space-Id", "not-a-number")
+					.send(PNG_HEADER);
+			});
+
+			expect(response?.status).toBe(201);
+			// Space lookup should not be called for invalid format
+			expect(mockSpaceDao.getSpace).not.toHaveBeenCalled();
+			// Verify upload was called without space slug (org-wide)
+			expect(mockImageStorageService.uploadImage).toHaveBeenCalledWith(
+				"123",
+				"456",
+				expect.any(Buffer),
+				"image/png",
+				"png",
+				undefined,
+				undefined,
+			);
+		});
 	});
 
 	describe("GET /images/:imageId", () => {
@@ -502,11 +673,15 @@ describe("ImageRouter", () => {
 		it("should work when tenant context is not available (single-tenant mode)", async () => {
 			// No tenant context wrapper - imageId is the full S3 key path
 			const imageId = "0/0/_default/test-uuid.png";
-			(mockAssetDao.findByS3Key as ReturnType<typeof vi.fn>).mockResolvedValueOnce(mockAsset({ s3Key: imageId }));
+			(mockAssetDao.findByS3KeyWithSpaceAccess as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+				mockAsset({ s3Key: imageId }),
+			);
 
 			const response = await request(app).get(`/images/${imageId}`).set("Cookie", `authToken=${authToken}`);
 
 			expect(response.status).toBe(302);
+			// Verify it used empty set (deny space-scoped, allow org-wide) since no X-Space-Id header
+			expect(mockAssetDao.findByS3KeyWithSpaceAccess).toHaveBeenCalledWith(imageId, new Set());
 			// Verify it used the imageId directly (no tenantId param)
 			expect(mockImageStorageService.getSignedUrl).toHaveBeenCalledWith(imageId, {
 				contentDisposition: "inline",
@@ -519,7 +694,7 @@ describe("ImageRouter", () => {
 			const database = createMockDatabase();
 			const context = createTenantOrgContext(tenant, org, database);
 
-			(mockAssetDao.findByS3Key as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined);
+			(mockAssetDao.findByS3KeyWithSpaceAccess as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined);
 
 			let response: request.Response | undefined;
 			await runWithTenantContext(context, async () => {
@@ -539,7 +714,9 @@ describe("ImageRouter", () => {
 			const context = createTenantOrgContext(tenant, org, database);
 
 			const imageId = "123/456/_default/test-uuid.png";
-			(mockAssetDao.findByS3Key as ReturnType<typeof vi.fn>).mockResolvedValueOnce(mockAsset({ s3Key: imageId }));
+			(mockAssetDao.findByS3KeyWithSpaceAccess as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+				mockAsset({ s3Key: imageId }),
+			);
 
 			let response: request.Response | undefined;
 			await runWithTenantContext(context, async () => {
@@ -548,12 +725,148 @@ describe("ImageRouter", () => {
 
 			expect(response?.status).toBe(302);
 			expect(response?.headers.location).toBe("https://s3.example.com/signed-url");
-			// Verify the DAO was called with correct key (full path)
-			expect(mockAssetDao.findByS3Key).toHaveBeenCalledWith(imageId);
+			// Verify the DAO was called with correct key (full path) and empty set (deny space-scoped)
+			expect(mockAssetDao.findByS3KeyWithSpaceAccess).toHaveBeenCalledWith(imageId, new Set());
 			// Service call uses imageId directly (no tenantId param)
 			expect(mockImageStorageService.getSignedUrl).toHaveBeenCalledWith(imageId, {
 				contentDisposition: "inline",
 			});
+		});
+
+		it("should use space access validation when X-Space-Id header is provided", async () => {
+			const tenant = createMockTenant();
+			const org = createMockOrg();
+			const database = createMockDatabase();
+			const context = createTenantOrgContext(tenant, org, database);
+
+			const imageId = "123/456/my-space/test-uuid.png";
+			(mockAssetDao.findByS3KeyWithSpaceAccess as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+				mockAsset({ s3Key: imageId, spaceId: 42 }),
+			);
+
+			let response: request.Response | undefined;
+			await runWithTenantContext(context, async () => {
+				response = await request(app)
+					.get(`/images/${imageId}`)
+					.set("Cookie", `authToken=${authToken}`)
+					.set("X-Space-Id", "42");
+			});
+
+			expect(response?.status).toBe(302);
+			// Verify the DAO was called with space access set containing the space ID
+			expect(mockAssetDao.findByS3KeyWithSpaceAccess).toHaveBeenCalledWith(imageId, new Set([42]));
+		});
+
+		it("should return 404 when image is not accessible from the requested space", async () => {
+			const tenant = createMockTenant();
+			const org = createMockOrg();
+			const database = createMockDatabase();
+			const context = createTenantOrgContext(tenant, org, database);
+
+			const imageId = "123/456/other-space/test-uuid.png";
+			// findByS3KeyWithSpaceAccess returns undefined when not accessible
+			(mockAssetDao.findByS3KeyWithSpaceAccess as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined);
+
+			let response: request.Response | undefined;
+			await runWithTenantContext(context, async () => {
+				response = await request(app)
+					.get(`/images/${imageId}`)
+					.set("Cookie", `authToken=${authToken}`)
+					.set("X-Space-Id", "42");
+			});
+
+			expect(response?.status).toBe(404);
+			expect(response?.body.error).toContain("not found");
+		});
+
+		it("should use spaceId query param for space access validation (for img tags)", async () => {
+			const tenant = createMockTenant();
+			const org = createMockOrg();
+			const database = createMockDatabase();
+			const context = createTenantOrgContext(tenant, org, database);
+
+			const imageId = "123/456/my-space/test-uuid.png";
+			(mockAssetDao.findByS3KeyWithSpaceAccess as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+				mockAsset({ s3Key: imageId, spaceId: 42 }),
+			);
+
+			let response: request.Response | undefined;
+			await runWithTenantContext(context, async () => {
+				response = await request(app)
+					.get(`/images/${imageId}?spaceId=42`)
+					.set("Cookie", `authToken=${authToken}`);
+			});
+
+			expect(response?.status).toBe(302);
+			// Verify the DAO was called with space access set from query param
+			expect(mockAssetDao.findByS3KeyWithSpaceAccess).toHaveBeenCalledWith(imageId, new Set([42]));
+		});
+
+		it("should prefer spaceId query param over X-Space-Id header", async () => {
+			const tenant = createMockTenant();
+			const org = createMockOrg();
+			const database = createMockDatabase();
+			const context = createTenantOrgContext(tenant, org, database);
+
+			const imageId = "123/456/my-space/test-uuid.png";
+			(mockAssetDao.findByS3KeyWithSpaceAccess as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+				mockAsset({ s3Key: imageId, spaceId: 99 }),
+			);
+
+			let response: request.Response | undefined;
+			await runWithTenantContext(context, async () => {
+				response = await request(app)
+					.get(`/images/${imageId}?spaceId=99`)
+					.set("Cookie", `authToken=${authToken}`)
+					.set("X-Space-Id", "42"); // Header should be ignored
+			});
+
+			expect(response?.status).toBe(302);
+			// Verify the DAO was called with query param value (99), not header value (42)
+			expect(mockAssetDao.findByS3KeyWithSpaceAccess).toHaveBeenCalledWith(imageId, new Set([99]));
+		});
+
+		it("should return 404 when image is not accessible via spaceId query param", async () => {
+			const tenant = createMockTenant();
+			const org = createMockOrg();
+			const database = createMockDatabase();
+			const context = createTenantOrgContext(tenant, org, database);
+
+			const imageId = "123/456/other-space/test-uuid.png";
+			// findByS3KeyWithSpaceAccess returns undefined when not accessible
+			(mockAssetDao.findByS3KeyWithSpaceAccess as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined);
+
+			let response: request.Response | undefined;
+			await runWithTenantContext(context, async () => {
+				response = await request(app)
+					.get(`/images/${imageId}?spaceId=42`)
+					.set("Cookie", `authToken=${authToken}`);
+			});
+
+			expect(response?.status).toBe(404);
+			expect(response?.body.error).toContain("not found");
+		});
+
+		it("should return 404 for space-scoped image when no spaceId context is provided (security)", async () => {
+			const tenant = createMockTenant();
+			const org = createMockOrg();
+			const database = createMockDatabase();
+			const context = createTenantOrgContext(tenant, org, database);
+
+			const imageId = "123/456/some-space/test-uuid.png";
+			// findByS3KeyWithSpaceAccess returns undefined because empty set doesn't match any spaceId
+			(mockAssetDao.findByS3KeyWithSpaceAccess as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined);
+
+			let response: request.Response | undefined;
+			await runWithTenantContext(context, async () => {
+				// No spaceId query param or header - should block space-scoped images
+				response = await request(app).get(`/images/${imageId}`).set("Cookie", `authToken=${authToken}`);
+			});
+
+			expect(response?.status).toBe(404);
+			expect(response?.body.error).toContain("not found");
+			// Verify the DAO was called with empty set (blocks space-scoped assets)
+			expect(mockAssetDao.findByS3KeyWithSpaceAccess).toHaveBeenCalledWith(imageId, new Set());
 		});
 
 		it("should handle storage service errors", async () => {
@@ -562,7 +875,9 @@ describe("ImageRouter", () => {
 			const database = createMockDatabase();
 			const context = createTenantOrgContext(tenant, org, database);
 
-			(mockAssetDao.findByS3Key as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("DB error"));
+			(mockAssetDao.findByS3KeyWithSpaceAccess as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+				new Error("DB error"),
+			);
 
 			let response: request.Response | undefined;
 			await runWithTenantContext(context, async () => {
@@ -692,7 +1007,10 @@ describe("ImageRouter", () => {
 			// Create app WITHOUT authHandler to test the router's own auth checks
 			appNoAuth = express();
 			appNoAuth.use(cookieParser());
-			appNoAuth.use("/images", createImageRouter(mockImageStorageService, mockAssetDaoProvider, tokenUtil));
+			appNoAuth.use(
+				"/images",
+				createImageRouter(mockImageStorageService, mockAssetDaoProvider, mockSpaceDaoProvider, tokenUtil),
+			);
 
 			// Add error handler
 			appNoAuth.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

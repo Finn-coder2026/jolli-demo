@@ -78,6 +78,16 @@ describe("RenameItemDialog", () => {
 		expect(mockOnClose).toHaveBeenCalled();
 	});
 
+	it("should call onClose when dialog overlay is clicked", () => {
+		render(<RenameItemDialog {...defaultProps} />);
+
+		// Click the dialog overlay to trigger handleOpenChange(false)
+		const overlay = screen.getByTestId("dialog-overlay");
+		fireEvent.click(overlay);
+
+		expect(mockOnClose).toHaveBeenCalled();
+	});
+
 	it("should show error when name is empty", async () => {
 		render(<RenameItemDialog {...defaultProps} />);
 

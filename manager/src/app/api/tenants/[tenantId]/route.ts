@@ -4,7 +4,8 @@ import { createProviderAdapter } from "../../../../lib/providers";
 import type { DatabaseCredentials, NewTenant, Tenant, TenantStatus } from "../../../../lib/types";
 import { getLog } from "../../../../lib/util/Logger";
 import { decryptPassword, isEncryptedPassword } from "jolli-common/server";
-import { NextResponse } from "next/server";
+import { type NextRequest, NextResponse } from "next/server";
+import { forbiddenResponse, getUserFromRequest, isSuperAdmin, unauthorizedResponse } from "@/lib/auth";
 
 const log = getLog(import.meta.url);
 
@@ -135,8 +136,14 @@ async function deprovisionTenantSchemas(tenant: Tenant): Promise<DeprovisionResu
 
 /**
  * GET /api/tenants/[tenantId] - Get a specific tenant
+ * Requires: Authenticated (SuperAdmin or User with read-only access)
  */
-export async function GET(_request: Request, { params }: RouteParams) {
+export async function GET(request: NextRequest, { params }: RouteParams) {
+	const user = getUserFromRequest(request);
+	if (!user) {
+		return unauthorizedResponse();
+	}
+
 	try {
 		const { tenantId } = await params;
 		const db = await getDatabase();
@@ -156,8 +163,16 @@ export async function GET(_request: Request, { params }: RouteParams) {
 /**
  * PUT /api/tenants/[tenantId] - Update a tenant
  * If status is being changed to 'active', also activates all archived orgs
+ * Requires: SuperAdmin
  */
-export async function PUT(request: Request, { params }: RouteParams) {
+export async function PUT(request: NextRequest, { params }: RouteParams) {
+	const user = getUserFromRequest(request);
+	if (!user) {
+		return unauthorizedResponse();
+	}
+	if (!isSuperAdmin(user.role)) {
+		return forbiddenResponse("SuperAdmin access required");
+	}
 	try {
 		const { tenantId } = await params;
 		const body = (await request.json()) as Partial<NewTenant> & { status?: TenantStatus };
@@ -193,8 +208,16 @@ export async function PUT(request: Request, { params }: RouteParams) {
  * - archive: Set status to 'archived', keep everything (no confirmation needed)
  * - soft: Remove from registry but keep database schemas (requires confirmation)
  * - hard: Delete from registry and drop org schemas (requires confirmation)
+ * Requires: SuperAdmin
  */
-export async function DELETE(request: Request, { params }: RouteParams) {
+export async function DELETE(request: NextRequest, { params }: RouteParams) {
+	const user = getUserFromRequest(request);
+	if (!user) {
+		return unauthorizedResponse();
+	}
+	if (!isSuperAdmin(user.role)) {
+		return forbiddenResponse("SuperAdmin access required");
+	}
 	try {
 		const { tenantId } = await params;
 		const { searchParams } = new URL(request.url);

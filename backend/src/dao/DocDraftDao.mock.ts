@@ -228,6 +228,10 @@ export function mockDocDraftDao(): DocDraftDao {
 			);
 			return Promise.resolve(docIdsWithSuggestions.size);
 		},
+
+		getAllContent: (): Promise<Array<{ content: string }>> => {
+			return Promise.resolve(Array.from(drafts.values()).map(draft => ({ content: draft.content })));
+		},
 	};
 
 	return dao;

@@ -31,35 +31,14 @@ function createMockDoc(overrides: Partial<Doc> = {}): Doc {
 
 describe("TrashView", () => {
 	const mockOnRestore = vi.fn();
-	const mockOnBack = vi.fn();
 
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mockOnRestore.mockResolvedValue(undefined);
 	});
 
-	it("should render back button", () => {
-		render(<TrashView trashData={[]} onRestore={mockOnRestore} onBack={mockOnBack} />);
-
-		expect(screen.getByTestId("trash-back-button")).toBeDefined();
-	});
-
-	it("should render trash title", () => {
-		render(<TrashView trashData={[]} onRestore={mockOnRestore} onBack={mockOnBack} />);
-
-		expect(screen.getByText("Trash")).toBeDefined();
-	});
-
-	it("should call onBack when back button is clicked", () => {
-		render(<TrashView trashData={[]} onRestore={mockOnRestore} onBack={mockOnBack} />);
-
-		fireEvent.click(screen.getByTestId("trash-back-button"));
-
-		expect(mockOnBack).toHaveBeenCalled();
-	});
-
 	it("should render empty state when no trash items", () => {
-		render(<TrashView trashData={[]} onRestore={mockOnRestore} onBack={mockOnBack} />);
+		render(<TrashView trashData={[]} onRestore={mockOnRestore} />);
 
 		expect(screen.getByText("Trash is empty")).toBeDefined();
 	});
@@ -68,7 +47,7 @@ describe("TrashView", () => {
 		const doc1 = createMockDoc({ id: 1, contentMetadata: { title: "Document 1" } });
 		const doc2 = createMockDoc({ id: 2, contentMetadata: { title: "Document 2" } });
 
-		render(<TrashView trashData={[doc1, doc2]} onRestore={mockOnRestore} onBack={mockOnBack} />);
+		render(<TrashView trashData={[doc1, doc2]} onRestore={mockOnRestore} />);
 
 		expect(screen.getByText("Document 1")).toBeDefined();
 		expect(screen.getByText("Document 2")).toBeDefined();
@@ -77,7 +56,7 @@ describe("TrashView", () => {
 	it("should render restore button for each item", () => {
 		const doc = createMockDoc({ id: 42 });
 
-		render(<TrashView trashData={[doc]} onRestore={mockOnRestore} onBack={mockOnBack} />);
+		render(<TrashView trashData={[doc]} onRestore={mockOnRestore} />);
 
 		expect(screen.getByTestId("restore-item-42")).toBeDefined();
 	});
@@ -85,7 +64,7 @@ describe("TrashView", () => {
 	it("should call onRestore with doc id when restore button is clicked", async () => {
 		const doc = createMockDoc({ id: 42 });
 
-		render(<TrashView trashData={[doc]} onRestore={mockOnRestore} onBack={mockOnBack} />);
+		render(<TrashView trashData={[doc]} onRestore={mockOnRestore} />);
 
 		fireEvent.click(screen.getByTestId("restore-item-42"));
 
@@ -97,7 +76,7 @@ describe("TrashView", () => {
 	it("should render folder icon for folders", () => {
 		const folder = createMockDoc({ id: 1, docType: "folder" });
 
-		const { container } = render(<TrashView trashData={[folder]} onRestore={mockOnRestore} onBack={mockOnBack} />);
+		const { container } = render(<TrashView trashData={[folder]} onRestore={mockOnRestore} />);
 
 		const folderIcon = container.querySelector('[data-lucide-icon="Folder"]');
 		expect(folderIcon).toBeDefined();
@@ -106,9 +85,9 @@ describe("TrashView", () => {
 	it("should render file icon for documents", () => {
 		const doc = createMockDoc({ id: 1, docType: "document" });
 
-		const { container } = render(<TrashView trashData={[doc]} onRestore={mockOnRestore} onBack={mockOnBack} />);
+		const { container } = render(<TrashView trashData={[doc]} onRestore={mockOnRestore} />);
 
-		const fileIcon = container.querySelector('[data-lucide-icon="File"]');
+		const fileIcon = container.querySelector('[data-lucide-icon="FileText"]');
 		expect(fileIcon).toBeDefined();
 	});
 
@@ -119,7 +98,7 @@ describe("TrashView", () => {
 			contentMetadata: undefined,
 		});
 
-		render(<TrashView trashData={[doc]} onRestore={mockOnRestore} onBack={mockOnBack} />);
+		render(<TrashView trashData={[doc]} onRestore={mockOnRestore} />);
 
 		expect(screen.getByText("doc:untitled-123")).toBeDefined();
 	});
@@ -129,10 +108,18 @@ describe("TrashView", () => {
 		const doc2 = createMockDoc({ id: 2 });
 		const doc3 = createMockDoc({ id: 3 });
 
-		render(<TrashView trashData={[doc1, doc2, doc3]} onRestore={mockOnRestore} onBack={mockOnBack} />);
+		render(<TrashView trashData={[doc1, doc2, doc3]} onRestore={mockOnRestore} />);
 
 		expect(screen.getByTestId("restore-item-1")).toBeDefined();
 		expect(screen.getByTestId("restore-item-2")).toBeDefined();
 		expect(screen.getByTestId("restore-item-3")).toBeDefined();
+	});
+
+	it("should render trash item with data-testid", () => {
+		const doc = createMockDoc({ id: 123 });
+
+		render(<TrashView trashData={[doc]} onRestore={mockOnRestore} />);
+
+		expect(screen.getByTestId("trash-item-123")).toBeDefined();
 	});
 });

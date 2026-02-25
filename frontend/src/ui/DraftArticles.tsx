@@ -74,7 +74,7 @@ export function DraftArticles(): ReactElement {
 
 	return (
 		<div
-			className="bg-card rounded-lg p-6 border h-full overflow-auto max-w-full"
+			className="bg-card rounded-lg p-6 border h-full overflow-auto max-w-full scrollbar-thin"
 			data-testid="draft-articles-page"
 		>
 			<div className="mb-6">

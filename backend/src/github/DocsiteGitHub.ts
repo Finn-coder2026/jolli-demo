@@ -1,6 +1,7 @@
 import { isBinaryFile } from "../util/FileTypeUtil";
 import { getLog } from "../util/Logger";
 import type { Octokit } from "@octokit/rest";
+import type { FileTreeNode } from "jolli-common";
 
 const log = getLog(import.meta);
 
@@ -21,6 +22,14 @@ export interface ConsistencyCheckData {
 	/** Content of content/_meta.ts if it exists */
 	metaContent?: string;
 }
+
+/**
+ * Represents a tree entry for GitHub's createTree API.
+ * Can either contain file content or reference an existing blob by SHA.
+ */
+export type TreeEntry =
+	| { path: string; mode: "100644"; type: "blob"; content: string }
+	| { path: string; mode: "100644"; type: "blob"; sha: string | null };
 
 export interface DocsiteGitHubClient {
 	createRepository(orgName: string, repoName: string, isPrivate: boolean): Promise<string>;
@@ -92,6 +101,54 @@ export interface DocsiteGitHubClient {
 	 * @param folderPath - Path of the folder to list
 	 */
 	listFolderContents(owner: string, repo: string, folderPath: string): Promise<Array<string>>;
+	/**
+	 * Syncs a file tree to GitHub by updating the tree structure in a single atomic commit.
+	 * Fully replaces editable areas (content/, app/, mdx-components.tsx, next.config.mjs) while preserving other files.
+	 * @param owner - Repository owner
+	 * @param repo - Repository name
+	 * @param tree - Complete desired file tree structure for editable areas
+	 * @param commitMessage - Commit message for the atomic commit
+	 * @returns The new commit SHA
+	 */
+	syncTreeToGitHub(owner: string, repo: string, tree: Array<FileTreeNode>, commitMessage: string): Promise<string>;
+}
+
+/**
+ * Finds .gitkeep files in content/ subfolders that would be left as the only file in their folder.
+ * These represent empty folders that should be removed.
+ *
+ * @param allFinalPaths - All file paths that will exist after the operation
+ * @returns Array of .gitkeep paths to delete
+ */
+function findEmptyFolderGitkeepPaths(allFinalPaths: Set<string>): Array<string> {
+	// Group files by their parent folder (within content/ directory)
+	const filesPerFolder = new Map<string, Set<string>>();
+	for (const filePath of allFinalPaths) {
+		if (!filePath.startsWith("content/")) {
+			continue;
+		}
+		const parts = filePath.split("/");
+		// Skip root content/ folder - only check subfolders
+		if (parts.length < 3) {
+			continue;
+		}
+		// Get the folder path (everything except the filename)
+		const folderPath = parts.slice(0, -1).join("/");
+		if (!filesPerFolder.has(folderPath)) {
+			filesPerFolder.set(folderPath, new Set());
+		}
+		filesPerFolder.get(folderPath)?.add(filePath);
+	}
+
+	// Find folders that only contain .gitkeep files
+	const gitkeepPathsToDelete: Array<string> = [];
+	for (const [, folderFiles] of filesPerFolder) {
+		const fileArray = [...folderFiles];
+		if (fileArray.length === 1 && fileArray[0].endsWith("/.gitkeep")) {
+			gitkeepPathsToDelete.push(fileArray[0]);
+		}
+	}
+	return gitkeepPathsToDelete;
 }
 
 /**
@@ -112,6 +169,7 @@ export function createDocsiteGitHub(octokit: Octokit): DocsiteGitHubClient {
 		renameFolder,
 		moveFile,
 		listFolderContents,
+		syncTreeToGitHub,
 	};
 
 	/**
@@ -434,10 +492,8 @@ export function createDocsiteGitHub(octokit: Octokit): DocsiteGitHubClient {
 			}
 
 			// Step 7b: Add entries to delete additional files (e.g., deleted JSON/YAML articles)
+			const existingPaths = new Set(currentTree.tree.filter(item => item.type === "blob").map(item => item.path));
 			if (additionalPathsToDelete && additionalPathsToDelete.length > 0) {
-				// Get existing paths in the repository to only delete files that actually exist
-				const existingPaths = new Set(currentTree.tree.map(item => item.path));
-
 				for (const pathToRemove of additionalPathsToDelete) {
 					// Only add deletion entries for files that exist and aren't in the new files
 					if (existingPaths.has(pathToRemove) && !newFileMap.has(pathToRemove)) {
@@ -449,6 +505,27 @@ export function createDocsiteGitHub(octokit: Octokit): DocsiteGitHubClient {
 						});
 					}
 				}
+			}
+
+			// Step 7c: Remove empty folders (folders that will only contain .gitkeep files)
+			// Calculate what files will exist after all additions and deletions
+			const deletedPaths = new Set([
+				...mdMdxFilesToRemove,
+				...(additionalPathsToDelete || []).filter(p => existingPaths.has(p) && !newFileMap.has(p)),
+			]);
+			const remainingExistingPaths = [...existingPaths].filter(p => !deletedPaths.has(p) && !newFileMap.has(p));
+			const allFinalPaths = new Set([...remainingExistingPaths, ...files.map(f => f.path)]);
+
+			// Find and delete empty folders
+			const emptyFolderGitkeeps = findEmptyFolderGitkeepPaths(allFinalPaths);
+			for (const gitkeepPath of emptyFolderGitkeeps) {
+				tree.push({
+					path: gitkeepPath,
+					mode: "100644" as const,
+					type: "blob" as const,
+					sha: null,
+				});
+				log.info({ gitkeepPath }, "Removing empty folder (only contains .gitkeep)");
 			}
 
 			// Step 8: Create new tree
@@ -951,6 +1028,153 @@ export function createDocsiteGitHub(octokit: Octokit): DocsiteGitHubClient {
 			}
 
 			return files;
+		} catch (error) {
+			if (isNotFound(error)) {
+				throw new Error(`Repository ${owner}/${repo} not found`);
+			}
+			throw error;
+		}
+	}
+
+	/**
+	 * Flattens a FileTreeNode structure into an array of TreeEntry objects for GitHub's createTree API.
+	 * Only includes files (not folders), using pendingContent if available, otherwise the existing SHA.
+	 */
+	function flattenTreeToEntries(tree: Array<FileTreeNode>): Array<TreeEntry> {
+		const entries: Array<TreeEntry> = [];
+
+		function walk(nodes: Array<FileTreeNode>): void {
+			for (const node of nodes) {
+				if (node.type === "file") {
+					if (node.pendingContent !== undefined) {
+						// File has been edited - use content
+						entries.push({
+							path: node.path,
+							mode: "100644" as const,
+							type: "blob" as const,
+							content: node.pendingContent,
+						});
+					} else {
+						// File unchanged - reference existing blob by SHA
+						entries.push({
+							path: node.path,
+							mode: "100644" as const,
+							type: "blob" as const,
+							sha: node.id,
+						});
+					}
+				}
+				if (node.children) {
+					walk(node.children);
+				}
+			}
+		}
+
+		walk(tree);
+		return entries;
+	}
+
+	/**
+	 * Syncs a file tree to GitHub by updating the tree structure in a single atomic commit.
+	 * This approach eliminates operation-based bugs by directly representing the desired state.
+	 *
+	 * Uses base_tree to preserve non-editable files while fully replacing editable areas:
+	 * - Editable areas (content/, app/, mdx-components.tsx, next.config.mjs) are fully replaced
+	 * - Files in editable areas not in the new tree are explicitly deleted
+	 * - Files outside editable areas are preserved from base_tree
+	 *
+	 * @param owner - Repository owner
+	 * @param repo - Repository name
+	 * @param tree - Complete desired file tree structure for editable areas
+	 * @param commitMessage - Commit message
+	 * @returns New commit SHA
+	 */
+	async function syncTreeToGitHub(
+		owner: string,
+		repo: string,
+		tree: Array<FileTreeNode>,
+		commitMessage: string,
+	): Promise<string> {
+		try {
+			// Get current commit info
+			const { commitSha, treeSha } = await getLatestTreeInfo(owner, repo);
+
+			// Flatten tree to GitHub tree entries
+			const treeEntries = flattenTreeToEntries(tree);
+
+			// Get current tree to find files in editable area that need deletion
+			const { data: currentTree } = await octokit.rest.git.getTree({
+				owner,
+				repo,
+				tree_sha: treeSha,
+				recursive: "true",
+			});
+
+			// Build set of paths in the new tree
+			const newTreePaths = new Set<string>();
+			for (const entry of treeEntries) {
+				newTreePaths.add(entry.path);
+			}
+
+			// Define editable areas - folders where content/meta files live.
+			// Config files (mdx-components.tsx, next.config.mjs, etc.) are managed by the
+			// generation pipeline and must NOT be deleted during navigation sync.
+			const editableAreas = ["content/", "app/"];
+
+			// Find files in editable area that need to be deleted (in current tree but not in new tree)
+			for (const item of currentTree.tree) {
+				if (item.type === "blob" && item.path) {
+					// Check if file is in an editable area
+					const isInEditableArea = editableAreas.some(
+						area => item.path === area || item.path?.startsWith(area),
+					);
+
+					// If in editable area but not in new tree, delete it
+					if (isInEditableArea && !newTreePaths.has(item.path)) {
+						treeEntries.push({
+							path: item.path,
+							mode: "100644" as const,
+							type: "blob" as const,
+							sha: null,
+						});
+					}
+				}
+			}
+
+			// Create new tree with base_tree (preserves non-editable files, replaces editable area)
+			const { data: newTree } = await octokit.rest.git.createTree({
+				owner,
+				repo,
+				tree: treeEntries,
+				base_tree: treeSha,
+			});
+
+			// Create new commit
+			const { data: newCommit } = await octokit.rest.git.createCommit({
+				owner,
+				repo,
+				message: commitMessage,
+				tree: newTree.sha,
+				parents: [commitSha],
+			});
+
+			// Update branch reference
+			await octokit.rest.git.updateRef({
+				owner,
+				repo,
+				ref: "heads/main",
+				sha: newCommit.sha,
+			});
+
+			log.info(
+				{ action: "tree_synced", owner, repo, fileCount: treeEntries.length },
+				"Synced tree with %d files to %s/%s",
+				treeEntries.length,
+				owner,
+				repo,
+			);
+
+			return newCommit.sha;
 		} catch (error) {
 			if (isNotFound(error)) {
 				throw new Error(`Repository ${owner}/${repo} not found`);

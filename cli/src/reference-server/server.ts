@@ -1,7 +1,7 @@
 // Markdown Sync Server - In-memory store, one-way push
 
 import { getLog } from "../shared/logger";
-import { integrityHashFromContent } from "../shared/sync-helpers";
+import { integrityHashFromContent } from "../sync";
 import type { PushOp, PushRequest, PushResponse } from "./types";
 
 const logger = getLog(import.meta);
@@ -105,14 +105,12 @@ export function createServer(options: CreateServerOptions = {}): ReturnType<type
 			// POST /v1/sync/push
 			if (req.method === "POST" && url.pathname === "/v1/sync/push") {
 				const body = (await req.json()) as PushRequest;
-				if (body.requestId && pushResponses.has(body.requestId)) {
-					return Response.json(pushResponses.get(body.requestId));
+				if (pushResponses.has(body.clientChangesetId)) {
+					return Response.json(pushResponses.get(body.clientChangesetId));
 				}
 
 				const result = handlePush(body.ops);
-				if (body.requestId) {
-					pushResponses.set(body.requestId, result);
-				}
+				pushResponses.set(body.clientChangesetId, result);
 				return Response.json(result);
 			}
 
@@ -170,6 +168,46 @@ export function createServer(options: CreateServerOptions = {}): ReturnType<type
 					files: Object.fromEntries(files),
 					recentChanges: changes.slice(-10),
 				});
+			}
+
+			// DELETE /v1/sync/files/:fileId - Simulates a web UI soft-delete
+			// This is what happens when a user deletes an article from the web app
+			const deleteMatch = url.pathname.match(/^\/v1\/sync\/files\/(.+)$/);
+			if (req.method === "DELETE" && deleteMatch) {
+				const fileId = decodeURIComponent(deleteMatch[1]);
+				const existing = files.get(fileId);
+
+				if (!existing) {
+					return new Response("File not found", { status: 404 });
+				}
+
+				if (existing.deleted) {
+					return new Response("File already deleted", { status: 409 });
+				}
+
+				const newVersion = existing.version + 1;
+				const now = Date.now();
+
+				// Soft-delete: mark as deleted, increment version
+				files.set(fileId, {
+					...existing,
+					version: newVersion,
+					deleted: true,
+					updatedAt: now,
+				});
+
+				// Add change entry so clients see the delete on next pull
+				changes.push({
+					seq: ++cursor,
+					fileId,
+					serverPath: existing.serverPath,
+					version: newVersion,
+					deleted: true,
+					updatedAt: now,
+				});
+
+				logger.info("Soft-deleted file %s (version %d -> %d)", fileId, existing.version, newVersion);
+				return Response.json({ fileId, newVersion, deleted: true });
 			}
 
 			return new Response("Not Found", { status: 404 });

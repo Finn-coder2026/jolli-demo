@@ -1,29 +1,32 @@
 //noinspection ExceptionCaughtLocallyJS
 
-import { type AgentEnvironment, createAgentEnvironment } from "../../../tools/jolliagent/src/direct/agentenv";
+import {
+	type AgentEnvironment,
+	createAgentEnvironment,
+	reconnectE2BSandbox,
+} from "../../../tools/jolliagent/src/direct/agentenv";
 import type { Message, ToolCall } from "../../../tools/jolliagent/src/Types";
 import { runToolCall } from "../../../tools/jolliagent/src/tools/Tools";
 import { AgentChatAdapter } from "../adapters/AgentChatAdapter";
-import { createCreateArticleToolDefinition, executeCreateArticleTool } from "../adapters/tools/CreateArticleTool";
 import { createCreateSectionToolDefinition, executeCreateSectionTool } from "../adapters/tools/CreateSectionTool";
 import { createDeleteSectionToolDefinition, executeDeleteSectionTool } from "../adapters/tools/DeleteSectionTool";
+import { createEditArticleToolDefinition, executeEditArticleTool } from "../adapters/tools/EditArticleTool";
 import { createEditSectionToolDefinition, executeEditSectionTool } from "../adapters/tools/EditSectionTool";
 import {
 	createGetCurrentArticleToolDefinition,
 	executeGetCurrentArticleTool,
 } from "../adapters/tools/GetCurrentArticleTool";
 import {
-	createGetLatestLinearTicketsToolDefinition,
-	executeGetLatestLinearTicketsTool,
-	type GetLatestLinearTicketsArgs,
-} from "../adapters/tools/GetLatestLinearTicketsTool";
+	createUpsertFrontmatterToolDefinition,
+	executeUpsertFrontmatterTool,
+} from "../adapters/tools/UpsertFrontmatterTool";
 import { getConfig, getWorkflowConfig } from "../config/Config";
 import type { CollabConvoDao } from "../dao/CollabConvoDao";
 import type { DaoProvider } from "../dao/DaoProvider";
 import type { DocDraftDao } from "../dao/DocDraftDao";
 import type { DocDraftSectionChangesDao } from "../dao/DocDraftSectionChangesDao";
 import type { IntegrationsManager } from "../integrations/IntegrationsManager";
-import type { ArtifactType, CollabMessage } from "../model/CollabConvo";
+import type { ArtifactType, CollabConvoMetadata, CollabMessage } from "../model/CollabConvo";
 import type { DocDraft } from "../model/DocDraft";
 import { ChatService } from "../services/ChatService";
 import { DiffService } from "../services/DiffService";
@@ -42,6 +45,7 @@ import {
 	lookupDraft,
 } from "../util/RouterUtil";
 import type { TokenUtil } from "../util/TokenUtil";
+import type { Sandbox } from "e2b";
 import express, { type Request, type Response, type Router } from "express";
 import type { UserInfo } from "jolli-common";
 
@@ -49,9 +53,6 @@ const log = getLog(import.meta);
 
 // Singleton RevisionManager for in-memory revision tracking
 const revisionManager = new RevisionManager(50);
-
-// E2B environments cache
-const e2bEnvironments = new Map<number, AgentEnvironment>();
 
 /**
  * Connection tracking for SSE streams
@@ -98,6 +99,12 @@ async function getCollabConvoForDraft(
 
 	// Verify user has access to the artifact - only doc_draft artifact type is currently supported
 	if (convo.artifactType === "doc_draft") {
+		if (convo.artifactId === null) {
+			return {
+				status: 404,
+				message: "Draft not found",
+			};
+		}
 		const draft = await docDraftDao.getDocDraft(convo.artifactId);
 		if (!draft) {
 			return {
@@ -211,9 +218,6 @@ function generateIntroMessage(title: string): string {
 	return `Hi! I'm here to help you write the "${title}" Article. I can assist with:\n\n${examples.map(ex => `• ${ex}`).join("\n")}\n\nWhat would you like to work on first?`;
 }
 
-// Note: ARTICLE_EDITING_SYSTEM_PROMPT has been moved to articleEditingAgent.ts
-// and now uses tools (create_article, edit_section) instead of [ARTICLE_UPDATE] markers
-
 export function createCollabConvoRouter(
 	collabConvoDaoProvider: DaoProvider<CollabConvoDao>,
 	docDraftDaoProvider: DaoProvider<DocDraftDao>,
@@ -287,6 +291,7 @@ export function createCollabConvoRouter(
 				artifactType: artifactType as ArtifactType,
 				artifactId: Number.parseInt(artifactId),
 				messages: [introMessage],
+				metadata: null,
 			});
 
 			res.status(201).json(convo);
@@ -362,12 +367,19 @@ export function createCollabConvoRouter(
 	});
 
 	// POST /api/collab-convos/:id/messages - Send user message and get AI response
+	// Uses SSE streaming to keep the request alive until processing completes (Vercel-compatible)
 	router.post("/:id/messages", async (req: Request, res: Response) => {
 		try {
-			const { message } = req.body;
+			const { message, clientRequestId } = req.body as { message?: string; clientRequestId?: string };
 
 			if (!message) {
 				return res.status(400).json({ error: "Message is required" });
+			}
+			if (
+				clientRequestId !== undefined &&
+				(typeof clientRequestId !== "string" || clientRequestId.length === 0 || clientRequestId.length > 200)
+			) {
+				return res.status(400).json({ error: "clientRequestId must be a non-empty string up to 200 chars" });
 			}
 
 			const convoInfo = await getCollabConvoForDraft(getCollabConvoDao(), getDocDraftDao(), tokenUtil, req);
@@ -392,38 +404,63 @@ export function createCollabConvoRouter(
 
 			await getCollabConvoDao().addMessage(id, userMessage);
 
-			// Broadcast typing indicator
-			broadcastToConvo(chatService, id, {
-				type: "typing",
-				userId,
+			// Set up SSE headers to keep connection alive (Vercel-compatible)
+			// This ensures the serverless function doesn't terminate before processing completes
+			chatService.setupSSEHeaders(res);
+
+			// Send acknowledgment that message was received
+			chatService.sendSSE(res, {
+				type: "message_received",
 				timestamp: new Date().toISOString(),
 			});
 
-			// Return 202 Accepted immediately to avoid CloudFront/proxy timeouts
-			// The AI response will be streamed via the SSE /stream connection
-			res.status(202).json({ success: true, message: "Processing" });
+			// Broadcast typing indicator to other subscribers via Mercure
+			broadcastToConvo(chatService, id, {
+				type: "typing",
+				userId,
+				clientRequestId,
+				timestamp: new Date().toISOString(),
+			});
 
-			// Process AI response asynchronously
-			processAIResponse(id, convo.artifactId, userId, sanitizedMessage).catch(
-				/* v8 ignore next 9 - error callback for async processing failures */
-				error => {
-					log.error(error, "Error processing AI response for convo %d", id);
-					// Broadcast error to connected clients via SSE
-					broadcastToConvo(chatService, id, {
-						type: "error",
-						error: "Failed to generate AI response",
-						timestamp: new Date().toISOString(),
-					});
-				},
-			);
+			// Process AI response synchronously - streams directly to this response
+			// Also publishes to Mercure for other subscribers
+			try {
+				await processAIResponse(res, id, convo.artifactId as number, userId, sanitizedMessage, clientRequestId);
+			} catch (error) {
+				log.error(error, "Error processing AI response for convo %d", id);
+				chatService.sendSSE(res, {
+					type: "error",
+					error: "Failed to generate AI response",
+					userId,
+					clientRequestId,
+					timestamp: new Date().toISOString(),
+				});
+			}
+
+			// End the SSE stream
+			res.end();
 		} catch (error) {
 			log.error(error, "Error adding message to collab convo.");
 
-			if (error instanceof Error && error.message.includes("Message")) {
-				return res.status(400).json({ error: error.message });
+			// If headers haven't been sent yet, return JSON error
+			if (!res.headersSent) {
+				if (error instanceof Error && error.message.includes("Message")) {
+					return res.status(400).json({ error: error.message });
+				}
+				return res.status(500).json({ error: "Failed to add message" });
 			}
 
-			res.status(500).json({ error: "Failed to add message" });
+			// If already streaming, try to send error via SSE
+			try {
+				chatService.sendSSE(res, {
+					type: "error",
+					error: error instanceof Error ? error.message : "Failed to add message",
+					timestamp: new Date().toISOString(),
+				});
+				res.end();
+			} catch {
+				// Response may already be closed
+			}
 		}
 	});
 
@@ -435,6 +472,8 @@ export function createCollabConvoRouter(
 		githubOrg?: string;
 		githubRepo?: string;
 		githubBranch?: string;
+		sourceId?: number;
+		sourceName?: string;
 	}> {
 		try {
 			const integrations = await integrationsManager.listIntegrations();
@@ -462,7 +501,14 @@ export function createCollabConvoRouter(
 					githubRepo,
 					githubBranch,
 				);
-				return { githubToken, githubOrg, githubRepo, githubBranch };
+				return {
+					githubToken,
+					githubOrg,
+					githubRepo,
+					githubBranch,
+					sourceId: activeGithubIntegration.id,
+					sourceName: activeGithubIntegration.name,
+				};
 			}
 			log.warn("No active GitHub integrations found - github_checkout tool will not work");
 			/* v8 ignore next 3 - error handling for GitHub integration */
@@ -481,18 +527,9 @@ export function createCollabConvoRouter(
 		draft: DocDraft,
 		sharedEnv: AgentEnvironment | undefined,
 		userId: number,
+		defaultAttentionSource?: string,
 	): Promise<string> {
 		// Article editing tools
-		if (call.name === "create_article") {
-			log.info("Executing create_article tool for draft %d", draft.id);
-			return await executeCreateArticleTool(
-				draft.id,
-				undefined,
-				call.arguments as { content: string },
-				getDocDraftDao(),
-				userId,
-			);
-		}
 		if (call.name === "create_section") {
 			log.info("Executing create_section tool for draft %d", draft.id);
 			return await executeCreateSectionTool(
@@ -529,13 +566,34 @@ export function createCollabConvoRouter(
 				getDocDraftSectionChangesDao(),
 			);
 		}
+		if (call.name === "edit_article") {
+			log.info("Executing edit_article tool for draft %d", draft.id);
+			return await executeEditArticleTool(
+				draft.id,
+				call.arguments as { edits: Array<{ old_string: string; new_string: string; reason: string }> },
+				getDocDraftDao(),
+				userId,
+			);
+		}
+		if (call.name === "upsert_frontmatter") {
+			log.info("Executing upsert_frontmatter tool for draft %d", draft.id);
+			const normalizedDefaultAttentionSource =
+				typeof defaultAttentionSource === "string" ? defaultAttentionSource.trim() : "";
+			const sourcePolicy =
+				normalizedDefaultAttentionSource.length > 0
+					? { defaultAttentionSource: normalizedDefaultAttentionSource, requireAttentionSource: true }
+					: { requireAttentionSource: true };
+			return await executeUpsertFrontmatterTool(
+				draft.id,
+				call.arguments as { set?: Record<string, unknown>; remove?: Array<string> },
+				getDocDraftDao(),
+				userId,
+				sourcePolicy,
+			);
+		}
 		if (call.name === "get_current_article") {
 			log.info("Executing get_current_article tool for draft %d", draft.id);
 			return await executeGetCurrentArticleTool(draft.id, undefined, getDocDraftDao());
-		}
-		if (call.name === "get_latest_linear_tickets") {
-			log.info("Executing get_latest_linear_tickets tool");
-			return await executeGetLatestLinearTicketsTool(call.arguments as GetLatestLinearTicketsArgs | undefined);
 		}
 		/* v8 ignore next 5 - E2B tool execution logging and delegation */
 		if (sharedEnv) {
@@ -550,12 +608,20 @@ export function createCollabConvoRouter(
 	 * Broadcasts article update after tool execution
 	 */
 	async function broadcastArticleUpdate(
+		res: Response,
 		toolName: string,
 		draft: DocDraft,
 		userId: number,
 		convoId: number,
+		clientRequestId?: string,
 	): Promise<void> {
-		const articleModifyingTools = ["create_article", "create_section", "delete_section", "edit_section"];
+		const articleModifyingTools = [
+			"create_section",
+			"delete_section",
+			"edit_section",
+			"edit_article",
+			"upsert_frontmatter",
+		];
 		if (!articleModifyingTools.includes(toolName)) {
 			return;
 		}
@@ -577,17 +643,20 @@ export function createCollabConvoRouter(
 
 		// Add revision
 		const revisionReason =
-			toolName === "create_article"
-				? "Tool-generated article creation"
-				: toolName === "delete_section"
-					? "Tool-generated section deletion"
-					: "Tool-generated section edit";
+			toolName === "delete_section"
+				? "Tool-generated section deletion"
+				: toolName === "create_section"
+					? "Tool-generated section creation"
+					: toolName === "upsert_frontmatter"
+						? "Tool-generated frontmatter update"
+						: "Tool-generated article edit";
 		revisionManager.addRevision(draft.id, updatedDraft.content, userId, revisionReason);
 
-		// Broadcast article update with metadata
-		broadcastToConvo(chatService, convoId, {
+		sendToDirectAndMercure(res, convoId, {
 			type: "article_updated",
 			diffs: diffResult.diffs,
+			userId,
+			clientRequestId,
 			contentLastEditedAt: updatedDraft.contentLastEditedAt,
 			contentLastEditedBy: updatedDraft.contentLastEditedBy,
 			timestamp: new Date().toISOString(),
@@ -598,16 +667,19 @@ export function createCollabConvoRouter(
 	 * Creates a tool executor function for article editing and E2B tools
 	 */
 	function createToolExecutor(
+		res: Response,
 		draft: DocDraft,
 		sharedEnv: AgentEnvironment | undefined,
 		userId: number,
 		convoId: number,
+		clientRequestId?: string,
+		defaultAttentionSource?: string,
 	): (call: ToolCall) => Promise<string> {
 		return async (call: ToolCall): Promise<string> => {
 			log.info("Running tool for draft %d: name=%s args=%s", draft.id, call.name, JSON.stringify(call.arguments));
-			const result = await executeToolCall(call, draft, sharedEnv, userId);
+			const result = await executeToolCall(call, draft, sharedEnv, userId, defaultAttentionSource);
 			log.info("Tool completed for draft %d: name=%s", draft.id, call.name);
-			await broadcastArticleUpdate(call.name, draft, userId, convoId);
+			await broadcastArticleUpdate(res, call.name, draft, userId, convoId, clientRequestId);
 			return result;
 		};
 	}
@@ -624,10 +696,15 @@ export function createCollabConvoRouter(
 			let collabMsg: CollabMessage;
 
 			if (msg.role === "assistant" || msg.role === "user" || msg.role === "system") {
+				// Skip messages with empty content — persisting them causes
+				// "text content blocks must be non-empty" errors when sent to the LLM
+				const content = (msg.content || "").trim();
+				if (content.length === 0) {
+					continue;
+				}
 				collabMsg = {
 					role: msg.role,
-					/* v8 ignore next - defensive fallback, TypeScript guarantees these fields exist */
-					content: msg.content || "",
+					content,
 					timestamp,
 				};
 				if (msg.role === "assistant") {
@@ -737,16 +814,29 @@ export function createCollabConvoRouter(
 		githubOrg?: string,
 		githubRepo?: string,
 		githubBranch?: string,
+		attentionSourceName?: string,
+		attentionSourceId?: number,
 	): string {
+		const normalizedAttentionSourceName = typeof attentionSourceName === "string" ? attentionSourceName.trim() : "";
+		const attentionSourceInstructions =
+			normalizedAttentionSourceName.length > 0
+				? `- Source rule (critical):
+  This session's checked-out source is \`${normalizedAttentionSourceName}\`${
+		attentionSourceId !== undefined ? ` (sourceId: ${attentionSourceId})` : ""
+  }.
+  When calling \`upsert_frontmatter\`, every \`attention\` entry you add or update MUST set \`source\` to \`${normalizedAttentionSourceName}\`, unless the user explicitly gives a different valid source.`
+				: `- Source rule (critical):
+  When calling \`upsert_frontmatter\`, every \`attention\` entry must include \`source\` with the correct source name.`;
+
 		const githubInstructions =
 			/* v8 ignore next 12 - both branches are valid runtime paths */
 			githubToken && githubOrg && githubRepo
-				? `**Important:** The repository ${githubOrg}/${githubRepo} (branch: ${
+				? `**CRITICAL - Repository Pre-Checked Out:** The repository ${githubOrg}/${githubRepo} (branch: ${
 						githubBranch || "main"
 					}) has been pre-checked out for you in the workspace at:
 ~/workspace/${githubRepo}/${githubBranch || "main"}/
 
-When users ask questions about the code, look in this directory first. You can directly access and explore the codebase without needing to clone it again.`
+**ALWAYS check this local directory FIRST** when users ask about code, repositories, or need to verify article content against the codebase. Use ls, cat, grep, and git tools to explore the local workspace. DO NOT use web_search or github_checkout for this repository - it's already available locally.`
 				: githubToken
 					? "Use the github_checkout tool to clone repositories when needed."
 					: "NOTE: GitHub authentication is not configured. You can still use local file tools, but github_checkout will not work.";
@@ -758,30 +848,61 @@ When users ask questions about the code, look in this directory first. You can d
 You have access to article editing tools AND code exploration tools:
 
 **Article Editing Tools:**
-1. **create_article** - Create or completely rewrite the article
-2. **create_section** - Add a new section to the article (REQUIRED when adding new sections)
-3. **delete_section** - Remove a section from the article (REQUIRED when removing sections)
-4. **edit_section** - Edit a specific section of the article (REQUIRED when modifying sections)
-5. **get_current_article** - Retrieve the current full content of the article
-6. **get_latest_linear_tickets** - Fetch up-to-date Linear tickets for status context
+1. **create_section** - Add a new section to the article (REQUIRED when adding new sections)
+2. **delete_section** - Remove a section from the article (REQUIRED when removing sections)
+3. **edit_section** - Edit a specific section of the article (REQUIRED when modifying sections)
+4. **edit_article** - Apply targeted string-level edits to preserve structure
+5. **upsert_frontmatter** - Edit/update frontmatter with schema validation (jrn, attention)
+6. **get_current_article** - Retrieve the current full content of the article
 
 **Code Exploration Tools (via E2B sandbox):**
-- Git tools for browsing repositories
-- File system tools for reading files
-- Code analysis tools
+- ls - List directory contents (START HERE to discover files)
+- cat - Read file contents
+- grep - Search within files
+- Git tools (git_log, git_diff, git_show, etc.) for browsing repository history
+- File system navigation tools
+
+**TOOL USAGE PRIORITY:**
+When researching code or verifying article accuracy:
+1. **FIRST:** Use ls to explore the local workspace directory structure
+2. **SECOND:** Use cat/grep to read and search local files
+3. **THIRD:** Use git tools to examine history and changes
+4. **AVOID:** Using web_search or github_checkout for repositories already checked out locally
+
+**ATTENTION FRONTMATTER UPDATES (REQUIRED FOR SOURCED CHANGES):**
+- Why this matters:
+  Jolli uses frontmatter \`attention\` as a dependency map between this article and the source files/inputs it relies on.
+  When those source files change later, attention metadata is what allows Jolli to detect impact and notify that this article should be reviewed or updated.
+- Path rule (critical):
+  \`attention[].path\` must be repo-relative to the checked-out repository (examples: \`server.js\`, \`src/auth/login.ts\`).
+  Never use absolute or checkout-prefixed paths such as \`~/...\`, \`/home/.../workspace/...\`, or \`workspace/<repo>/<branch>/...\`.
+${attentionSourceInstructions}
+- When to update it:
+  If you used source material (code files, docs files, specs, tickets, or similar) to produce or change article content, you MUST update \`attention\` via \`upsert_frontmatter\`.
+- How to update it:
+  Add/merge the relevant source references into \`attention\`, avoid duplicates, and keep existing valid references unless they are clearly obsolete.
+- JRN on web drafts:
+  \`jrn\` is optional in this web draft flow. Only set/update it when the user explicitly asks.
+- If no sources were used:
+  Do not invent attention entries. Only track real dependencies.
 
 ${githubInstructions}
 
 **IMPORTANT WORKFLOW:**
-1. When asked to modify the article, FIRST call get_current_article to see the current content
-2. Then use the appropriate tool (create_section, edit_section, delete_section) to make changes
-3. NEVER say "Done" or claim success without having called a tool
+1. When asked to verify or research the codebase, ALWAYS start with ls to explore the local workspace
+2. When asked to modify the article, FIRST call get_current_article to see the current content
+3. Preserve the article structure (excluding frontmatter) and make focused content changes with edit_article/edit_section/create_section/delete_section
+4. Use grep/cat/git tools to gather evidence from source code before editing sourced claims
+5. If sources influenced the article changes, call upsert_frontmatter to update \`attention\` with those source dependencies
+6. Use upsert_frontmatter for any additional metadata updates needed
+7. NEVER say "Done" or claim success without having called the needed tool(s)
 
 Use article editing tools to modify the article content, and code exploration tools to research, analyze code, or gather information from the repository.`;
 	}
 
 	/**
 	 * Creates E2B environment with article editing tools and code exploration capabilities
+	 * @param existingSandbox Optional existing sandbox to reuse (from reconnectE2BSandbox)
 	 */
 	async function createE2BEnvironmentForDraft(
 		draft: DocDraft,
@@ -789,27 +910,31 @@ Use article editing tools to modify the article content, and code exploration to
 		githubOrg?: string,
 		githubRepo?: string,
 		githubBranch?: string,
+		attentionSourceName?: string,
+		attentionSourceId?: number,
+		existingSandbox?: Sandbox,
 	): Promise<AgentEnvironment> {
 		log.info(
-			"Creating E2B jolliagent environment for draft %d with e2b-code + article editing tools (GH_PAT: %s)",
+			"%s E2B jolliagent environment for draft %d with e2b-code + article editing tools",
+			existingSandbox ? "Wrapping reconnected sandbox into" : "Creating new",
 			draft.id,
-			/* v8 ignore next - both branches are valid runtime paths */
-			githubToken ? "configured" : "not configured",
 		);
 
 		// Create article editing tool definitions for this draft
-		const createArticleTool = createCreateArticleToolDefinition(draft.id);
 		const createSectionTool = createCreateSectionToolDefinition(draft.id);
 		const deleteSectionTool = createDeleteSectionToolDefinition(draft.id);
 		const editSectionTool = createEditSectionToolDefinition(draft.id);
+		const editArticleTool = createEditArticleToolDefinition(draft.id);
+		const upsertFrontmatterTool = createUpsertFrontmatterToolDefinition(draft.id);
 		const getCurrentArticleTool = createGetCurrentArticleToolDefinition(draft.id);
-		const getLatestLinearTicketsTool = createGetLatestLinearTicketsToolDefinition();
 
 		const articleEditingSystemPrompt = buildArticleEditingSystemPrompt(
 			githubToken,
 			githubOrg,
 			githubRepo,
 			githubBranch,
+			attentionSourceName,
+			attentionSourceId,
 		);
 
 		// Create E2B jolliagent environment with e2b-code preset + article editing tools
@@ -834,14 +959,15 @@ Use article editing tools to modify the article content, and code exploration to
 			useE2B: true,
 			e2bApiKey,
 			e2bTemplateId,
+			...(existingSandbox ? { existingSandbox } : {}),
 			systemPrompt: articleEditingSystemPrompt,
 			additionalTools: [
-				createArticleTool,
 				createSectionTool,
 				deleteSectionTool,
 				editSectionTool,
+				editArticleTool,
+				upsertFrontmatterTool,
 				getCurrentArticleTool,
-				getLatestLinearTicketsTool,
 			],
 			/* v8 ignore next - both branches are valid runtime paths */
 			envVars,
@@ -849,70 +975,120 @@ Use article editing tools to modify the article content, and code exploration to
 
 		log.info("E2B jolliagent environment created for draft %d with sandbox ID: %s", draft.id, env.sandboxId);
 
-		// Pre-checkout the GitHub repo if configured
-		await preCheckoutGithubRepo(env, draft.id, githubToken, githubOrg, githubRepo, githubBranch);
+		// Pre-checkout the GitHub repo if configured (skip if reconnecting - repo already checked out)
+		if (!existingSandbox) {
+			await preCheckoutGithubRepo(env, draft.id, githubToken, githubOrg, githubRepo, githubBranch);
+		}
 
 		return env;
 	}
 
 	/**
-	 * Processes AI response asynchronously and broadcasts all updates via SSE
+	 * Sends an event to both the direct SSE response AND to Mercure (for other subscribers)
+	 */
+	function sendToDirectAndMercure(res: Response, convoId: number, event: unknown): void {
+		// Send directly to the requester via SSE
+		chatService.sendSSE(res, event);
+		// Also publish to Mercure for other subscribers
+		broadcastToConvo(chatService, convoId, event);
+	}
+
+	/**
+	 * Processes AI response synchronously and streams updates via SSE.
+	 * Sends chunks to both the direct response AND Mercure (for other subscribers).
 	 */
 	async function processAIResponse(
+		res: Response,
 		convoId: number,
 		artifactId: number,
 		userId: number,
 		sanitizedMessage: string,
+		clientRequestId?: string,
 	): Promise<void> {
 		// Get the draft to include article content in prompt
 		const draft = await getDocDraftDao().getDocDraft(artifactId);
 		if (!draft) {
-			// Broadcast error since we can't return HTTP response
-			broadcastToConvo(chatService, convoId, {
+			const errorEvent = {
 				type: "error",
 				error: "Draft not found",
+				userId,
+				clientRequestId,
 				timestamp: new Date().toISOString(),
-			});
+			};
+			sendToDirectAndMercure(res, convoId, errorEvent);
 			return;
 		}
 
 		// Get conversation for message history
 		const convo = await getCollabConvoDao().getCollabConvo(convoId);
-		/* v8 ignore next 8 - Conversation not found during async processing is difficult to test reliably */
+		/* v8 ignore next 11 - Conversation not found during async processing is difficult to test reliably */
 		if (!convo) {
-			broadcastToConvo(chatService, convoId, {
+			const errorEvent = {
 				type: "error",
 				error: "Conversation not found",
+				userId,
+				clientRequestId,
 				timestamp: new Date().toISOString(),
-			});
+			};
+			sendToDirectAndMercure(res, convoId, errorEvent);
 			return;
 		}
 
 		// Resolve adapter: use provided adapter or create E2B adapter
 		let adapter: AgentChatAdapter;
 		let sharedEnv: AgentEnvironment | undefined;
+		let sourceId: number | undefined;
+		let sourceName: string | undefined;
 
 		if (agentAdapter) {
 			adapter = agentAdapter;
 		} else {
 			// E2B mode: Create jolliagent environment with BOTH e2b-code tools AND article editing tools
 			// Note: getWorkflowConfig() guarantees e2bApiKey and e2bTemplateId are strings (throws if missing)
-			if (!e2bEnvironments.has(draft.id)) {
-				const { githubToken, githubOrg, githubRepo, githubBranch } = await getGithubIntegrationDetails();
-				const env = await createE2BEnvironmentForDraft(draft, githubToken, githubOrg, githubRepo, githubBranch);
-				e2bEnvironments.set(draft.id, env);
+
+			const githubIntegrationDetails = await getGithubIntegrationDetails();
+			const { githubToken, githubOrg, githubRepo, githubBranch } = githubIntegrationDetails;
+			sourceId = githubIntegrationDetails.sourceId;
+			sourceName = githubIntegrationDetails.sourceName;
+
+			// Try to reconnect to an existing sandbox if one is stored in metadata
+			const metadata = convo.metadata as CollabConvoMetadata | null;
+			let reconnectedSandbox: Sandbox | null = null;
+
+			/* v8 ignore next 9 - E2B sandbox reconnection path requires real E2B infrastructure */
+			if (metadata?.sandboxId) {
+				log.info("Attempting to reconnect to E2B sandbox %s for draft %d", metadata.sandboxId, draft.id);
+				reconnectedSandbox = await reconnectE2BSandbox(metadata.sandboxId, e2bApiKey);
+				if (reconnectedSandbox) {
+					log.info("Successfully reconnected to E2B sandbox %s", metadata.sandboxId);
+				} else {
+					log.info("Could not reconnect to E2B sandbox %s, will create new one", metadata.sandboxId);
+				}
 			}
 
-			sharedEnv = e2bEnvironments.get(draft.id);
-			/* v8 ignore next 3 - defensive: E2B environment should always exist after creation */
-			if (!sharedEnv) {
-				throw new Error(`E2B environment not found for draft ${draft.id}`);
+			// Create environment (with reconnected sandbox or new one)
+			sharedEnv = await createE2BEnvironmentForDraft(
+				draft,
+				githubToken,
+				githubOrg,
+				githubRepo,
+				githubBranch,
+				sourceName,
+				sourceId,
+				reconnectedSandbox ?? undefined,
+			);
+
+			// Store sandboxId in metadata for future reconnection (only if we created a new sandbox)
+			if (!reconnectedSandbox && sharedEnv.sandboxId) {
+				log.info("Storing E2B sandbox ID %s in convo %d metadata", sharedEnv.sandboxId, convoId);
+				await getCollabConvoDao().updateMetadata(convoId, { sandboxId: sharedEnv.sandboxId });
 			}
+
 			adapter = new AgentChatAdapter({ agent: sharedEnv.agent });
 		}
 
 		// Create tool executor for article editing tools and E2B tools
-		const toolExecutor = createToolExecutor(draft, sharedEnv, userId, convoId);
+		const toolExecutor = createToolExecutor(res, draft, sharedEnv, userId, convoId, clientRequestId, sourceName);
 
 		// Stream LLM response using adapter
 		let fullResponse = "";
@@ -933,11 +1109,13 @@ Use article editing tools to modify the article content, and code exploration to
 			result = await adapter.streamResponse({
 				messages: allMessages,
 				onChunk: (content: string) => {
-					// Broadcast chunk to connected users with sequence number for ordering
-					broadcastToConvo(chatService, convoId, {
+					// Send chunk to direct response AND Mercure for other subscribers
+					sendToDirectAndMercure(res, convoId, {
 						type: "content_chunk",
 						content,
 						seq: chunkSequence++,
+						userId,
+						clientRequestId,
 						timestamp: new Date().toISOString(),
 					});
 				},
@@ -955,27 +1133,36 @@ Use article editing tools to modify the article content, and code exploration to
 						// Ignore logging errors to prevent disrupting the stream
 					}
 					/* v8 ignore stop */
-					broadcastToConvo(chatService, convoId, {
+					sendToDirectAndMercure(res, convoId, {
 						type: "tool_event",
 						event,
+						userId,
+						clientRequestId,
 						timestamp: new Date().toISOString(),
 					});
 				},
 				runTool: toolExecutor,
 			});
 			fullResponse = result.assistantText;
+			if (!fullResponse || fullResponse.trim().length === 0) {
+				log.warn(
+					"LLM returned empty response for convo %d. This usually indicates a provider error that was silently handled. Check [Agent.chatTurn] logs above for details.",
+					convoId,
+				);
+			}
 		} catch (error) {
 			log.error(error, "Error streaming LLM response.");
-			// Broadcast error since we can't return HTTP response
-			broadcastToConvo(chatService, convoId, {
+			sendToDirectAndMercure(res, convoId, {
 				type: "error",
 				error: "Failed to generate AI response",
+				userId,
+				clientRequestId,
 				timestamp: new Date().toISOString(),
 			});
 			return;
 		}
 
-		// Note: Article updates now happen via tools (create_article, edit_section)
+		// Note: Article updates now happen via tools (edit_section/edit_article/create_section/etc.)
 		// The toolExecutor handles broadcasting updates when tools are called
 
 		// Save all new messages from the agent (including tool calls and responses)
@@ -994,10 +1181,12 @@ Use article editing tools to modify the article content, and code exploration to
 			await getCollabConvoDao().addMessage(convoId, assistantMessage);
 		}
 
-		// Broadcast message complete event with the final assistant message
-		broadcastToConvo(chatService, convoId, {
+		// Send message complete event to direct response AND Mercure
+		sendToDirectAndMercure(res, convoId, {
 			type: "message_complete",
 			message: assistantMessage,
+			userId,
+			clientRequestId,
 			timestamp,
 		});
 	}
@@ -1024,6 +1213,9 @@ Use article editing tools to modify the article content, and code exploration to
 
 			// Verify user has access
 			if (convo.artifactType === "doc_draft") {
+				if (convo.artifactId === null) {
+					return res.status(403).json({ error: "Forbidden" });
+				}
 				const draft = await getDocDraftDao().getDocDraft(convo.artifactId);
 				if (!draft || !canAccessDraft(draft, userId)) {
 					return res.status(403).json({ error: "Forbidden" });

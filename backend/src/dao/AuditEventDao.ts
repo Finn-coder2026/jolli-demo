@@ -416,7 +416,7 @@ async function setupMonthlyPartitioning(sequelize: Sequelize): Promise<void> {
 			CREATE TABLE IF NOT EXISTS audit_events (
 				id SERIAL,
 				timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-				actor_id INTEGER REFERENCES users(id),
+				actor_id INTEGER,
 				actor_type VARCHAR(32) NOT NULL,
 				actor_email TEXT,
 				actor_ip TEXT,
@@ -469,7 +469,7 @@ async function setupMonthlyPartitioning(sequelize: Sequelize): Promise<void> {
 				CREATE TABLE IF NOT EXISTS audit_events (
 					id SERIAL,
 					timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-					actor_id INTEGER REFERENCES users(id),
+					actor_id INTEGER,
 					actor_type VARCHAR(32) NOT NULL,
 					actor_email TEXT,
 					actor_ip TEXT,

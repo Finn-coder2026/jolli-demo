@@ -20,7 +20,7 @@ export interface SettingsSectionProps {
  */
 export function SettingsSection({ title, description, children }: SettingsSectionProps): ReactElement {
 	return (
-		<div className="border-b border-border pb-6 last:border-b-0 last:pb-0">
+		<div>
 			<h2 className="text-lg font-medium mb-1">{title}</h2>
 			{description && <p className="text-sm text-muted-foreground mb-4">{description}</p>}
 			<div className="space-y-4">{children}</div>

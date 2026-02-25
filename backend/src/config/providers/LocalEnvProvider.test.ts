@@ -18,10 +18,11 @@ describe("LocalEnvProvider", () => {
 			expect(provider.isAvailable()).toBe(true);
 		});
 
-		it("returns true even when on Vercel", () => {
-			process.env.VERCEL = "1";
+		it("returns true regardless of other env vars", () => {
+			process.env.SOME_OTHER_VAR = "1";
 			const provider = new LocalEnvProvider();
 			expect(provider.isAvailable()).toBe(true);
+			delete process.env.SOME_OTHER_VAR;
 		});
 
 		it("returns true even when PSTORE_ENV is set", () => {

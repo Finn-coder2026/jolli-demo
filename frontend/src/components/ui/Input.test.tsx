@@ -1,5 +1,5 @@
 import { Input } from "./Input";
-import { fireEvent, render } from "@testing-library/preact";
+import { render } from "@testing-library/preact";
 import { describe, expect, it, vi } from "vitest";
 
 describe("Input", () => {
@@ -57,7 +57,8 @@ describe("Input", () => {
 		const input = container.querySelector("input");
 
 		if (input) {
-			fireEvent.change(input, { target: { value: "new value" } });
+			input.value = "new value";
+			input.dispatchEvent(new Event("input", { bubbles: true }));
 			expect(onChange).toHaveBeenCalled();
 		}
 	});
@@ -114,10 +115,10 @@ describe("Input", () => {
 	it("should handle onFocus events", () => {
 		const onFocus = vi.fn();
 		const { container } = render(<Input onFocus={onFocus} />);
-		const input = container.querySelector("input");
+		const input = container.querySelector("input") as HTMLInputElement;
 
 		if (input) {
-			fireEvent.focus(input);
+			input.focus();
 			expect(onFocus).toHaveBeenCalled();
 		}
 	});
@@ -125,10 +126,11 @@ describe("Input", () => {
 	it("should handle onBlur events", () => {
 		const onBlur = vi.fn();
 		const { container } = render(<Input onBlur={onBlur} />);
-		const input = container.querySelector("input");
+		const input = container.querySelector("input") as HTMLInputElement;
 
 		if (input) {
-			fireEvent.blur(input);
+			input.focus(); // Need to focus first before blur
+			input.blur();
 			expect(onBlur).toHaveBeenCalled();
 		}
 	});

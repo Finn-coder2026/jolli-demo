@@ -44,6 +44,46 @@ vi.mock("lucide-react", async importOriginal => {
 	};
 });
 
+// Flag to control MockImage behavior - set to true to trigger onerror instead of onload
+let shouldTriggerImageError = false;
+
+// Mock window.Image to trigger onload/onerror immediately
+const originalImage = window.Image;
+beforeEach(() => {
+	shouldTriggerImageError = false;
+	class MockImage {
+		onload: (() => void) | null = null;
+		onerror: (() => void) | null = null;
+		naturalWidth = 800;
+		naturalHeight = 600;
+		private _src = "";
+		get src() {
+			return this._src;
+		}
+		set src(value: string) {
+			this._src = value;
+			// Trigger onload or onerror asynchronously to simulate image loading
+			setTimeout(() => {
+				if (shouldTriggerImageError) {
+					if (this.onerror) {
+						this.onerror();
+					}
+				} else {
+					if (this.onload) {
+						this.onload();
+					}
+				}
+			}, 0);
+		}
+	}
+	window.Image = MockImage as unknown as typeof Image;
+});
+
+afterEach(() => {
+	window.Image = originalImage;
+	shouldTriggerImageError = false;
+});
+
 /**
  * Helper function to create a mock file with a specified size.
  * In jsdom, File constructor doesn't properly respect size for large files,
@@ -121,7 +161,7 @@ describe("ImageInsert", () => {
 		expect(getByTestId("reuse-image-1")).toBeDefined();
 	});
 
-	it("should call onInsert when reusing existing image", () => {
+	it("should call onInsert when reusing existing image", async () => {
 		const content = "![my alt](/api/images/t/o/d/test.png)";
 		const onInsert = vi.fn();
 		const { getByTestId } = render(<ImageInsert articleContent={content} onInsert={onInsert} onError={vi.fn()} />);
@@ -129,7 +169,14 @@ describe("ImageInsert", () => {
 		fireEvent.click(getByTestId("image-insert-button"));
 		fireEvent.click(getByTestId("reuse-image-0"));
 
-		expect(onInsert).toHaveBeenCalledWith("![my alt](/api/images/t/o/d/test.png)");
+		// Wait for mock Image.onload to trigger onInsert
+		await waitFor(() => {
+			expect(onInsert).toHaveBeenCalledWith("![my alt](/api/images/t/o/d/test.png)", {
+				path: "/api/images/t/o/d/test.png",
+				width: 800,
+				height: 600,
+			});
+		});
 	});
 
 	it("should be disabled when disabled prop is true", () => {
@@ -172,7 +219,11 @@ describe("ImageInsert", () => {
 
 		await waitFor(() => {
 			expect(mockUploadImage).toHaveBeenCalled();
-			expect(onInsert).toHaveBeenCalledWith("![test.png](/api/images/test/org/_default/uploaded.png)");
+			expect(onInsert).toHaveBeenCalledWith("![test.png](/api/images/test/org/_default/uploaded.png)", {
+				path: "/api/images/test/org/_default/uploaded.png",
+				width: 800,
+				height: 600,
+			});
 		});
 	});
 
@@ -333,7 +384,11 @@ describe("ImageInsert", () => {
 
 		await waitFor(() => {
 			expect(mockUploadImage).toHaveBeenCalled();
-			expect(onInsert).toHaveBeenCalledWith("![My custom alt text](/api/images/test/org/_default/uploaded.png)");
+			expect(onInsert).toHaveBeenCalledWith("![My custom alt text](/api/images/test/org/_default/uploaded.png)", {
+				path: "/api/images/test/org/_default/uploaded.png",
+				width: 800,
+				height: 600,
+			});
 		});
 	});
 
@@ -483,5 +538,51 @@ describe("extractImagesFromContent", () => {
 		const images = extractImagesFromContent(content);
 		expect(images).toHaveLength(1);
 		expect(images[0]).toEqual({ src: "/api/images/t/o/d/noalt.png", alt: "" });
+	});
+});
+
+describe("ImageInsert image load error handling", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mockUploadImage.mockResolvedValue({ url: "/api/images/test/org/_default/uploaded.png" });
+	});
+
+	it("should call onInsert without metadata when uploaded image fails to load", async () => {
+		shouldTriggerImageError = true;
+		const onInsert = vi.fn();
+		const { getByTestId } = render(<ImageInsert articleContent="" onInsert={onInsert} onError={vi.fn()} />);
+
+		// Simulate file selection
+		const fileInput = getByTestId("image-file-input") as HTMLInputElement;
+		const file = new File(["test"], "test.png", { type: "image/png" });
+		simulateFileSelect(fileInput, file);
+
+		// Wait for dialog and confirm upload
+		await waitFor(() => {
+			expect(getByTestId("alt-text-dialog")).toBeDefined();
+		});
+
+		fireEvent.click(getByTestId("confirm-upload"));
+
+		await waitFor(() => {
+			expect(mockUploadImage).toHaveBeenCalled();
+			// Should be called with only markdown, no metadata (because image load failed)
+			expect(onInsert).toHaveBeenCalledWith("![test.png](/api/images/test/org/_default/uploaded.png)");
+		});
+	});
+
+	it("should call onInsert without metadata when reused image fails to load", async () => {
+		shouldTriggerImageError = true;
+		const content = "![my alt](/api/images/t/o/d/test.png)";
+		const onInsert = vi.fn();
+		const { getByTestId } = render(<ImageInsert articleContent={content} onInsert={onInsert} onError={vi.fn()} />);
+
+		fireEvent.click(getByTestId("image-insert-button"));
+		fireEvent.click(getByTestId("reuse-image-0"));
+
+		// Wait for onInsert to be called (without metadata because image load failed)
+		await waitFor(() => {
+			expect(onInsert).toHaveBeenCalledWith("![my alt](/api/images/t/o/d/test.png)");
+		});
 	});
 });

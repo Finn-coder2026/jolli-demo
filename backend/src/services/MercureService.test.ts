@@ -84,6 +84,10 @@ describe("MercureService", () => {
 			it("should use 'default' tenant for getConvoTopic", () => {
 				expect(mercureService.getConvoTopic(456)).toBe("/tenants/default/convos/456");
 			});
+
+			it("should use 'default' tenant and org for getOnboardingTopic", () => {
+				expect(mercureService.getOnboardingTopic(789)).toBe("/tenants/default/orgs/default/onboarding/789");
+			});
 		});
 
 		describe("with tenant context", () => {
@@ -104,6 +108,12 @@ describe("MercureService", () => {
 
 			it("should use tenant slug for getConvoTopic", () => {
 				expect(mercureService.getConvoTopic(101)).toBe("/tenants/acme-corp/convos/101");
+			});
+
+			it("should use tenant and org slug for getOnboardingTopic", () => {
+				expect(mercureService.getOnboardingTopic(202)).toBe(
+					"/tenants/acme-corp/orgs/engineering/onboarding/202",
+				);
 			});
 		});
 
@@ -278,6 +288,47 @@ describe("MercureService", () => {
 			expect(publishCall.data.type).toBe("status_update");
 			expect(publishCall.data.draftId).toBe(456);
 			expect(publishCall.data.data).toBe(42);
+		});
+	});
+
+	describe("publishOnboardingEvent", () => {
+		it("should publish to correct topic with event data and private flag", async () => {
+			const result = await mercureService.publishOnboardingEvent(123, "content", {
+				content: "Hello",
+			});
+
+			expect(result.success).toBe(true);
+			expect(mockClient.publish).toHaveBeenCalledTimes(1);
+
+			const publishCall = (mockClient.publish as Mock).mock.calls[0][0];
+			expect(publishCall.topic).toBe("/tenants/default/orgs/default/onboarding/123");
+			expect(publishCall.type).toBeUndefined();
+			expect(publishCall.private).toBe(true);
+			expect(publishCall.data.type).toBe("content");
+			expect(publishCall.data.userId).toBe(123);
+			expect(publishCall.data.content).toBe("Hello");
+			expect(publishCall.data.timestamp).toBeDefined();
+		});
+
+		it("should use tenant context for topic", async () => {
+			mockGetTenantContext.mockReturnValue({
+				tenant: { slug: "test-tenant" },
+				org: { slug: "test-org" },
+			});
+
+			await mercureService.publishOnboardingEvent(456, "tool_call", { toolName: "connect_github" });
+
+			const publishCall = (mockClient.publish as Mock).mock.calls[0][0];
+			expect(publishCall.topic).toBe("/tenants/test-tenant/orgs/test-org/onboarding/456");
+		});
+
+		it("should handle non-object data by wrapping in data property", async () => {
+			await mercureService.publishOnboardingEvent(789, "done", "completed");
+
+			const publishCall = (mockClient.publish as Mock).mock.calls[0][0];
+			expect(publishCall.data.type).toBe("done");
+			expect(publishCall.data.userId).toBe(789);
+			expect(publishCall.data.data).toBe("completed");
 		});
 	});
 

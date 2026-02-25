@@ -1,0 +1,643 @@
+/* Tiptap Editor Styles */
+
+/* Placeholder styling */
+.ProseMirror[data-placeholder]:empty::before {
+	color: var(--color-muted-foreground);
+	content: attr(data-placeholder);
+	float: left;
+	height: 0;
+	pointer-events: none;
+}
+
+/* Prose styles for better typography */
+.ProseMirror {
+	/* Ensure long words break to prevent overflow */
+	overflow-wrap: break-word;
+	padding-left: 36px;
+	padding-right: 16px;
+}
+
+/* Focus styling */
+.ProseMirror:focus {
+	outline: none;
+}
+
+.ProseMirror h1 {
+	font-size: 2em;
+	font-weight: bold;
+	line-height: 1.2;
+	margin-bottom: 0.5em;
+	margin-top: 0.5em;
+}
+
+.ProseMirror h2 {
+	font-size: 1.5em;
+	font-weight: bold;
+	line-height: 1.3;
+	margin-bottom: 0.4em;
+	margin-top: 0.4em;
+}
+
+.ProseMirror h3 {
+	font-size: 1.25em;
+	font-weight: bold;
+	line-height: 1.4;
+	margin-bottom: 0.3em;
+	margin-top: 0.3em;
+}
+
+.ProseMirror p {
+	margin-bottom: 0.75em;
+	margin-top: 0.75em;
+}
+
+.ProseMirror ul,
+.ProseMirror ol {
+	margin-left: 1.5em;
+	padding-left: 0.5em;
+}
+
+.ProseMirror ul {
+	list-style-type: disc;
+}
+
+.ProseMirror ol {
+	list-style-type: decimal;
+}
+
+.ProseMirror li {
+	margin-bottom: 0.25em;
+	margin-top: 0.25em;
+}
+
+.ProseMirror blockquote {
+	border-left: 3px solid var(--color-border);
+	color: var(--color-muted-foreground);
+	margin-left: 0;
+	margin-right: 0;
+	padding-left: 1em;
+}
+
+.ProseMirror code {
+	background-color: var(--color-muted);
+	border-radius: 3px;
+	color: #e83e8c;
+	font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
+	font-size: 0.9em;
+	padding: 0.2em 0.4em;
+}
+
+/* Text highlight */
+.ProseMirror mark,
+.ProseMirror .highlight {
+	background-color: hsl(48 100% 90%);
+	border-radius: 2px;
+	color: inherit;
+	padding: 0.1em 0.2em;
+}
+
+.dark .ProseMirror mark,
+.dark .ProseMirror .highlight {
+	background-color: hsl(48 70% 30%);
+}
+
+.ProseMirror pre {
+	background-color: hsl(0 0% 12%);
+	border: 2px solid hsl(0 0% 20%);
+	border-radius: 6px;
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+	color: hsl(0 0% 88%);
+	font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
+	font-size: 13px;
+	line-height: 1.45;
+	margin: 0.5em 0;
+	max-width: 100%; /* Prevent code blocks from exceeding container width */
+	min-height: 3em;
+	overflow-x: auto;
+	padding: 16px;
+}
+
+/* Ensure empty code blocks are visible */
+.ProseMirror pre:empty::before {
+	color: var(--color-muted-foreground);
+	content: "Enter code here...";
+	opacity: 0.5;
+	pointer-events: none;
+}
+
+.ProseMirror pre code {
+	background-color: transparent;
+	color: inherit;
+	font-size: 1em;
+	padding: 0;
+}
+
+.ProseMirror .hljs {
+	background: hsl(0 0% 12%);
+	color: hsl(0 0% 88%);
+}
+
+.ProseMirror .hljs-comment,
+.ProseMirror .hljs-quote {
+	color: #6a9955;
+	font-style: italic;
+}
+
+.ProseMirror .hljs-keyword,
+.ProseMirror .hljs-selector-tag,
+.ProseMirror .hljs-subst {
+	color: #569cd6;
+	font-weight: bold;
+}
+
+.ProseMirror .hljs-number,
+.ProseMirror .hljs-literal,
+.ProseMirror .hljs-variable,
+.ProseMirror .hljs-template-variable,
+.ProseMirror .hljs-tag .hljs-attr {
+	color: #b5cea8;
+}
+
+.ProseMirror .hljs-string,
+.ProseMirror .hljs-doctag {
+	color: #ce9178;
+}
+
+.ProseMirror .hljs-title,
+.ProseMirror .hljs-section,
+.ProseMirror .hljs-selector-id {
+	color: #dcdcaa;
+	font-weight: bold;
+}
+
+.ProseMirror .hljs-type,
+.ProseMirror .hljs-class .hljs-title {
+	color: #4ec9b0;
+}
+
+.ProseMirror .hljs-tag,
+.ProseMirror .hljs-name,
+.ProseMirror .hljs-attribute {
+	color: #569cd6;
+	font-weight: normal;
+}
+
+.ProseMirror .hljs-regexp,
+.ProseMirror .hljs-link {
+	color: #d16969;
+}
+
+.ProseMirror .hljs-symbol,
+.ProseMirror .hljs-bullet {
+	color: #d7ba7d;
+}
+
+/* stylelint-disable-next-line selector-class-pattern -- highlight.js class names use underscores */
+.ProseMirror .hljs-built_in,
+.ProseMirror .hljs-builtin-name {
+	color: #4ec9b0;
+}
+
+.ProseMirror .hljs-meta {
+	color: #569cd6;
+}
+
+.ProseMirror .hljs-deletion {
+	background: #661414;
+	color: #f48771;
+}
+
+.ProseMirror .hljs-addition {
+	background: #1a4d1a;
+	color: #7fd87f;
+}
+
+.ProseMirror .hljs-emphasis {
+	font-style: italic;
+}
+
+.ProseMirror .hljs-strong {
+	font-weight: bold;
+}
+
+/* Table styles with CSS variables for customization */
+.ProseMirror table {
+	border-collapse: collapse;
+	margin: 0.5em 0;
+	overflow: hidden;
+	table-layout: fixed;
+	width: 100%;
+}
+
+.ProseMirror table td,
+.ProseMirror table th {
+	border: var(--table-border-width, 2px) solid var(--table-border-color, var(--color-border));
+	box-sizing: border-box;
+	min-width: 1em;
+	padding: 6px 8px;
+	position: relative;
+	vertical-align: top;
+}
+
+.ProseMirror table th {
+	background-color: var(--color-muted);
+	font-weight: bold;
+	text-align: left;
+}
+
+/* Also apply to .tiptap-table class specifically */
+.ProseMirror .tiptap-table {
+	border-collapse: collapse;
+	margin: 0.5em 0;
+	overflow: hidden;
+	table-layout: fixed;
+	width: 100%;
+}
+
+.ProseMirror .tiptap-table td,
+.ProseMirror .tiptap-table th {
+	border: var(--table-border-width, 2px) solid var(--table-border-color, var(--color-border));
+	box-sizing: border-box;
+	min-width: 1em;
+	padding: 6px 8px;
+	position: relative;
+	vertical-align: top;
+}
+
+.ProseMirror .tiptap-table th {
+	background-color: var(--color-muted);
+	font-weight: bold;
+	text-align: left;
+}
+
+.ProseMirror table .selectedCell,
+.ProseMirror .tiptap-table .selectedCell {
+	background-color: var(--color-accent);
+}
+
+/* Column resize handle */
+.ProseMirror .tiptap-table .column-resize-handle {
+	background-color: var(--color-muted-foreground);
+	bottom: -2px;
+	pointer-events: none;
+	position: absolute;
+	right: -2px;
+	top: 0;
+	width: 4px;
+}
+
+.ProseMirror .tableWrapper {
+	overflow-x: auto;
+	padding: 0;
+}
+
+.ProseMirror .resize-cursor {
+	cursor: ew-resize;
+	cursor: col-resize;
+}
+
+/* Gap cursor styles - allows cursor placement between isolating nodes (tables, code blocks, etc.) */
+.ProseMirror-gapcursor {
+	display: none;
+	margin: 0;
+	pointer-events: none;
+	position: absolute;
+}
+
+.ProseMirror-gapcursor::after {
+	animation: ProseMirror-cursor-blink 1.1s steps(2, start) infinite;
+	border-top: 1px solid var(--color-foreground);
+	content: "";
+	display: block;
+	position: absolute;
+	top: -2px;
+	width: 20px;
+}
+
+@keyframes ProseMirror-cursor-blink {
+	to {
+		visibility: hidden;
+	}
+}
+
+.ProseMirror-focused .ProseMirror-gapcursor {
+	display: block;
+}
+
+/* Drag Handle Styles */
+.drag-handle-container {
+	align-items: center;
+	display: flex;
+	gap: 4px;
+	position: relative;
+}
+
+.drag-handle-button {
+	align-items: center;
+	background: transparent;
+	border: none;
+	border-radius: 4px;
+	color: var(--color-muted-foreground);
+	cursor: grab;
+	display: flex;
+	justify-content: center;
+	padding: 4px;
+	transition:
+		background-color 0.15s ease,
+		color 0.15s ease;
+}
+
+.drag-handle-button:hover {
+	background-color: var(--color-muted);
+	color: var(--color-foreground);
+}
+
+.drag-handle-button:active {
+	cursor: grabbing;
+}
+
+/* Drag Handle Context Menu */
+.drag-handle-menu {
+	background: var(--color-popover);
+	border: 1px solid var(--color-border);
+	border-radius: 8px;
+	box-shadow:
+		0 4px 12px rgba(0, 0, 0, 0.1),
+		0 2px 4px rgba(0, 0, 0, 0.05);
+	left: 0;
+	min-width: 180px;
+	padding: 4px;
+	position: absolute;
+	top: calc(100% + 4px);
+	z-index: 50;
+}
+
+.drag-handle-menu-item {
+	align-items: center;
+	background: none;
+	border: none;
+	border-radius: 4px;
+	color: var(--color-foreground);
+	cursor: pointer;
+	display: flex;
+	font-size: 14px;
+	gap: 8px;
+	padding: 8px 12px;
+	text-align: left;
+	transition: background-color 0.15s ease;
+	width: 100%;
+}
+
+.drag-handle-menu-item:hover {
+	background-color: var(--color-muted);
+}
+
+.drag-handle-menu-icon {
+	align-items: center;
+	display: flex;
+	font-size: 14px;
+	font-weight: 600;
+	height: 16px;
+	justify-content: center;
+	width: 16px;
+}
+
+.drag-handle-menu-divider {
+	background-color: var(--color-border);
+	height: 1px;
+	margin: 4px 0;
+}
+
+/* Block selection highlight when dragging */
+.ProseMirror .is-drag-target {
+	background-color: rgba(59, 130, 246, 0.1);
+	border-radius: 4px;
+}
+
+.ProseMirror img.ProseMirror-selectednode {
+	border: 1px solid #3b82f6;
+	border-radius: 0;
+	box-sizing: border-box;
+}
+
+/* Code block inner padding for language overlay */
+.ProseMirror .code-block-view pre {
+	padding-top: 32px;
+}
+
+/* Code block selected state — recolors the existing pre border instead of adding a second one */
+.ProseMirror .node-codeBlock.ProseMirror-selectednode pre {
+	border-color: #3b82f6;
+	margin: 0;
+}
+
+.resizable-image-container {
+	display: inline-block;
+	max-width: 100%;
+	position: relative;
+}
+
+.resizable-image-container > span {
+	display: inline-block;
+	position: relative;
+}
+
+.resizable-image-container img {
+	display: block;
+	height: auto;
+	max-width: 100%;
+}
+
+.resizable-image-container.selected img {
+	border: 1px solid #3b82f6;
+	border-radius: 0;
+	box-sizing: border-box;
+}
+
+.resize-handle {
+	background: #3b82f6;
+	border: 1px solid #fff;
+	border-radius: 50%;
+	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+	cursor: pointer;
+	height: 10px;
+	opacity: 0;
+	position: absolute;
+	transition: opacity 0.2s;
+	width: 10px;
+	z-index: 10;
+}
+
+.resizable-image-container:hover .resize-handle,
+.resizable-image-container.selected .resize-handle {
+	opacity: 1;
+}
+
+.resize-handle.nw {
+	cursor: nw-resize;
+	left: -5px;
+	top: -5px;
+}
+
+.resize-handle.ne {
+	cursor: ne-resize;
+	right: -5px;
+	top: -5px;
+}
+
+.resize-handle.sw {
+	bottom: -5px;
+	cursor: sw-resize;
+	left: -5px;
+}
+
+.resize-handle.se {
+	bottom: -5px;
+	cursor: se-resize;
+	right: -5px;
+}
+
+/* Missing image placeholder styles */
+.missing-image-placeholder {
+	cursor: default;
+	display: inline;
+}
+
+.missing-image-placeholder::before {
+	content: "\200B";
+}
+
+.missing-image-placeholder.selected {
+	background-color: rgba(59, 130, 246, 0.1);
+	border: 1px solid #3b82f6;
+	border-radius: 2px;
+	box-sizing: border-box;
+	padding: 1px 2px;
+}
+
+/* Link styles */
+.ProseMirror a,
+.ProseMirror .tiptap-link {
+	color: #3b82f6;
+	cursor: pointer;
+	text-decoration: underline;
+	text-underline-offset: 2px;
+	transition: color 0.15s ease;
+}
+
+.ProseMirror a:hover,
+.ProseMirror .tiptap-link:hover {
+	color: #2563eb;
+}
+
+/* Hidden section content (when suggestions are shown) */
+.ProseMirror .hidden-section-content {
+	display: none;
+}
+
+/* Article Link Menu (triggered by [[ ) */
+.article-link-menu {
+	background: var(--color-background);
+	border: 1px solid var(--color-border);
+	border-radius: 8px;
+	box-shadow:
+		0 4px 12px rgba(0, 0, 0, 0.1),
+		0 2px 4px rgba(0, 0, 0, 0.05);
+	max-height: 300px;
+	max-width: 320px;
+	min-width: 200px;
+	overflow-y: auto;
+	padding: 8px;
+	position: fixed;
+	z-index: 50;
+}
+
+.article-link-menu-loading {
+	align-items: center;
+	color: var(--color-muted-foreground);
+	display: flex;
+	justify-content: center;
+	padding: 12px;
+}
+
+.article-link-menu-empty {
+	color: var(--color-muted-foreground);
+	font-size: 13px;
+	padding: 8px 12px;
+}
+
+.article-link-menu-item {
+	align-items: flex-start;
+	background: transparent;
+	border: none;
+	border-radius: 4px;
+	cursor: pointer;
+	display: flex;
+	flex-direction: column;
+	font-size: 14px;
+	gap: 2px;
+	line-height: 1.4;
+	padding: 6px 10px;
+	text-align: left;
+	width: 100%;
+}
+
+.article-link-menu-item:hover,
+.article-link-menu-item-selected {
+	background: var(--color-accent);
+}
+
+.article-link-menu-item-title {
+	color: var(--color-foreground);
+	font-weight: 500;
+	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.article-link-menu-item-path {
+	color: var(--color-muted-foreground);
+	font-size: 12px;
+	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.article-link-menu-highlight {
+	background: color-mix(in srgb, var(--color-primary) 15%, transparent);
+	border-radius: 2px;
+	color: var(--color-primary);
+}
+
+/* Article Link Node (inline atom) */
+.article-link-node-wrapper {
+	display: inline;
+}
+
+.article-link-node {
+	cursor: pointer;
+}
+
+.article-link-node-selected {
+	border-radius: 2px;
+	outline: 2px solid #3b82f6;
+}
+
+/* Code block wrapper needs positioning context for the language overlay */
+.ProseMirror .code-block-view {
+	position: relative;
+}
+
+/* Language selector overlay inside the code block (top-right corner) */
+.ProseMirror .code-block-language-overlay {
+	backdrop-filter: blur(4px);
+	background: rgba(30, 30, 30, 0.6);
+	border-radius: 4px;
+	padding: 2px;
+	position: absolute;
+	right: 10px;
+	top: 6px;
+	z-index: 2;
+}

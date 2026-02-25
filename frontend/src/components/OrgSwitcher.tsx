@@ -6,8 +6,11 @@
  */
 
 import { cn } from "../common/ClassNameUtils";
+import { useClient } from "../contexts/ClientContext";
 import { useOrg } from "../contexts/OrgContext";
+import { useTenant } from "../contexts/TenantContext";
 import { SimpleDropdown, SimpleDropdownItem, SimpleDropdownSeparator } from "./ui/SimpleDropdown";
+import { TenantSelectionError } from "jolli-common";
 import { Building2, Check, ChevronDown } from "lucide-react";
 import type { ReactElement } from "react";
 
@@ -24,7 +27,7 @@ interface OrgSwitcherProps {
  * Features:
  * - Shows current org name
  * - Dropdown with all available orgs
- * - Org switching triggers page reload to ensure fresh data
+ * - Org switching calls /auth/tenants/select to rebuild JWT with new org context
  *
  * @example
  * ```tsx
@@ -33,23 +36,59 @@ interface OrgSwitcherProps {
  * ```
  */
 export function OrgSwitcher({ className, compact = false }: OrgSwitcherProps): ReactElement | null {
+	const client = useClient();
 	const { tenant, org, availableOrgs, isMultiTenant, isLoading } = useOrg();
+	const { currentTenantId } = useTenant();
 
 	// Don't render anything if not in multi-tenant mode, still loading, or only one org
 	if (!isMultiTenant || isLoading || availableOrgs.length <= 1) {
 		return null;
 	}
 
-	function handleOrgSwitch(orgSlug: string): void {
-		if (org?.slug === orgSlug) {
+	function handleOrgSwitch(orgSlug: string, orgId: string): void {
+		if (org?.id === orgId) {
 			return; // Already on this org
 		}
 
-		// Store the selected org in session storage for the middleware to pick up
+		/* v8 ignore next 4 - defensive check: currentTenantId always exists when component renders */
+		if (!currentTenantId) {
+			console.error("Cannot switch org: no current tenant");
+			return;
+		}
+
+		// Store the selected org slug in session storage (backward compatibility)
 		sessionStorage.setItem("selectedOrgSlug", orgSlug);
 
-		// Reload the page to apply the org change
-		window.location.reload();
+		// Rebuild authToken with same tenant but new org
+		client
+			.auth()
+			.selectTenant(currentTenantId, orgId)
+			.then(result => {
+				if (result.success) {
+					// When switching orgs within same tenant, URL may be the same
+					// Add a timestamp to force navigation and ensure cookie is set
+					const resultUrlNormalized = result.url.split("?")[0];
+					const currentUrlNormalized = window.location.href.split("?")[0];
+					const isSameUrl = resultUrlNormalized === currentUrlNormalized;
+
+					/* v8 ignore next 8 - browser navigation code, tested via integration tests */
+					if (isSameUrl) {
+						// Add timestamp to force full navigation and cookie processing
+						const separator = result.url.includes("?") ? "&" : "?";
+						window.location.href = `${result.url}${separator}_t=${Date.now()}`;
+					} else {
+						window.location.href = result.url;
+					}
+				}
+			})
+			/* v8 ignore next 6 - error handling for network failures and inactive users */
+			.catch(error => {
+				if (error instanceof TenantSelectionError && error.code === "user_inactive") {
+					window.location.href = "/login?error=user_inactive";
+					return;
+				}
+				console.error("Failed to switch org:", error);
+			});
 	}
 
 	const trigger = (
@@ -78,7 +117,7 @@ export function OrgSwitcher({ className, compact = false }: OrgSwitcherProps): R
 			{availableOrgs.map(availableOrg => (
 				<SimpleDropdownItem
 					key={availableOrg.id}
-					onClick={() => handleOrgSwitch(availableOrg.slug)}
+					onClick={() => handleOrgSwitch(availableOrg.slug, availableOrg.id)}
 					className="justify-between"
 				>
 					<span className="truncate">{availableOrg.displayName}</span>

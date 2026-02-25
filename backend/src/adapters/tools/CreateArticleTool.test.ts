@@ -61,6 +61,7 @@ describe("CreateArticleTool", () => {
 			countMySharedNewDrafts: vi.fn(),
 			countSharedWithMeDrafts: vi.fn(),
 			countArticlesWithAgentSuggestions: vi.fn(),
+			getAllContent: vi.fn(),
 		});
 
 		it("returns error if draft not found", async () => {

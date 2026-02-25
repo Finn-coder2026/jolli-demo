@@ -11,6 +11,9 @@ const config: IntlayerConfig = {
 		baseDir: process.cwd(),
 		contentDir: ["./src"],
 	},
+	build: {
+		optimize: true,
+	},
 	routing: {
 		mode: "prefix-no-default", // Default: prefix all locales except the default locale
 		storage: [

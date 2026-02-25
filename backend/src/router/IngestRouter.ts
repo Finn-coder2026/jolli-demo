@@ -82,7 +82,6 @@ export function createIngestRouter(docDaoProvider: DaoProvider<DocDao>): Router 
 					spaceId: undefined,
 					parentId: undefined,
 					docType: "document" as const,
-					sortOrder: 0,
 					createdBy: "system",
 				};
 

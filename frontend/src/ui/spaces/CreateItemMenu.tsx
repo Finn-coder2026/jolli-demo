@@ -8,7 +8,7 @@ import {
 import type { TreeNode } from "../../hooks/useSpaceTree";
 import { CreateItemDialog, type FolderOption } from "./CreateItemDialog";
 import type { DocDraftContentType } from "jolli-common";
-import { File, Folder, Plus } from "lucide-react";
+import { FileText, Folder, Plus } from "lucide-react";
 import type { ReactElement } from "react";
 import { useState } from "react";
 import { useIntlayer } from "react-intlayer";
@@ -52,24 +52,20 @@ export function CreateItemMenu({
 	onOpenChange,
 }: CreateItemMenuProps): ReactElement {
 	const content = useIntlayer("space-tree-nav");
-	const [dialogMode, setDialogMode] = useState<"folder" | "article" | null>(null);
 	const [dialogOpen, setDialogOpen] = useState(false);
 	const [creating, setCreating] = useState(false);
 
 	function handleOpenFolder(): void {
-		setDialogMode("folder");
 		setDialogOpen(true);
 	}
 
-	function handleOpenArticle(): void {
-		setDialogMode("article");
-		setDialogOpen(true);
+	/** Creates an article immediately with default "Untitled" name, skipping the dialog */
+	async function handleCreateArticle(): Promise<void> {
+		await onCreateDoc(defaultParentId, content.untitledArticle.value, "text/markdown");
 	}
 
 	function handleClose(): void {
 		setDialogOpen(false);
-		// Delay clearing mode to allow close animation
-		setTimeout(() => setDialogMode(null), 150);
 	}
 
 	async function handleConfirm(params: {
@@ -79,13 +75,8 @@ export function CreateItemMenu({
 	}): Promise<void> {
 		setCreating(true);
 		try {
-			if (dialogMode === "folder") {
-				await onCreateFolder(params.parentId, params.name);
-			} else {
-				await onCreateDoc(params.parentId, params.name, params.contentType);
-			}
+			await onCreateFolder(params.parentId, params.name);
 			setDialogOpen(false);
-			setTimeout(() => setDialogMode(null), 150);
 		} finally {
 			setCreating(false);
 		}
@@ -106,16 +97,16 @@ export function CreateItemMenu({
 						<Folder className="h-4 w-4 mr-2" />
 						{content.createFolder}
 					</DropdownMenuItem>
-					<DropdownMenuItem onClick={handleOpenArticle} data-testid="create-doc-option">
-						<File className="h-4 w-4 mr-2" />
+					<DropdownMenuItem onClick={handleCreateArticle} data-testid="create-doc-option">
+						<FileText className="h-4 w-4 mr-2" />
 						{content.createDoc}
 					</DropdownMenuItem>
 				</DropdownMenuContent>
 			</DropdownMenu>
 
-			{dialogMode !== null && (
+			{dialogOpen && (
 				<CreateItemDialog
-					mode={dialogMode}
+					mode="folder"
 					open={dialogOpen && !creating}
 					folders={folders}
 					defaultParentId={defaultParentId}

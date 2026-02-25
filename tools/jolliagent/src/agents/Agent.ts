@@ -152,6 +152,7 @@ export class Agent {
 			const pendingToolCalls: Array<ToolCall> = [];
 			const assistantToolUses: Array<{ tool_call_id: string; tool_name: string; tool_input: unknown }> = [];
 			let encounteredProviderError = false;
+			let lastProviderError = "";
 
 			for await (const ev of this.stream({ messages: history })) {
 				if (ev.type === "text_delta") {
@@ -169,7 +170,8 @@ export class Agent {
 						tool_input: ev.call.arguments,
 					});
 				} else if (ev.type === "error") {
-					// Mark error and break this assistant turn; allow retry logic below
+					lastProviderError = ev.error ?? "Unknown provider error";
+					console.error("[Agent.chatTurn] LLM provider error: %s (code: %s)", lastProviderError, ev.code);
 					encounteredProviderError = true;
 					break;
 				}
@@ -178,6 +180,7 @@ export class Agent {
 			if (encounteredProviderError) {
 				if (retriesRemaining > 0) {
 					retriesRemaining -= 1;
+					console.error("[Agent.chatTurn] Retrying after provider error: %s", lastProviderError);
 					// Nudge the model to continue despite error
 					history.push({
 						role: "user",
@@ -187,6 +190,7 @@ export class Agent {
 					continueToolLoop = true;
 					continue; // retry the loop
 				} else {
+					console.error("[Agent.chatTurn] Provider error after all retries exhausted: %s", lastProviderError);
 					// Stop retrying; persist any partial assistant text
 					if (assistantText.trim().length > 0) {
 						history.push({ role: "assistant", content: assistantText });

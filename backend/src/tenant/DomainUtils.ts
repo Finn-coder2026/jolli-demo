@@ -54,17 +54,20 @@ export function resolveCustomDomain(req: Request, baseDomain: string | undefined
  * Extract tenant and org slugs from the subdomain of a baseDomain URL.
  *
  * This function is called only after resolveCustomDomain returns undefined,
- * meaning the host is guaranteed to be a subdomain of baseDomain.
+ * meaning the host is guaranteed to be either the base domain or a subdomain of it.
+ *
+ * If the host is the bare base domain (e.g., "jolli.app"), this returns undefined
+ * since there is no subdomain to extract (path-based tenancy is handled by the frontend).
  *
  * Examples (with baseDomain = "jolli.app"):
- * - "jolli.app" -> { tenantSlug: "jolli", orgSlug: undefined }
+ * - "jolli.app" -> undefined (bare base domain, no subdomain)
  * - "acme.jolli.app" -> { tenantSlug: "acme", orgSlug: undefined }
  * - "engineering.acme.jolli.app" -> { tenantSlug: "acme", orgSlug: "engineering" }
  * - "a.b.c.jolli.app" -> { tenantSlug: "c", orgSlug: "b" }
  *
  * @param req - Express request
  * @param baseDomain - The base domain (e.g., "jolli.app")
- * @returns Subdomain resolution if URL matches baseDomain pattern, undefined otherwise
+ * @returns Subdomain resolution if URL has a subdomain, undefined if bare base domain
  */
 export function resolveSubdomain(req: Request, baseDomain: string | undefined): SubdomainResolution | undefined {
 	if (!baseDomain) {
@@ -76,9 +79,9 @@ export function resolveSubdomain(req: Request, baseDomain: string | undefined): 
 		return;
 	}
 
-	// Bare baseDomain -> tenant "jolli"
+	// Bare baseDomain (e.g., "jolli.app") -> no subdomain to extract
 	if (host === baseDomain) {
-		return { tenantSlug: "jolli", orgSlug: undefined };
+		return;
 	}
 
 	// Check if host is a subdomain of baseDomain
@@ -92,6 +95,11 @@ export function resolveSubdomain(req: Request, baseDomain: string | undefined): 
 	const parts = prefix.split(".");
 
 	if (parts.length === 1) {
+		// Skip reserved subdomains (auth gateway, API endpoints, etc.)
+		const reservedSubdomains = ["auth", "api", "www"];
+		if (reservedSubdomains.includes(parts[0])) {
+			return;
+		}
 		// tenant.jolli.app
 		return { tenantSlug: parts[0], orgSlug: undefined };
 	}

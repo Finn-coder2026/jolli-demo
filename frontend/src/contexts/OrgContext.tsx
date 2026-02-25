@@ -5,6 +5,7 @@
  * In single-tenant mode, returns null values gracefully.
  */
 
+import { setServerFavoritesHash } from "../services/FavoritesHashStore";
 import { useClient } from "./ClientContext";
 import type { CurrentOrgResponse, OrgSummary } from "jolli-common";
 import { createContext, type ReactElement, type ReactNode, useContext, useEffect, useState } from "react";
@@ -63,6 +64,8 @@ export function OrgProvider({ children }: OrgProviderProps): ReactElement {
 			setTenant(response.tenant);
 			setOrg(response.org);
 			setAvailableOrgs(response.availableOrgs);
+			// Store favorites hash for preferences sync (used by useUserPreferences hook)
+			setServerFavoritesHash(response.favoritesHash);
 		} catch (err) {
 			// If we have a selected org in session storage and this is not already a retry,
 			// clear it and retry - the org may have been archived/deleted

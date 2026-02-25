@@ -1,12 +1,12 @@
 import { Button } from "../../components/ui/Button";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/Tabs";
+import { toast } from "../../components/ui/Sonner";
 import { useClient } from "../../contexts/ClientContext";
 import { getLog } from "../../util/Logger";
 import { ArticlePicker } from "./ArticlePicker";
-import { RepositoryViewer } from "./RepositoryViewer";
-import type { Doc, SiteMetadata, SiteWithUpdate } from "jolli-common";
-import { FileText, FolderTree, Info } from "lucide-react";
-import { type ReactElement, type ReactNode, useEffect, useMemo, useState } from "react";
+import { SectionHeader } from "./SectionHeader";
+import type { Doc, SiteMetadata, SiteWithUpdate, Space } from "jolli-common";
+import { FileText, Info } from "lucide-react";
+import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 import { useIntlayer } from "react-intlayer";
 
 const log = getLog(import.meta);
@@ -14,73 +14,107 @@ const log = getLog(import.meta);
 interface SiteContentTabProps {
 	docsite: SiteWithUpdate;
 	onDocsiteUpdate: (updatedSite: SiteWithUpdate) => void;
-	/** Callback when a repository file is saved */
-	onFileSave?: () => void;
 }
 
-/**
- * Site Content Tab - Manages articles, navigation, and images in a unified view.
- * Uses sub-tabs for organization while keeping a clean, focused interface.
- */
-export function SiteContentTab({ docsite, onDocsiteUpdate, onFileSave }: SiteContentTabProps): ReactElement {
+export function SiteContentTab({ docsite, onDocsiteUpdate }: SiteContentTabProps): ReactElement {
 	const content = useIntlayer("site-content-tab");
 	const client = useClient();
 
-	// Articles state
 	const [allArticles, setAllArticles] = useState<Array<Doc>>([]);
+	const [spaces, setSpaces] = useState<Array<Space>>([]);
 	const [loadingArticles, setLoadingArticles] = useState(true);
-	const [includeAll, setIncludeAll] = useState(true);
+	const [includeAll, setIncludeAll] = useState(false);
 	const [selectedArticleJrns, setSelectedArticleJrns] = useState<Set<string>>(new Set());
-	const [originalIncludeAll, setOriginalIncludeAll] = useState(true);
+	const [originalIncludeAll, setOriginalIncludeAll] = useState(false);
 	const [originalSelectedJrns, setOriginalSelectedJrns] = useState<Set<string>>(new Set());
+	const [articlesLoaded, setArticlesLoaded] = useState(false);
 	const [savingArticles, setSavingArticles] = useState(false);
-	const [articleSaveMessage, setArticleSaveMessage] = useState<{ type: "success" | "error"; text: ReactNode } | null>(
-		null,
+
+	const onDocsiteUpdateRef = useRef(onDocsiteUpdate);
+	useEffect(() => {
+		onDocsiteUpdateRef.current = onDocsiteUpdate;
+	}, [onDocsiteUpdate]);
+
+	const metadata = docsite.metadata as SiteMetadata | undefined;
+	const selectedJrnsKey = useMemo(
+		() => JSON.stringify(metadata?.selectedArticleJrns || []),
+		[metadata?.selectedArticleJrns],
 	);
 
-	// Get selected JRNs for dependency tracking
-	const metadata = docsite.metadata as SiteMetadata | undefined;
-	const selectedJrnsKey = JSON.stringify(metadata?.selectedArticleJrns || []);
+	const changedJrns = useMemo(() => {
+		if (!docsite.changedArticles || docsite.changedArticles.length === 0) {
+			return;
+		}
+		return new Set(docsite.changedArticles.map(article => article.jrn));
+	}, [docsite.changedArticles]);
 
-	// Initialize article selection state from docsite
+	// Tracks the initialization key to prevent the selection effect from re-running
+	// unnecessarily when allArticles or articlesLoaded change but the selection source
+	// (docsite.id + selectedJrnsKey) hasn't changed.
+	const selectionInitRef = useRef<string | null>(null);
+
+	// Initialize article selection state from docsite metadata.
+	// When selectedArticleJrns is null/undefined (backend "include all"), we default the toggle
+	// to OFF and select all articles individually once they load. This makes the UI explicit
+	// about what's included rather than hiding it behind an opaque "all" toggle.
 	useEffect(() => {
-		const siteSelectedJrns = metadata?.selectedArticleJrns;
-		const isIncludeAll = siteSelectedJrns === null || siteSelectedJrns === undefined;
-		setIncludeAll(isIncludeAll);
-		setOriginalIncludeAll(isIncludeAll);
-		const jrnSet = new Set(siteSelectedJrns || []);
-		setSelectedArticleJrns(jrnSet);
-		setOriginalSelectedJrns(jrnSet);
-	}, [docsite.id, selectedJrnsKey]);
+		const currentKey = `${docsite.id}:${selectedJrnsKey}`;
+		if (selectionInitRef.current === currentKey) {
+			return;
+		}
 
-	// Load all articles
+		const siteSelectedJrns = metadata?.selectedArticleJrns;
+		const hasExplicitSelection = siteSelectedJrns !== null && siteSelectedJrns !== undefined;
+
+		if (hasExplicitSelection) {
+			// Explicit selection from server
+			setIncludeAll(false);
+			setOriginalIncludeAll(false);
+			const jrnSet = new Set(siteSelectedJrns);
+			setSelectedArticleJrns(jrnSet);
+			setOriginalSelectedJrns(jrnSet);
+			selectionInitRef.current = currentKey;
+		} else if (articlesLoaded && allArticles.length > 0) {
+			// No explicit selection (null) and articles loaded — select all individually
+			setIncludeAll(false);
+			setOriginalIncludeAll(false);
+			const allJrns = new Set(allArticles.map(a => a.jrn));
+			setSelectedArticleJrns(allJrns);
+			setOriginalSelectedJrns(allJrns);
+			selectionInitRef.current = currentKey;
+		}
+	}, [docsite.id, selectedJrnsKey, articlesLoaded, allArticles, metadata?.selectedArticleJrns]);
+
 	useEffect(() => {
 		let mounted = true;
 
-		async function loadArticles() {
+		async function loadArticlesAndSpaces() {
 			try {
 				setLoadingArticles(true);
-				const docs = await client.docs().listDocs();
+				// Fetch articles and spaces in parallel
+				const [docs, spacesList] = await Promise.all([client.docs().listDocs(), client.spaces().listSpaces()]);
 				if (mounted) {
 					setAllArticles(docs);
+					setSpaces(spacesList);
 				}
 			} catch (error) {
 				if (mounted) {
-					log.error(error, "Failed to fetch articles");
+					log.error(error, "Failed to fetch articles or spaces");
 				}
 			} finally {
 				if (mounted) {
 					setLoadingArticles(false);
+					setArticlesLoaded(true);
 				}
 			}
 		}
 
-		loadArticles();
+		loadArticlesAndSpaces();
 
 		return () => {
 			mounted = false;
 		};
-	}, [docsite.id]);
+	}, [docsite.id, client]);
 
 	const hasArticleChanges = useMemo(() => {
 		if (includeAll !== originalIncludeAll) {
@@ -102,28 +136,22 @@ export function SiteContentTab({ docsite, onDocsiteUpdate, onFileSave }: SiteCon
 	async function handleSaveArticles() {
 		try {
 			setSavingArticles(true);
-			setArticleSaveMessage(null);
 
 			const newSelectedJrns = includeAll ? null : Array.from(selectedArticleJrns);
 			const updatedSite = await client.sites().updateSiteArticles(docsite.id, newSelectedJrns);
 
-			onDocsiteUpdate(updatedSite);
+			onDocsiteUpdateRef.current(updatedSite);
 
 			setOriginalIncludeAll(includeAll);
 			setOriginalSelectedJrns(new Set(selectedArticleJrns));
 
-			setArticleSaveMessage({ type: "success", text: content.selectionSaved });
-			setTimeout(() => setArticleSaveMessage(null), 3000);
+			toast.success(content.selectionSaved.value);
 		} catch (error) {
 			log.error(error, "Failed to save article selection");
-			setArticleSaveMessage({ type: "error", text: content.selectionFailed });
+			toast.error(content.selectionFailed.value);
 		} finally {
 			setSavingArticles(false);
 		}
-	}
-
-	function handleArticleSelectionChange(jrns: Set<string>) {
-		setSelectedArticleJrns(jrns);
 	}
 
 	function handleIncludeAllChange(newIncludeAll: boolean) {
@@ -133,131 +161,70 @@ export function SiteContentTab({ docsite, onDocsiteUpdate, onFileSave }: SiteCon
 		}
 	}
 
-	// Check if we have a GitHub repo for navigation editing
-	const hasGitHubRepo = Boolean(docsite.metadata?.githubRepo && docsite.metadata?.githubUrl);
-
 	return (
-		<div className="space-y-4">
-			<Tabs defaultValue="articles" className="w-full">
-				<TabsList className="mb-4">
-					<TabsTrigger
-						value="articles"
-						className="flex items-center gap-2"
-						data-testid="content-tab-articles"
-					>
-						<FileText className="h-4 w-4" />
-						{content.tabArticles}
-					</TabsTrigger>
-					<TabsTrigger
-						value="navigation"
-						className="flex items-center gap-2"
-						data-testid="content-tab-navigation"
-					>
-						<FolderTree className="h-4 w-4" />
-						{content.tabNavigation}
-					</TabsTrigger>
-				</TabsList>
+		<div className="p-6 space-y-6">
+			<SectionHeader icon={FileText} title={content.articlesTitle} description={content.articlesDescription} />
 
-				{/* Articles Tab */}
-				<TabsContent value="articles" className="space-y-4">
-					<p className="text-sm text-muted-foreground">{content.articlesDescription}</p>
-
-					{loadingArticles ? (
-						<div className="py-8 text-center text-muted-foreground" data-testid="articles-loading">
-							{content.loadingArticles}
-						</div>
-					) : (
-						<>
-							{/* Article Count Summary */}
-							<div className="flex items-center justify-between p-3 bg-muted/50 rounded-lg border">
-								<span className="text-sm">
-									{includeAll ? (
-										<span className="text-muted-foreground">{content.includeAllDescription}</span>
-									) : (
-										<span>
-											<strong>{selectedArticleJrns.size}</strong>{" "}
-											<span className="text-muted-foreground">{content.selectedCount}</span>
-										</span>
-									)}
+			{loadingArticles ? (
+				<div className="py-8 text-center text-muted-foreground" data-testid="articles-loading">
+					{content.loadingArticles}
+				</div>
+			) : (
+				<>
+					<div className="flex items-center justify-between px-3 py-2.5 bg-muted/30 rounded-lg">
+						<span className="text-sm">
+							{includeAll ? (
+								<span className="text-muted-foreground">{content.includeAllDescription}</span>
+							) : (
+								<span>
+									<strong>{selectedArticleJrns.size}</strong>{" "}
+									<span className="text-muted-foreground">{content.selectedCount}</span>
 								</span>
-								{hasArticleChanges && (
-									<span className="text-xs text-amber-600 dark:text-amber-400 font-medium">
-										{content.unsavedChanges}
-									</span>
-								)}
+							)}
+						</span>
+						{hasArticleChanges && (
+							<span className="text-xs text-amber-600 dark:text-amber-400 font-medium">
+								{content.unsavedChanges}
+							</span>
+						)}
+					</div>
+
+					<ArticlePicker
+						articles={allArticles}
+						selectedJrns={selectedArticleJrns}
+						onSelectionChange={setSelectedArticleJrns}
+						includeAll={includeAll}
+						onIncludeAllChange={handleIncludeAllChange}
+						disabled={savingArticles}
+						spaces={spaces}
+						changedJrns={changedJrns}
+					/>
+
+					<div className="flex items-center justify-between pt-4 border-t">
+						{hasArticleChanges && (
+							<div
+								className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400"
+								data-testid="articles-rebuild-note"
+							>
+								<Info className="h-3.5 w-3.5 flex-shrink-0" />
+								<span>{content.rebuildNote}</span>
 							</div>
-
-							{/* Article Picker */}
-							<ArticlePicker
-								articles={allArticles}
-								selectedJrns={selectedArticleJrns}
-								onSelectionChange={handleArticleSelectionChange}
-								includeAll={includeAll}
-								onIncludeAllChange={handleIncludeAllChange}
-								disabled={savingArticles}
-							/>
-
-							{/* Save Section */}
-							<div className="space-y-3 pt-4 border-t">
-								<div className="flex items-center justify-between">
-									<div>
-										{articleSaveMessage && (
-											<span
-												className={`text-sm ${
-													articleSaveMessage.type === "success"
-														? "text-green-600 dark:text-green-400"
-														: "text-red-600 dark:text-red-400"
-												}`}
-												data-testid="article-save-message"
-											>
-												{articleSaveMessage.text}
-											</span>
-										)}
-									</div>
-									<Button
-										onClick={handleSaveArticles}
-										disabled={savingArticles || !hasArticleChanges}
-										data-testid="save-articles-button"
-									>
-										{savingArticles
-											? content.saving
-											: hasArticleChanges
-												? content.saveSelection
-												: content.noChanges}
-									</Button>
-								</div>
-
-								{/* Rebuild reminder - shown after successful save or when there are changes */}
-								{(articleSaveMessage?.type === "success" || hasArticleChanges) && (
-									<div
-										className="flex items-start gap-2 p-3 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800"
-										data-testid="articles-rebuild-note"
-									>
-										<Info className="h-4 w-4 flex-shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
-										<span className="text-xs text-amber-700 dark:text-amber-300">
-											{content.rebuildNote}
-										</span>
-									</div>
-								)}
-							</div>
-						</>
-					)}
-				</TabsContent>
-
-				{/* Navigation Tab */}
-				<TabsContent value="navigation" className="space-y-4">
-					<p className="text-sm text-muted-foreground">{content.navigationDescription}</p>
-
-					{hasGitHubRepo ? (
-						<RepositoryViewer docsite={docsite} onFileSave={onFileSave} />
-					) : (
-						<div className="border rounded-lg p-8 text-center">
-							<FolderTree className="h-8 w-8 mx-auto mb-2 text-muted-foreground" />
-							<p className="text-sm text-muted-foreground">{content.noNavigationFile}</p>
-						</div>
-					)}
-				</TabsContent>
-			</Tabs>
+						)}
+						{!hasArticleChanges && <div />}
+						<Button
+							onClick={handleSaveArticles}
+							disabled={savingArticles || !hasArticleChanges}
+							data-testid="save-articles-button"
+						>
+							{savingArticles
+								? content.saving
+								: hasArticleChanges
+									? content.saveSelection
+									: content.noChanges}
+						</Button>
+					</div>
+				</>
+			)}
 		</div>
 	);
 }

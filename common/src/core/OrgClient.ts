@@ -21,6 +21,8 @@ export interface CurrentOrgResponse {
 		schemaName: string;
 	} | null;
 	availableOrgs: Array<OrgSummary>;
+	/** Hash for favorites sync. "EMPTY" if user has no preferences. */
+	favoritesHash: string;
 }
 
 /**

@@ -43,7 +43,7 @@ export function ArticlesWithSuggestedUpdates(): ReactElement {
 	};
 
 	return (
-		<div className="bg-card rounded-lg p-6 border h-full overflow-auto">
+		<div className="bg-card rounded-lg p-6 border h-full overflow-auto scrollbar-thin">
 			<div className="mb-6">
 				<Button variant="ghost" size="sm" onClick={handleBack} className="mb-4">
 					<ArrowLeft className="h-4 w-4 mr-2" />

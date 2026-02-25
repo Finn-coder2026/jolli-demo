@@ -206,9 +206,8 @@ export async function loadConfig(config: MigrateConfig, logger: MigrateLogger): 
 		return {};
 	}
 
-	// Always use "vercel" path base since this migration script runs before Vercel deployments
-	// and needs to read the same parameters the deployment will use
-	const pathBase = "vercel";
+	// Use "app" path base to match the ECS deployment configuration
+	const pathBase = "app";
 
 	logger.info(`Loading configuration from Parameter Store (env: ${config.pstoreEnv}, pathBase: ${pathBase})`);
 
@@ -986,7 +985,7 @@ export async function runDryRun(logger?: MigrateLogger): Promise<DryRunResult> {
 	if (pstoreEnv) {
 		const loader = new ParameterStoreLoader({
 			pstoreEnv,
-			pathBase: "vercel", // Always use vercel path for migrations
+			pathBase: "app", // Match ECS deployment path base
 			region: process.env.AWS_REGION ?? "us-west-2",
 			applyToProcessEnv: true,
 		});

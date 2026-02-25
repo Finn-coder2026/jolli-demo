@@ -176,7 +176,7 @@ describe("SiteAuthRouter", () => {
 			const response = await request(app).get("/sites/1/auth/jwt?returnUrl=/getting-started");
 
 			expect(response.status).toBe(302);
-			expect(response.headers.location).toBe("/");
+			expect(response.headers.location).toBe("/login");
 			expect(mockSession.pendingSiteAuth).toEqual({
 				siteId: "1",
 				returnUrl: "/getting-started",
@@ -399,7 +399,7 @@ describe("SiteAuthRouter", () => {
 
 			// Should still redirect despite save error (error is just logged)
 			expect(response.status).toBe(302);
-			expect(response.headers.location).toBe("/");
+			expect(response.headers.location).toBe("/login");
 		});
 
 		it("should return 500 on database error", async () => {

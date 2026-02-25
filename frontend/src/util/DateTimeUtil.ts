@@ -95,3 +95,11 @@ export function formatTimestamp(
 	// 12+ months - fall back to locale-specific date format
 	return date.toLocaleDateString();
 }
+
+export function formatDateTimeOrUnknown(timestamp: string): string {
+	const parsed = new Date(timestamp);
+	if (Number.isNaN(parsed.getTime())) {
+		return "Unknown time";
+	}
+	return parsed.toLocaleString();
+}

@@ -1,6 +1,5 @@
 "use client";
 
-import { Breadcrumb } from "../../components/Breadcrumb";
 import { DEFAULT_REGION, getRegionName, PROVIDER_REGIONS, type RegionSlug } from "../../lib/constants/Regions";
 import type { DatabaseProvider, NewDatabaseProvider, ProviderType } from "../../lib/types";
 import Link from "next/link";
@@ -96,9 +95,8 @@ export default function ProvidersPage() {
 
 	return (
 		<main style={{ padding: "2rem", fontFamily: "system-ui, sans-serif" }}>
-			<Breadcrumb items={[{ label: "Dashboard", href: "/" }, { label: "Database Providers" }]} />
-			<div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-				<h1>Database Providers</h1>
+			<div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
+				<h1 style={{ margin: 0 }}>Database Providers</h1>
 				<button
 					type="button"
 					onClick={() => {
@@ -106,116 +104,62 @@ export default function ProvidersPage() {
 						setActionError(null);
 						setSuccessMessage(null);
 					}}
-					style={{
-						padding: "0.5rem 1rem",
-						backgroundColor: "#0070f3",
-						color: "white",
-						border: "none",
-						borderRadius: "4px",
-						cursor: "pointer",
-					}}
+					style={styles.addButton}
 				>
 					{showForm ? "Cancel" : "Add Provider"}
 				</button>
 			</div>
 
-			{error && (
-				<div
-					style={{
-						padding: "1rem",
-						backgroundColor: "#f8d7da",
-						color: "#721c24",
-						borderRadius: "4px",
-						marginTop: "1rem",
-					}}
-				>
-					{error}
-				</div>
-			)}
+			{error && <div style={styles.errorBanner}>{error}</div>}
 
-			{actionError && (
-				<div
-					style={{
-						padding: "1rem",
-						backgroundColor: "#f8d7da",
-						color: "#721c24",
-						borderRadius: "4px",
-						marginTop: "1rem",
-					}}
-				>
-					{actionError}
-				</div>
-			)}
+			{actionError && <div style={styles.errorBanner}>{actionError}</div>}
 
-			{successMessage && (
-				<div
-					style={{
-						padding: "1rem",
-						backgroundColor: "#d4edda",
-						color: "#155724",
-						borderRadius: "4px",
-						marginTop: "1rem",
-					}}
-				>
-					{successMessage}
-				</div>
-			)}
+			{successMessage && <div style={styles.successBanner}>{successMessage}</div>}
 
 			{showForm && (
-				<div style={{ marginTop: "1rem", padding: "1rem", border: "1px solid #ccc", borderRadius: "4px" }}>
+				<div style={{ marginBottom: 24, padding: "1rem", border: "1px solid #ccc", borderRadius: "4px" }}>
 					<ProviderForm onSubmit={handleCreateProvider} onCancel={() => setShowForm(false)} />
 				</div>
 			)}
 
 			{providers.length === 0 ? (
-				<p style={{ marginTop: "1rem" }}>
-					No database providers configured. Add one to start provisioning tenants.
-				</p>
+				<p>No database providers configured. Add one to start provisioning tenants.</p>
 			) : (
-				<table style={{ width: "100%", borderCollapse: "collapse", marginTop: "1rem" }}>
+				<table style={styles.table}>
 					<thead>
-						<tr style={{ borderBottom: "2px solid #eee" }}>
-							<th style={{ textAlign: "left", padding: "0.5rem" }}>Name</th>
-							<th style={{ textAlign: "left", padding: "0.5rem" }}>Type</th>
-							<th style={{ textAlign: "left", padding: "0.5rem" }}>Region</th>
-							<th style={{ textAlign: "left", padding: "0.5rem" }}>Default</th>
-							<th style={{ textAlign: "left", padding: "0.5rem" }}>Created</th>
-							<th style={{ textAlign: "left", padding: "0.5rem" }}>Actions</th>
+						<tr>
+							<th style={styles.th}>Name</th>
+							<th style={styles.th}>Type</th>
+							<th style={styles.th}>Region</th>
+							<th style={styles.th}>Default</th>
+							<th style={styles.th}>Created</th>
+							<th style={styles.th}>Actions</th>
 						</tr>
 					</thead>
 					<tbody>
 						{providers.map(provider => (
-							<tr key={provider.id} style={{ borderBottom: "1px solid #eee" }}>
-								<td style={{ padding: "0.5rem" }}>
-									<Link
-										href={`/providers/${provider.id}`}
-										style={{ color: "#007bff", textDecoration: "none" }}
-									>
+							<tr key={provider.id} style={styles.tr}>
+								<td style={styles.td}>
+									<Link href={`/providers/${provider.id}`} style={styles.link}>
 										{provider.name}
 									</Link>
 								</td>
-								<td style={{ padding: "0.5rem" }}>
+								<td style={styles.td}>
 									<TypeBadge type={provider.type} />
 								</td>
-								<td style={{ padding: "0.5rem" }}>{getRegionName(provider.region)}</td>
-								<td style={{ padding: "0.5rem" }}>{provider.isDefault ? "Yes" : "No"}</td>
-								<td style={{ padding: "0.5rem" }}>
-									{new Date(provider.createdAt).toLocaleDateString()}
-								</td>
-								<td style={{ padding: "0.5rem" }}>
+								<td style={styles.td}>{getRegionName(provider.region)}</td>
+								<td style={styles.td}>{provider.isDefault ? "Yes" : "No"}</td>
+								<td style={styles.td}>{new Date(provider.createdAt).toLocaleDateString()}</td>
+								<td style={styles.td}>
 									<button
 										type="button"
 										onClick={() => handleDeleteProvider(provider)}
 										disabled={deleting === provider.id}
 										title="Delete provider"
 										style={{
-											padding: "0.25rem 0.5rem",
-											backgroundColor: deleting === provider.id ? "#ccc" : "#dc3545",
-											color: "white",
-											border: "none",
-											borderRadius: "4px",
+											...styles.deleteButton,
+											backgroundColor: deleting === provider.id ? "#9ca3af" : "#dc2626",
 											cursor: deleting === provider.id ? "not-allowed" : "pointer",
-											fontSize: "0.875rem",
 										}}
 									>
 										{deleting === provider.id ? "Deleting..." : "Delete"}
@@ -230,6 +174,68 @@ export default function ProvidersPage() {
 	);
 }
 
+/** Inline styles */
+const styles: Record<string, React.CSSProperties> = {
+	addButton: {
+		padding: "8px 16px",
+		backgroundColor: "#3b82f6",
+		color: "white",
+		border: "none",
+		borderRadius: 6,
+		cursor: "pointer",
+		fontSize: 14,
+		fontWeight: 500,
+	},
+	errorBanner: {
+		padding: 12,
+		backgroundColor: "#fee2e2",
+		color: "#dc2626",
+		borderRadius: 6,
+		marginBottom: 16,
+		fontSize: 14,
+	},
+	successBanner: {
+		padding: 12,
+		backgroundColor: "#dcfce7",
+		color: "#166534",
+		borderRadius: 6,
+		marginBottom: 16,
+		fontSize: 14,
+	},
+	table: {
+		width: "100%",
+		borderCollapse: "collapse",
+		backgroundColor: "white",
+	},
+	th: {
+		textAlign: "left",
+		padding: 12,
+		borderBottom: "1px solid #e5e7eb",
+		fontSize: 12,
+		fontWeight: 600,
+		textTransform: "uppercase",
+		color: "#6b7280",
+	},
+	tr: {
+		borderBottom: "1px solid #e5e7eb",
+	},
+	td: {
+		padding: 12,
+		fontSize: 14,
+	},
+	link: {
+		color: "#3b82f6",
+		textDecoration: "none",
+	},
+	deleteButton: {
+		padding: "4px 8px",
+		color: "white",
+		border: "none",
+		borderRadius: 4,
+		fontSize: 12,
+	},
+};
+
 function TypeBadge({ type }: { type: ProviderType }) {
 	const colors: Record<ProviderType, { bg: string; text: string }> = {
 		local: { bg: "#e2e3e5", text: "#383d41" },
@@ -243,9 +249,10 @@ function TypeBadge({ type }: { type: ProviderType }) {
 	return (
 		<span
 			style={{
-				padding: "0.25rem 0.5rem",
-				borderRadius: "4px",
-				fontSize: "0.875rem",
+				padding: "4px 8px",
+				borderRadius: 9999,
+				fontSize: 12,
+				fontWeight: 500,
 				backgroundColor: style.bg,
 				color: style.text,
 			}}

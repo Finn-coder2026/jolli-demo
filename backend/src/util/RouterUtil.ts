@@ -14,11 +14,11 @@ import { isPrimitiveNumber, type UserInfo } from "jolli-common";
  * @returns user ID if found, otherwise undefined
  */
 export function getOptionalUserId(tokenUtil: TokenUtil<UserInfo>, req: Request): number | undefined {
-	// Prefer org-specific user ID (set by UserProvisioningMiddleware in multi-tenant mode)
+	// Prefer global user ID (set by UserProvisioningMiddleware from global_users table)
 	if (req.orgUser?.id !== undefined) {
 		return req.orgUser.id;
 	}
-	// Fall back to JWT userId (single-tenant mode)
+	// Fall back to JWT userId (single-tenant mode without Manager DB)
 	return tokenUtil.decodePayload(req)?.userId;
 }
 
@@ -59,18 +59,18 @@ export function handleLookupError(res: Response, lookupError: LookupError) {
 
 /**
  * Helper to extract user ID from request.
- * In multi-tenant mode, prefers the org-specific user ID from req.orgUser (set by UserProvisioningMiddleware).
- * Falls back to the JWT userId for single-tenant mode or when orgUser is not set.
+ * Prefers the global user ID from req.orgUser (set by UserProvisioningMiddleware from global_users table).
+ * Falls back to the JWT userId for single-tenant mode without Manager DB.
  * @param tokenUtil the token utility
  * @param req the request
  * @returns user ID if found, otherwise a LookupError
  */
 export function getUserId(tokenUtil: TokenUtil<UserInfo>, req: Request): number | LookupError {
-	// Prefer org-specific user ID (set by UserProvisioningMiddleware in multi-tenant mode)
+	// Prefer global user ID (set by UserProvisioningMiddleware from global_users table)
 	if (req.orgUser?.id !== undefined) {
 		return req.orgUser.id;
 	}
-	// Fall back to JWT userId (single-tenant mode)
+	// Fall back to JWT userId (single-tenant mode without Manager DB)
 	return (
 		tokenUtil.decodePayload(req)?.userId ?? {
 			status: 401,

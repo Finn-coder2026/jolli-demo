@@ -41,9 +41,13 @@ WORKDIR /app
 
 # Install runtime dependencies
 # - pg: PostgreSQL driver (native module, can't be bundled)
-# - @aws-sdk packages are loaded dynamically for Parameter Store
-RUN npm init -y && \
-    npm install pg@8.16.3 @aws-sdk/client-ssm@3.916.0 @aws-sdk/client-sts@3.943.0 && \
+# - @aws-sdk packages are loaded dynamically for Parameter Store and S3
+RUN echo '{"type": "module"}' > package.json && \
+    npm install pg@8.16.3 \
+        @aws-sdk/client-ssm@3.916.0 \
+        @aws-sdk/client-sts@3.943.0 \
+        @aws-sdk/client-s3@3.916.0 \
+        @aws-sdk/s3-request-presigner@3.916.0 && \
     npm cache clean --force
 
 # Copy the bundled worker from builder stage

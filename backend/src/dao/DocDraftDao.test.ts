@@ -528,6 +528,33 @@ describe("DocDraftDao", () => {
 			expect(result).toBe(0);
 		});
 	});
+
+	describe("getAllContent", () => {
+		it("should return content from all drafts", async () => {
+			const draft1 = mockDocDraft({ id: 1, content: "Draft 1 content" });
+			const draft2 = mockDocDraft({ id: 2, content: "Draft 2 content" });
+
+			vi.mocked(mockDocDrafts.findAll).mockResolvedValue([
+				{ get: vi.fn().mockReturnValue(draft1.content) },
+				{ get: vi.fn().mockReturnValue(draft2.content) },
+			] as never);
+
+			const result = await docDraftDao.getAllContent();
+
+			expect(mockDocDrafts.findAll).toHaveBeenCalledWith({
+				attributes: ["content"],
+			});
+			expect(result).toEqual([{ content: draft1.content }, { content: draft2.content }]);
+		});
+
+		it("should return empty array when no drafts exist", async () => {
+			vi.mocked(mockDocDrafts.findAll).mockResolvedValue([]);
+
+			const result = await docDraftDao.getAllContent();
+
+			expect(result).toEqual([]);
+		});
+	});
 });
 
 describe("createDocDraftDaoProvider", () => {
